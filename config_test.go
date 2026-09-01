@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -119,12 +120,15 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 	registerConfig(t, configA)
 
 	done := make(chan struct{})
+	started := make(chan struct{}, 32)
 	errs := make(chan error, 32)
+	var calls atomic.Uint64
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			first := true
 			for {
 				select {
 				case <-done:
@@ -132,10 +136,15 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 				default:
 				}
 				resp, err := callIntercept("openai", body)
+				if first {
+					started <- struct{}{}
+					first = false
+				}
 				if err != nil {
 					errs <- err
 					return
 				}
+				calls.Add(1)
 				if !bytes.Equal(resp.Body, wantA) && !bytes.Equal(resp.Body, wantB) {
 					errs <- fmt.Errorf("mixed snapshot body: %s", resp.Body)
 					return
@@ -143,6 +152,10 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 			}
 		}()
 	}
+	for i := 0; i < 32; i++ {
+		<-started
+	}
+	before := calls.Load()
 	for i := 0; i < 1000; i++ {
 		if i%2 == 0 {
 			reconfigureConfig(t, configB)
@@ -150,10 +163,14 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 			reconfigureConfig(t, configA)
 		}
 	}
+	after := calls.Load()
 	close(done)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+	if after == before {
+		t.Fatal("no interception completed during reconfiguration")
 	}
 }
