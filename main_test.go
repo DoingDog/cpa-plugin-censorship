@@ -195,3 +195,11 @@ func replaceRawTokens(t *testing.T, body []byte, replacements ...rawReplacement)
 	}
 	return out
 }
+
+func TestBeforeAuthBlockIgnoreCaseReturnsYAMLTerm(t *testing.T) {
+	registerConfig(t, "mode: block\nignore_case: true\nwords: [Alpha]\n")
+	resp := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"aLPHA"}]}`))
+	if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.term").String() != "Alpha" || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "user" {
+		t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
+	}
+}
