@@ -27,8 +27,8 @@ func TestResponsesWebSocketModelTurnUsesResponsesSelector(t *testing.T) {
 		t.Fatal("no websocket completion messages")
 	}
 	captured := upstream.lastRequest()
-	if bytes.Contains(captured, []byte("aLPHA")) || !bytes.Contains(captured, []byte(" websocket")) {
-		t.Fatalf("upstream body = %s", captured)
+	if got := gjson.GetBytes(captured, "messages.0.content.0.text").String(); got != " websocket" {
+		t.Fatalf("upstream input text = %q, body = %s", got, captured)
 	}
 }
 
@@ -78,23 +78,28 @@ func TestResponsesWebSocketOutputMessagesUnaffected(t *testing.T) {
 		t.Fatalf("enabled messages = %#v, disabled messages = %#v", gotEnabled, gotDisabled)
 	}
 
-	for _, config := range []string{
-		"mode: strip\nwords: [SECRET]\n",
-		"mode: obfs\nwords: [SECRET]\n",
+	for _, tc := range []struct {
+		name, config, wantInput string
+	}{
+		{name: "strip", config: "mode: strip\nwords: [SECRET]\n", wantInput: " input"},
+		{name: "obfs", config: "mode: obfs\nwords: [SECRET]\n", wantInput: "S​ECRET input"},
 	} {
-		transformedUpstream := newMockUpstream(t)
-		baselineUpstream := newMockUpstream(t)
-		transformed := startCPA(t, transformedUpstream.URL, true, config)
-		baseline := startCPA(t, baselineUpstream.URL, false, "")
-		matching := []byte(`{"type":"response.create","model":"censorship-integration-model","input":"SECRET input"}`)
-		gotTransformed := responsesWSExchange(t, transformed, matching)
-		gotBaseline := responsesWSExchange(t, baseline, matching)
-		if bytes.Contains(transformedUpstream.lastRequest(), []byte(`"SECRET input"`)) {
-			t.Fatalf("input was not transformed: %s", transformedUpstream.lastRequest())
-		}
-		if !reflect.DeepEqual(gotTransformed, gotBaseline) {
-			t.Fatalf("transformed messages = %#v, baseline messages = %#v", gotTransformed, gotBaseline)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			transformedUpstream := newMockUpstream(t)
+			baselineUpstream := newMockUpstream(t)
+			transformed := startCPA(t, transformedUpstream.URL, true, tc.config)
+			baseline := startCPA(t, baselineUpstream.URL, false, "")
+			matching := []byte(`{"type":"response.create","model":"censorship-integration-model","input":"SECRET input"}`)
+			gotTransformed := responsesWSExchange(t, transformed, matching)
+			gotBaseline := responsesWSExchange(t, baseline, matching)
+			captured := transformedUpstream.lastRequest()
+			if got := gjson.GetBytes(captured, "messages.0.content").String(); got != tc.wantInput {
+				t.Fatalf("upstream input = %q, want %q, body = %s", got, tc.wantInput, captured)
+			}
+			if !reflect.DeepEqual(gotTransformed, gotBaseline) {
+				t.Fatalf("transformed messages = %#v, baseline messages = %#v", gotTransformed, gotBaseline)
+			}
+		})
 	}
 }
 
