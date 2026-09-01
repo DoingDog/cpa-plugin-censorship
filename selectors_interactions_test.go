@@ -46,6 +46,20 @@ func TestInteractionsSelectorRowsRoleInheritanceAndExclusions(t *testing.T) {
 	}
 }
 
+func TestInteractionsContentMachinePartsAreExcluded(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	bodies := []string{
+		`{"input":{"type":"user_input","content":{"type":"text","text":"SECRET","functionCall":{"name":"tool"}}}}`,
+		`{"input":{"type":"user_input","content":[{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}]}}`,
+	}
+	for _, body := range bodies {
+		resp := interceptRPC(t, "interactions", []byte(body))
+		if resp.Terminate || len(resp.Body) != 0 {
+			t.Fatalf("response for %s = %#v", body, resp)
+		}
+	}
+}
+
 func TestInteractionsTopLevelStringRows(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, user]\n")
 	cases := []struct {

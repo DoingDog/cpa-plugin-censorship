@@ -78,12 +78,12 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 	case content.Type == gjson.String:
 		appendStringSpan(spans, content, role, roles)
 	case content.IsObject():
-		if interactionTextPartAllowed(content) {
+		if interactionTextPartAllowed(content) && geminiTextPartAllowed(content) {
 			appendStringSpan(spans, content.Get("text"), role, roles)
 		}
 	case content.IsArray():
 		content.ForEach(func(_, part gjson.Result) bool {
-			if interactionTextPartAllowed(part) {
+			if interactionTextPartAllowed(part) && geminiTextPartAllowed(part) {
 				appendStringSpan(spans, part.Get("text"), role, roles)
 			}
 			return true
