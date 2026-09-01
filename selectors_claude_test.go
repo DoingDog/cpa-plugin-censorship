@@ -17,7 +17,8 @@ func TestClaudeSelectorRowsAndExclusions(t *testing.T) {
 			{"type":"tool_use","name":"SECRET","input":{"text":"SECRET"}},
 			{"type":"thinking","thinking":"SECRET"},
 			{"type":"redacted_thinking","data":"SECRET"},
-			{"type":"image","source":{"data":"SECRET"}}
+			{"type":"image","source":{"data":"SECRET"}},
+			{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"SECRET"},"title":"SECRET document"}
 		]},
 		{"role":"assistant","content":"SECRET assistant"},
 		{"role":"developer","content":"SECRET unsupported role"},
