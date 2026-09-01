@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -44,6 +45,46 @@ func TestVerifyCheckoutRejectsWrongHEAD(t *testing.T) {
 	if err := verifyCheckout(dir, cpaSHA); err == nil {
 		t.Fatal("wrong checkout HEAD accepted")
 	}
+}
+
+func TestVerifyCheckoutRejectsDirtyWorktree(t *testing.T) {
+	dir := t.TempDir()
+	runGitTest(t, dir, "init")
+	tracked := filepath.Join(dir, "tracked.go")
+	if err := os.WriteFile(tracked, []byte("package fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, dir, "add", "tracked.go")
+	runGitTest(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
+	head := strings.TrimSpace(runGitOutput(t, dir, "rev-parse", "HEAD"))
+	if err := verifyCheckout(dir, head); err != nil {
+		t.Fatalf("clean checkout rejected: %v", err)
+	}
+
+	if err := os.WriteFile(tracked, []byte("package changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCheckout(dir, head); err == nil {
+		t.Fatal("tracked modification accepted")
+	}
+	runGitTest(t, dir, "reset", "--hard", "HEAD")
+	if err := os.WriteFile(filepath.Join(dir, "untracked.go"), []byte("package untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCheckout(dir, head); err == nil {
+		t.Fatal("untracked file accepted")
+	}
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
 }
 
 func runGitTest(t *testing.T, dir string, args ...string) {

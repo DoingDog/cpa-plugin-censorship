@@ -144,6 +144,16 @@ func verifyCheckout(path, wantSHA string) error {
 	if got != wantSHA {
 		return fmt.Errorf("checkout HEAD is %q, want %q", got, wantSHA)
 	}
+	cmd = exec.Command("git", "status", "--porcelain", "--untracked-files=all")
+	cmd.Dir = path
+	cmd.Stderr = os.Stderr
+	output, err = cmd.Output()
+	if err != nil {
+		return fmt.Errorf("inspect checkout %s: %w", filepath.ToSlash(path), err)
+	}
+	if status := strings.TrimSpace(string(output)); status != "" {
+		return fmt.Errorf("checkout is dirty: %s", status)
+	}
 	return nil
 }
 
