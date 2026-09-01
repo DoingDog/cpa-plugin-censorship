@@ -46,3 +46,34 @@ func assertBlockedRole(t *testing.T, sourceFormat, body, wantRole string) {
 		t.Fatalf("format=%s role=%s response=%#v body=%s", sourceFormat, wantRole, resp, resp.ResponseBody)
 	}
 }
+
+func TestStripRemovesAllOccurrencesAcrossAllNodes(t *testing.T) {
+	cfg := mustConfig(t, "mode: strip\nwords: [bad]\n")
+	body := []byte(`{"messages":[{"role":"user","content":"bad bad"},{"role":"user","content":"xbadx"},{"role":"user","content":"bad/bad"}]}`)
+	got, err := transformRequest(body, "openai", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"messages":[{"role":"user","content":" "},{"role":"user","content":"xx"},{"role":"user","content":"/"}]}`
+	if string(got.Body) != want {
+		t.Fatalf("body = %s, want %s", got.Body, want)
+	}
+}
+
+func TestStripOrderedCascadeAndFoldedOccurrences(t *testing.T) {
+	cfg := mustConfig(t, "mode: strip\nignore_case: true\nwords: [AB, x]\n")
+	body := []byte(`{"messages":[{"role":"user","content":"aBxABx"}]}`)
+	got, _ := transformRequest(body, "openai", cfg)
+	if string(got.Body) != `{"messages":[{"role":"user","content":""}]}` {
+		t.Fatalf("body = %s", got.Body)
+	}
+}
+
+func TestStripUsesLeftmostNonOverlappingOccurrences(t *testing.T) {
+	cfg := mustConfig(t, "mode: strip\nwords: [aa]\n")
+	body := []byte(`{"messages":[{"role":"user","content":"aaa"}]}`)
+	got, err := transformRequest(body, "openai", cfg)
+	if err != nil || string(got.Body) != `{"messages":[{"role":"user","content":"a"}]}` {
+		t.Fatalf("body = %s, err = %v", got.Body, err)
+	}
+}

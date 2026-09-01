@@ -1,6 +1,9 @@
 package main
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+)
 
 type textSpan struct {
 	RawStart int
@@ -44,7 +47,8 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 }
 
 func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
-	if cfg.Mode == modeBlock {
+	switch cfg.Mode {
+	case modeBlock:
 		for _, rule := range cfg.Rules {
 			for i := range spans {
 				if containsRule(spans[i].Text, rule, cfg.IgnoreCase) {
@@ -52,10 +56,43 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 				}
 			}
 		}
+	case modeStrip:
+		changed := false
+		for _, rule := range cfg.Rules {
+			for i := range spans {
+				text, matched := stripRule(spans[i].Text, rule, cfg.IgnoreCase)
+				if matched {
+					spans[i].Text = text
+					spans[i].Changed = true
+					changed = true
+				}
+			}
+		}
+		return nil, changed
 	}
 	return nil, false
 }
 
-func rebuildBody([]byte, []textSpan) ([]byte, error) {
-	return nil, nil
+func rebuildBody(body []byte, spans []textSpan) ([]byte, error) {
+	out := make([]byte, 0, len(body))
+	position := 0
+	changed := false
+	for _, span := range spans {
+		if !span.Changed {
+			continue
+		}
+		replacement, err := json.Marshal(span.Text)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, body[position:span.RawStart]...)
+		out = append(out, replacement...)
+		position = span.RawEnd
+		changed = true
+	}
+	if !changed {
+		return nil, nil
+	}
+	out = append(out, body[position:]...)
+	return out, nil
 }
