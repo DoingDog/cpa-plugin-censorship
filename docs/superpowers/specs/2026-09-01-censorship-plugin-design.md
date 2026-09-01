@@ -9,7 +9,7 @@
 
 本项目实现一个名为 `censorship` 的 CLIProxyAPI 动态插件。插件只审查进入 CLIProxyAPI 的请求内容，不读取、不修改、也不观察任何上游模型输出。
 
-插件从 CPA YAML 配置读取唯一屏蔽词表，支持 `block`、`strip`、`obfs` 三种模式。配置通过 CPA 现有的 `plugin.reconfigure` 生命周期热更新，不需要重启非 Home 模式的 CPA。规则处理必须保留 YAML 顺序，输出必须在相同输入、相同配置快照和相同插件版本下逐字节确定。
+插件从 CPA YAML 配置读取唯一屏蔽词表，支持 `block`、`strip`、`obfs` 三种模式，以及默认关闭的 `ignore_case` Unicode大小写忽略匹配。配置通过 CPA 现有的 `plugin.reconfigure` 生命周期热更新，不需要重启非 Home 模式的 CPA。规则处理必须保留 YAML 顺序，输出必须在相同输入、相同配置快照和相同插件版本下逐字节确定。
 
 本设计选择纯插件方案，不修改 CLIProxyAPI。该选择不能完整满足 raw ingress 和所有 WebSocket 路径，限制见第 13 节。
 
@@ -53,22 +53,23 @@ Responses WebSocket在读取client frame前已经完成HTTP 101 Upgrade，之后
 
 1. 所有屏蔽词只来自 YAML `words` sequence，无内置、fallback或示例词表参与运行。
 2. 默认模式为 `block`。
-3. `block`按词表顺序选择第一个匹配词，返回HTTP 400，并在HTTP错误中包含匹配词和canonical role。
-4. `strip`和 `obfs`按词表顺序处理全部规则。每条规则一次处理所有eligible文字节点中的全部左到右非重叠occurrence。
-5. 支持请求历史中的 `system`、`developer`、`user`，并允许配置 `assistant`。`tool`只覆盖OpenAI `role=tool`的string content，以及Claude `tool_result.content[]`中的typed text block。
-6. 不修改tool call、tool schema、arguments、reasoning、thinking、其他tool/function result、JSON key、machine JSON、上传二进制和media/base64。
-7. 处理 `openai`、`openai-response`、`claude`、`gemini`、`interactions`五种已确认的SourceFormat。
-8. 处理现有hook可见的Codex Responses WebSocket model-executed turn。
-9. 非 Home 模式下修改CPA YAML后动态生效。
-10. 相同输入、相同配置快照和相同插件版本产生逐字节相同结果。
-11. 永远不接触上游输出和流式响应。
-12. 提供参考 `model-mapper` 风格的GitHub CI/CD、跨平台动态库、zip和checksum发布。
+3. `ignore_case`默认关闭；显式启用时，全部mode和全部eligible文字节点使用Unicode simple case folding匹配。
+4. `block`按词表顺序选择第一个匹配词，返回HTTP 400，并在HTTP错误中包含YAML原词和canonical role。
+5. `strip`和 `obfs`按词表顺序处理全部规则。每条规则一次处理所有eligible文字节点中的全部左到右非重叠occurrence。
+6. 支持请求历史中的 `system`、`developer`、`user`，并允许配置 `assistant`。`tool`只覆盖OpenAI `role=tool`的string content，以及Claude `tool_result.content[]`中的typed text block。
+7. 不修改tool call、tool schema、arguments、reasoning、thinking、其他tool/function result、JSON key、machine JSON、上传二进制和media/base64。
+8. 处理 `openai`、`openai-response`、`claude`、`gemini`、`interactions`五种已确认的SourceFormat。
+9. 处理现有hook可见的Codex Responses WebSocket model-executed turn。
+10. 非 Home 模式下修改CPA YAML后动态生效。
+11. 相同输入、相同配置快照和相同插件版本产生逐字节相同结果。
+12. 永远不接触上游输出和流式响应。
+13. 提供参考 `model-mapper` 风格的GitHub CI/CD、跨平台动态库、zip和checksum发布。
 
 ### 3.2 非目标
 
 1. 不提供自定义管理面板、菜单或Management API。
 2. 不隐藏CPA通用plugin list中的插件条目。
-3. 不支持regex、word boundary、大小写折叠或Unicode normalization。
+3. 不支持regex、word boundary或Unicode normalization。`ignore_case: true`只采用Unicode simple case folding，不采用会展开或合并多个Unicode scalars的full case folding。
 4. 不保证转换结果再次进入插件后保持不变。幂等性不是合同。
 5. 不维护请求内容hash cache或conversation state。
 6. 不处理Realtime/Live/sideband/DataChannel。
@@ -101,14 +102,19 @@ Responses WebSocket在读取client frame前已经完成HTTP 101 Upgrade，之后
 ### 4.2 模块
 
 ```plaintext
-abi_cgo.go     CPA ABI v1 init/call/free/shutdown
-main.go        RPC dispatcher、registration和生命周期分派
-config.go      YAML解析、校验、immutable snapshot和原子更新
-transform.go   mode engine、raw span重建和错误body
-selectors.go   SourceFormat selector和canonical role映射
+abi_cgo.go                CPA ABI v1 init/call/free/shutdown
+main.go                   RPC dispatcher、registration和生命周期分派
+config.go                 YAML解析、校验、immutable snapshot和原子更新
+matcher.go                大小写敏感fast path和Unicode simple-fold occurrence定位
+transform.go              mode engine、raw span重建和错误body
+selectors.go              selector dispatcher、span校验和共享predicate
+selectors_openai.go       openai与openai-response selector
+selectors_claude.go       claude selector
+selectors_gemini.go       gemini selector
+selectors_interactions.go interactions selector及其受限steps递归
 ```
 
-所有生产代码保持 `package main`。不增加单实现interface、provider factory或通用递归JSON walker。
+对应测试按同名模块拆分，使协议selector实现和单文件review可以并行。所有生产代码保持 `package main`。不增加单实现interface、provider factory或通用递归JSON walker；Interactions的递归函数只进入第7.5节明确列出的 `steps`、`content`和 `parts`。
 
 ### 4.3 请求数据流
 
@@ -135,6 +141,7 @@ plugins:
     censorship:
       enabled: true
       mode: block
+      ignore_case: false
 
       words: []
 
@@ -161,6 +168,7 @@ CPA要求plugin instance使用mapping node才能读取host-owned `enabled`，所
 | 字段 | 缺省 | 约束 |
 |---|---|---|
 | `mode` | `block` | 只允许 `block`、`strip`、`obfs`。 |
+| `ignore_case` | `false` | 必须是YAML boolean；`true`启用Unicode simple case folding匹配。 |
 | `words` | `[]` | 必须是string sequence。它是唯一词表来源。 |
 | `scope.formats` | 所有已实现格式 | 必须是string sequence；显式 `[]`表示全部关闭。 |
 | `scope.roles` | `system,developer,user` | 必须是string sequence；显式 `[]`表示全部关闭；可加入 `assistant`和 `tool`。 |
@@ -171,10 +179,12 @@ CPA要求plugin instance使用mapping node才能读取host-owned `enabled`，所
 1. 保留YAML顺序、重复项、大小写、首尾空白和换行。
 2. 不排序、不去重、不 `Trim`。
 3. 空字符串和非string值使候选配置无效。
-4. 匹配是大小写敏感的literal substring。
-5. 不做Unicode normalization。
-6. `mode: obfs`时，每个词条至少包含两个Unicode scalars。
-7. `mode: obfs`时，词条不得包含当前 `obfs.char`。
+4. `ignore_case: false`时，匹配是大小写敏感的literal substring。
+5. `ignore_case: true`时，每个Unicode scalar使用Go `unicode.SimpleFold`等价类比较；ASCII大小写、Greek sigma变体和Kelvin sign等simple-fold等价字符可以匹配，`ß`与 `ss`等多scalar full-fold等价形式不能匹配。
+6. 大小写忽略匹配仍按原文Unicode scalar边界定位，匹配长度以词条的Unicode scalar数量为准。
+7. 不做Unicode normalization。
+8. `mode: obfs`时，每个词条至少包含两个Unicode scalars。
+9. `mode: obfs`时，词条不得包含当前 `obfs.char`。
 
 Scope规则：
 
@@ -326,8 +336,9 @@ System instruction rows：
 3. 匹配在decoded string value上执行，不匹配JSON escape拼写。
 4. 不跨node匹配。
 5. 同一规则的occurrence按左到右、非重叠定义。
-6. 所有规则只运行一轮，不运行到fixpoint。
-7. 后一规则读取前一规则产生的当前node text。
+6. `ignore_case: true`时，occurrence的开始和结束位置仍来自原文；命中内容的原始大小写不被YAML词条替换。
+7. 所有规则只运行一轮，不运行到fixpoint。
+8. 后一规则读取前一规则产生的当前node text。
 
 ### 8.2 `block`
 
@@ -336,14 +347,14 @@ System instruction rows：
 ```go
 for _, word := range words {
 	for _, node := range nodes {
-		if strings.Contains(node.Text, word) {
+		if contains(node.Text, word, ignoreCase) {
 			return blocked(word, node.Role)
 		}
 	}
 }
 ```
 
-词表顺序优先于document order。对获胜词条，同词多处出现时，最早eligible node决定role。命中后停止，不修改请求body。
+`contains`在 `ignoreCase == false`时等价于 `strings.Contains`，在 `ignoreCase == true`时使用第5.2节定义的Unicode simple-fold substring匹配。词表顺序优先于document order。对获胜词条，同词多处出现时，最早eligible node决定role。命中后停止，不修改请求body；错误中的 `term`始终返回YAML原词，而不是原文中大小写不同的实际片段。
 
 HTTP 400 body固定为：
 
@@ -368,24 +379,24 @@ HTTP 400 body固定为：
 ```go
 for _, word := range words {
 	for i := range nodes {
-		nodes[i].Text = strings.ReplaceAll(nodes[i].Text, word, "")
+		nodes[i].Text = replaceAll(nodes[i].Text, word, "", ignoreCase)
 	}
 }
 ```
 
-一条规则必须处理全部nodes中的全部非重叠occurrence，然后才进入下一条规则。所有规则必须执行。
+`replaceAll`在大小写敏感路径等价于 `strings.ReplaceAll`；大小写忽略路径删除每个实际原文match，不把YAML词条的大小写写回body。一条规则必须处理全部nodes中的全部非重叠occurrence，然后才进入下一条规则。所有规则必须执行。
 
 ### 8.4 `obfs`
 
 `obfs`采用与 `strip`相同的rule-major和all-nodes顺序。每个match替换为：
 
 ```plaintext
-word的第一个Unicode scalar
+实际原文match的第一个Unicode scalar
 + obfs.char
-+ word剩余Unicode scalars
++ 实际原文match剩余Unicode scalars
 ```
 
-每个match只插入一个字符。插入位置按Unicode scalar boundary计算，不按UTF-8 byte index。算法不使用随机数、轮换、时间、进程状态或conversation state。
+每个match只插入一个字符。插入位置按实际原文match的Unicode scalar boundary计算，不按UTF-8 byte index；`ignore_case: true`时保留该match的原始大小写，只插入 `obfs.char`。算法不使用随机数、轮换、时间、进程状态或conversation state。
 
 ## 9. 确定性与body重建
 
@@ -457,14 +468,15 @@ JSON扫描为 `O(N)`。selector不decode排除的base64内容。
 
 ### 11.2 Matcher
 
-首版使用标准库：
+首版使用标准库和一个无正则的Unicode simple-fold扫描器：
 
-- `block`：ordered `strings.Contains`，最坏 `O(R × B)`。
-- `strip/obfs`：ordered `strings.ReplaceAll`语义，复杂度取决于每条规则开始时的当前文本总量。
+- `ignore_case: false`的 `block`：ordered `strings.Contains`，最坏 `O(R × B)`。
+- `ignore_case: false`的 `strip/obfs`：ordered `strings.ReplaceAll`语义，复杂度取决于每条规则开始时的当前文本总量。
+- `ignore_case: true`：在原文Unicode scalar边界逐个尝试词条，逐scalar按 `unicode.SimpleFold`等价类比较；命中后跳过整个match，未命中时前进一个scalar。它不先对完整body执行 `strings.ToLower`，避免大小写映射改变UTF-8 byte长度后失去原文span。
 
-不使用combined regex，因为它会改变规则顺序和重叠优先级。
+不使用combined regex，因为它会改变规则顺序和重叠优先级。大小写敏感路径不得为支持 `ignore_case`而退化为Unicode扫描器。
 
-只有benchmark证明代表性 `block`场景不满足实际预算时，才评估保留原YAML index的Aho-Corasick。任何优化都必须继续通过reference oracle、differential fuzz和byte-preservation tests。
+只有benchmark证明代表性 `block`场景不满足实际预算时，才评估保留原YAML index和大小写模式的多模式matcher。任何优化都必须继续通过reference oracle、differential fuzz和byte-preservation tests。
 
 ### 11.3 资源测试矩阵
 
@@ -472,6 +484,7 @@ JSON扫描为 `O(N)`。selector不decode排除的base64内容。
 - words：`0`、`1`、`32`、`256`、`1024`。
 - nodes：`1`、`1000`。
 - match：none、sparse、dense、overlap、ordered cascade。
+- case mode：`ignore_case: false`、ASCII mixed-case、Unicode simple-fold等价和full-fold非等价。
 - excluded payload：20 MiB base64位于目标文字前、中、后。
 - concurrent reconfigure：A/B snapshots并行。
 
@@ -491,6 +504,13 @@ JSON扫描为 `O(N)`。selector不decode排除的base64内容。
 
 - RED：`words=["ab","a"]`，更早user node只含 `a`，更晚developer node含 `ab`。断言400、`term=ab`、`role=developer`。
 - GREEN：实现OpenAI string selector和朴素block oracle。
+
+### Slice 2a：可配置大小写忽略
+
+- RED：默认配置中 `words=["Alpha"]`不匹配 `alpha`；`ignore_case: true`后，block匹配ASCII mixed-case并返回YAML原词 `Alpha`。
+- GREEN：配置snapshot增加 `IgnoreCase bool`，大小写敏感路径保持 `strings.Contains`。
+- 后续单独RED：strip一次删除 `Alpha/aLPHA`全部occurrence；obfs保留 `ALPHA`原始大小写并只插入字符；Greek sigma和Kelvin sign按Unicode simple fold匹配；`straße`不匹配 `STRASSE`；无效非boolean配置在register失败并在reconfigure保留last-known-good。
+- GREEN：实现按原文scalar边界定位的 `unicode.SimpleFold` matcher和case-insensitive replacement，不对完整node或body执行lowercase转换。
 
 ### Slice 3：`strip`全量处理
 
@@ -549,7 +569,7 @@ JSON扫描为 `O(N)`。selector不decode排除的base64内容。
 
 ### Slice 11：Differential和fuzz
 
-- `FuzzRuleEngineAgainstOracle`：Unicode、重复词、overlap、cascade、nodes和roles。
+- `FuzzRuleEngineAgainstOracle`：Unicode、重复词、overlap、cascade、nodes、roles和 `ignore_case`两种模式；大小写忽略oracle独立使用rune slice和 `strings.EqualFold`判断等长scalar窗口。
 - `FuzzProtocolTransform`：escaped JSON、unknown blocks、tool/media/base64、invalid JSON和deep input。
 - 断言：无panic/overflow；block term/role一致；excluded spans不变；输出JSON有效。
 
@@ -610,7 +630,7 @@ make vet
 make integration
 ```
 
-`make integration`固定校验CLIProxyAPI checkout SHA为 `81e1b5374f99c212f196f34956eeed964a46b8fa`，再运行HTTP、SSE和Responses WebSocket黑盒测试。
+`make integration`先显式运行 `.github/scripts/integration-runner.go`与 `.github/scripts/integration-runner_test.go`的runner单元测试，再固定校验CLIProxyAPI checkout SHA为 `81e1b5374f99c212f196f34956eeed964a46b8fa`，并运行HTTP、SSE和Responses WebSocket黑盒测试。
 
 ### 14.3 Build matrix
 
@@ -624,13 +644,13 @@ make integration
 | windows | arm64 | `go-cross/cgo-actions@v1` |
 | freebsd | amd64 | `go-cross/cgo-actions@v1` |
 
-PR只运行test gate。main push和tag在test通过后构建全部平台。每个build job执行：
+PR只运行test gate。main push和tag在test通过后构建全部平台。五个native matrix entry执行：
 
 ```plaintext
 make package VERSION=0.0.0-dev GOOS=<该行GOOS> GOARCH=<该行GOARCH>
 ```
 
-Tag build使用tag解析出的release version代替 `0.0.0-dev`。`make build`只作为host-specific便捷target，不是共享完成门槛；调用者必须自行提供当前host所需的CGO compiler和cross-compiler。
+windows/arm64与freebsd/amd64先由 `go-cross/cgo-actions@v1`以 `-buildmode=c-shared`和 `main.pluginVersion=<version>`构建动态库，再调用 `package-release.go`的 `-library`、`-archive`、`-checksum` direct mode，不通过 `make package`重复cross build。Tag build使用tag解析出的release version代替 `0.0.0-dev`。`make build`只作为host-specific便捷target，不是共享完成门槛；调用者必须自行提供当前host所需的CGO compiler和cross-compiler。
 
 ### 14.4 Artifact
 
@@ -658,17 +678,17 @@ zip根目录只包含动态库和可选 `LICENSE`。每个平台生成 `<archive
 
 ### 14.5 GitHub Release
 
-`v*` tag触发release job：
+`v*` tag触发release job。仓库内固定的 `RELEASE_NOTES.md`必须包含完整YAML配置、严格类型与默认值、hard exclusions、第13节十一项限制和artifact命名。发布流程为：
 
 1. 下载并合并全部build artifacts。
 2. 对各 `.sha256`排序后生成 `checksums.txt`。
-3. 已有release时使用 `gh release upload --clobber`。
-4. 不存在时使用 `gh release create --verify-tag`。
+3. 已有release时先执行 `gh release edit "$tag" --notes-file RELEASE_NOTES.md`，再使用 `gh release upload --clobber`。
+4. 不存在时使用 `gh release create --verify-tag --notes-file RELEASE_NOTES.md`。
 5. 上传全部zip和 `checksums.txt`。
 
 ## 15. 完成标准
 
-本地和CI必须通过：
+最终本地verification必须通过以下完整命令；CI执行第14.2节test gate和第14.3节build jobs，不在每次CI中重复运行完整benchmark矩阵：
 
 ```plaintext
 go test ./...
@@ -679,24 +699,25 @@ go test .github/scripts/package-release.go .github/scripts/package-release_test.
 make integration
 ```
 
-第14.3节七个build job还必须分别完成对应平台的 `make package`，并成功产出zip和sha256。`make build`不作为共享门槛。
+第14.3节五个native matrix entry必须完成对应平台的 `make package`；两个cross job必须完成 `go-cross/cgo-actions@v1`构建和packager direct mode。七个平台都必须成功产出zip和sha256。`make build`不作为共享门槛。
 
 行为验收：
 
 1. 默认mode为block，无words时no-op且没有内置词。
-2. block按词表优先级返回正确term和role。
-3. strip/obfs单条规则处理所有nodes的全部非重叠occurrence。
-4. strip/obfs执行到最后一条rule。
-5. assistant历史只有显式配置后处理。
-6. `tool`显式启用后，只处理OpenAI `role=tool` string content和Claude typed text tool result；其他tool/function output保持不变。
-7. tool call、machine JSON、binary和base64保持不变。
-8. 五种SourceFormat的每个规范selector row都有正例，unknown和hard exclusions保持不变。
-9. 相同输入重复转换的bytes和SHA-256相同。
-10. 合法热更新无需重启，非法热更新保留旧snapshot。
-11. response-side capabilities全部为false。
-12. 不命中请求在启用与禁用插件时得到相同response写序列；给定相同预录mock输出时，命中strip/obfs的转发路径也保持相同status、headers、payload和flush/message顺序。
-13. GitHub Actions七个平台artifact名称、zip内容和checksum格式符合合同。
-14. 所有已接受限制在README中逐项列出。
+2. `ignore_case`默认false；显式true时三种mode均按Unicode simple fold匹配，保留原文大小写并拒绝full-fold多scalar等价。
+3. block按词表优先级返回正确YAML原词term和role。
+4. strip/obfs单条规则处理所有nodes的全部非重叠occurrence。
+5. strip/obfs执行到最后一条rule。
+6. assistant历史只有显式配置后处理。
+7. `tool`显式启用后，只处理OpenAI `role=tool` string content和Claude typed text tool result；其他tool/function output保持不变。
+8. tool call、machine JSON、binary和base64保持不变。
+9. 五种SourceFormat的每个规范selector row都有正例，unknown和hard exclusions保持不变。
+10. 相同输入重复转换的bytes和SHA-256相同。
+11. 合法热更新无需重启，非法热更新保留旧snapshot。
+12. response-side capabilities全部为false。
+13. 不命中请求在启用与禁用插件时得到相同response写序列；给定相同预录mock输出时，命中strip/obfs的转发路径也保持相同status、headers、payload和flush/message顺序。
+14. GitHub Actions七个平台artifact名称、zip内容和checksum格式符合合同。
+15. 所有配置字段、大小写语义和已接受限制在README与release notes中逐项列出。
 
 ## 16. 已确认决策
 
@@ -705,9 +726,10 @@ make integration
 3. `scope.roles: [tool]`显式启用时，只覆盖OpenAI `role=tool` string content和Claude `tool_result.content[]`中的typed text block；其他tool/function result始终排除。
 4. assistant历史通过 `scope.roles: [assistant]`显式启用，默认关闭。
 5. 插件无论scope如何都只处理输入，永远不处理上游输出。
-6. 匹配采用大小写敏感literal，不做normalization。
-7. obfs使用单个配置字符，默认U+200B，固定插在第一个Unicode scalar后。
-8. obfs拒绝单Unicode scalar词条。
-9. 热更新合同只覆盖非Home本地配置模式。
-10. 只要求相同输入和配置下结果确定，不要求幂等。
-11. CI/CD在首个实现周期内完成，并模仿model-mapper的test、build、package、checksum和GitHub Release流程。
+6. 匹配默认采用大小写敏感literal；`ignore_case: true`时采用Unicode simple case folding，两种路径都不做normalization。
+7. 大小写忽略匹配保留实际原文片段；block仍回显YAML原词，strip删除原文match，obfs只向原文match插入字符。
+8. obfs使用单个配置字符，默认U+200B，固定插在第一个Unicode scalar后。
+9. obfs拒绝单Unicode scalar词条。
+10. 热更新合同只覆盖非Home本地配置模式。
+11. 只要求相同输入和配置下结果确定，不要求幂等。
+12. CI/CD在首个实现周期内完成，并模仿model-mapper的test、build、package、checksum和GitHub Release流程。
