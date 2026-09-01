@@ -16,7 +16,19 @@ func collectOpenAI(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			return true
 		}
 		switch role.Str {
-		case "system", "developer", "user", "assistant", "tool":
+		case "system", "developer", "user", "assistant":
+			content := message.Get("content")
+			appendStringSpan(spans, content, role.Str, roles)
+			if content.IsArray() {
+				content.ForEach(func(_, part gjson.Result) bool {
+					partType := part.Get("type")
+					if partType.Type == gjson.String && partType.Str == "text" {
+						appendStringSpan(spans, part.Get("text"), role.Str, roles)
+					}
+					return true
+				})
+			}
+		case "tool":
 			appendStringSpan(spans, message.Get("content"), role.Str, roles)
 		}
 		return true
