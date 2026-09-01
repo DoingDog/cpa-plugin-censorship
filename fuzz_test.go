@@ -34,6 +34,17 @@ type oracleProtocolSpan struct {
 	Role string
 }
 
+func TestValidJSONObjectRejectsNonJSONWhitespace(t *testing.T) {
+	for _, body := range [][]byte{[]byte("{}\v"), []byte("{}\f"), []byte("\v{}")} {
+		if validJSONObject(body) {
+			t.Errorf("validJSONObject(%q) = true", body)
+		}
+	}
+	if body := []byte(" \t\r\n{}\n"); !validJSONObject(body) {
+		t.Errorf("validJSONObject(%q) = false", body)
+	}
+}
+
 func TestProtocolOracleRejectsWrongResults(t *testing.T) {
 	matching := []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)
 	excluded := []byte(`{"tools":[{"description":"SECRET"}]}`)
@@ -732,8 +743,20 @@ func knownFormat(format string) bool {
 }
 
 func validJSONObject(body []byte) bool {
-	trimmed := bytes.TrimSpace(body)
-	return len(trimmed) != 0 && trimmed[0] == '{' && json.Valid(trimmed)
+	if !json.Valid(body) {
+		return false
+	}
+	for _, b := range body {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func allowedCanonicalRole(role string) bool {
