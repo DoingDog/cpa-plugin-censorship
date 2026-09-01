@@ -203,3 +203,44 @@ func TestBeforeAuthBlockIgnoreCaseReturnsYAMLTerm(t *testing.T) {
 		t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
 	}
 }
+
+func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T) {
+	registerConfig(t, "mode: block\nwords: [alpha]\n")
+	if got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"alpha"}]}`)); !got.Terminate {
+		t.Fatal("config A did not block alpha")
+	}
+
+	reconfigureConfig(t, "mode: block\nignore_case: true\nwords: [Beta]\n")
+	if got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"bETA"}]}`)); !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"Beta"`)) {
+		t.Fatalf("config B response = %#v", got)
+	}
+
+	var logs []hostLogRequest
+	setHostCallbackForTest(func(method string, request []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostLog {
+			var req hostLogRequest
+			if err := json.Unmarshal(request, &req); err != nil {
+				return nil, err
+			}
+			logs = append(logs, req)
+		}
+		return okEnvelope(struct{}{})
+	})
+	t.Cleanup(func() { setHostCallbackForTest(nil) })
+	reconfigureConfig(t, "ignore_case: yes\nwords: [gamma]\n")
+	if got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"BETA"}]}`)); !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"Beta"`)) {
+		t.Fatalf("invalid B replaced last-known-good: %#v", got)
+	}
+	if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" || logs[0].Fields["error"] == "" {
+		t.Fatalf("host logs = %#v", logs)
+	}
+}
+
+func reconfigureConfig(t *testing.T, configYAML string) {
+	t.Helper()
+	var env pluginabi.Envelope
+	decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginReconfigure, lifecycleJSON(t, configYAML)), &env)
+	if !env.OK {
+		t.Fatalf("reconfigure: %#v", env.Error)
+	}
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -52,16 +53,9 @@ func pluginRegistration() registration {
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister:
-		var lifecycle lifecycleRequest
-		if err := json.Unmarshal(request, &lifecycle); err != nil {
-			return errorEnvelope("plugin_error", err.Error()), nil
-		}
-		next, err := parseConfigYAML(lifecycle.ConfigYAML)
-		if err != nil {
-			return errorEnvelope("plugin_error", err.Error()), nil
-		}
-		installSnapshot(next)
-		return okEnvelope(pluginRegistration())
+		return handlePluginRegister(request)
+	case pluginabi.MethodPluginReconfigure:
+		return handlePluginReconfigure(request)
 	case pluginabi.MethodRequestInterceptBefore:
 		return interceptBeforeAuth(request)
 	case pluginabi.MethodRequestInterceptAfter:
@@ -69,6 +63,37 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
+}
+
+func handlePluginRegister(raw []byte) ([]byte, error) {
+	candidate, err := parseLifecycleSnapshot(raw)
+	if err != nil {
+		return errorEnvelope("plugin_error", err.Error()), nil
+	}
+	installSnapshot(candidate)
+	return okEnvelope(pluginRegistration())
+}
+
+func handlePluginReconfigure(raw []byte) ([]byte, error) {
+	candidate, err := parseLifecycleSnapshot(raw)
+	if err != nil {
+		_, _ = callHost(pluginabi.MethodHostLog, hostLogRequest{
+			Level:   "error",
+			Message: "censorship plugin reconfigure rejected",
+			Fields:  map[string]any{"error": err.Error()},
+		})
+		return okEnvelope(pluginRegistration())
+	}
+	installSnapshot(candidate)
+	return okEnvelope(pluginRegistration())
+}
+
+func parseLifecycleSnapshot(raw []byte) (*configSnapshot, error) {
+	var lifecycle lifecycleRequest
+	if err := json.Unmarshal(raw, &lifecycle); err != nil {
+		return nil, err
+	}
+	return parseConfigYAML(lifecycle.ConfigYAML)
 }
 
 func interceptBeforeAuth(raw []byte) ([]byte, error) {
@@ -156,6 +181,12 @@ func errorEnvelope(code, message string) []byte {
 	return raw
 }
 
+type hostLogRequest struct {
+	Level   string         `json:"level,omitempty"`
+	Message string         `json:"message,omitempty"`
+	Fields  map[string]any `json:"fields,omitempty"`
+}
+
 type hostCallback func(method string, request []byte) ([]byte, error)
 
 var (
@@ -163,8 +194,40 @@ var (
 	hostCallbackFn hostCallback
 )
 
-func setHostCallback(callback hostCallback) {
+func callHost(method string, payload any) (json.RawMessage, error) {
+	rawPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	hostAPIMu.RLock()
+	callback := hostCallbackFn
+	hostAPIMu.RUnlock()
+	if callback == nil {
+		return nil, fmt.Errorf("host API not initialized")
+	}
+	response, err := callback(method, rawPayload)
+	if err != nil {
+		return nil, err
+	}
+	var envelope pluginabi.Envelope
+	if err := json.Unmarshal(response, &envelope); err != nil {
+		return nil, fmt.Errorf("decode host envelope: %w", err)
+	}
+	if !envelope.OK {
+		if envelope.Error == nil {
+			return nil, fmt.Errorf("host callback %s failed", method)
+		}
+		return nil, fmt.Errorf("host callback %s failed: %s", method, envelope.Error.Message)
+	}
+	return append(json.RawMessage(nil), envelope.Result...), nil
+}
+
+func setHostCallbackForTest(callback hostCallback) {
 	hostAPIMu.Lock()
 	hostCallbackFn = callback
 	hostAPIMu.Unlock()
+}
+
+func setHostCallback(callback hostCallback) {
+	setHostCallbackForTest(callback)
 }

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"fmt"
 	"reflect"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -104,5 +107,53 @@ func TestRegisterRejectsInvalidConfigAndAcceptsHostOwnedKeys(t *testing.T) {
 	decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, valid)), &env)
 	if !env.OK {
 		t.Fatalf("host-owned keys rejected: %#v", env)
+	}
+}
+
+func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
+	const configA = "mode: strip\nwords: [alpha]\nscope:\n  formats: [openai]\n  roles: [user]\n"
+	const configB = "mode: obfs\nignore_case: true\nwords: [Beta]\nscope:\n  formats: [openai]\n  roles: [user]\nobfs:\n  char: '⁠'\n"
+	body := []byte(`{"messages":[{"role":"user","content":"alpha BETA"}]}`)
+	wantA := []byte(`{"messages":[{"role":"user","content":" BETA"}]}`)
+	wantB := []byte(`{"messages":[{"role":"user","content":"alpha B⁠ETA"}]}`)
+	registerConfig(t, configA)
+
+	done := make(chan struct{})
+	errs := make(chan error, 32)
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				resp, err := callIntercept("openai", body)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if !bytes.Equal(resp.Body, wantA) && !bytes.Equal(resp.Body, wantB) {
+					errs <- fmt.Errorf("mixed snapshot body: %s", resp.Body)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 1000; i++ {
+		if i%2 == 0 {
+			reconfigureConfig(t, configB)
+		} else {
+			reconfigureConfig(t, configA)
+		}
+	}
+	close(done)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
