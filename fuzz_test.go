@@ -18,13 +18,40 @@ type fuzzBlock struct {
 }
 
 type fuzzRuleResult struct {
-	Texts   []string
-	Blocked *fuzzBlock
+	Texts       []string
+	SpanChanged []bool
+	Changed     bool
+	Blocked     *fuzzBlock
 }
 
 type oracleTextMatch struct {
 	Start int
 	End   int
+}
+
+type oracleProtocolSpan struct {
+	Text string
+	Role string
+}
+
+func TestProtocolOracleRejectsWrongResults(t *testing.T) {
+	matching := []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)
+	excluded := []byte(`{"tools":[{"description":"SECRET"}]}`)
+	cases := []struct {
+		name string
+		body []byte
+		mode mode
+		got  transformResult
+	}{
+		{name: "missing transform", body: matching, mode: modeStrip},
+		{name: "spurious block", body: excluded, mode: modeBlock, got: transformResult{Blocked: &blockMatch{Term: "SECRET", Role: "user"}}},
+		{name: "unchanged transform", body: matching, mode: modeStrip, got: transformResult{Body: matching}},
+	}
+	for _, tc := range cases {
+		if err := checkProtocolResult("openai", tc.body, tc.mode, false, tc.got); err == nil {
+			t.Errorf("%s was accepted", tc.name)
+		}
+	}
 }
 
 func FuzzRuleEngineAgainstOracle(f *testing.F) {
@@ -34,7 +61,7 @@ func FuzzRuleEngineAgainstOracle(f *testing.F) {
 	}{
 		{"ababa", "aba|ba", 0, 0},
 		{"ALPHA Alpha", "Alpha", 1, 1},
-		{"ςΣσ", "Σ", 2, 1},
+		{"ςΣσ", "Σ", 1, 1},
 		{"STRASSE/straße", "straße", 1, 1},
 		{"世界世界", "世界", 2, 0},
 	} {
@@ -66,7 +93,10 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "openai-response", body: []byte(`{"instructions":"SECRET","input":[{"type":"function_call_output","output":"SECRET"}]}`)},
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"},{"type":"thinking","thinking":"SECRET"}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET"},{"text":"SECRET","inlineData":{"data":"SECRET"}}]}]}`)},
+		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thought":false,"thought":true}]}]}`)},
 		{format: "interactions", body: interactionStepsSeed(64)},
+		{format: "interactions", body: []byte(`{"input":{"type":"user_input","content":[{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}]}}`)},
+		{format: "interactions", body: []byte(`{"input":[{"type":"function_result","content":"SECRET"}]}`)},
 		{format: "openai", body: []byte(`not-json`)},
 	}
 	for _, seed := range seeds {
@@ -76,39 +106,17 @@ func FuzzProtocolTransform(f *testing.F) {
 		}
 	}
 	f.Fuzz(func(t *testing.T, format string, body []byte, modeByte uint8, fold bool) {
-		if len(format) > 32 || len(body) > 64<<10 {
-			t.Skip()
-		}
-		if json.Valid(body) && !boundedJSONNesting(body, maxFuzzJSONDepth) {
+		if len(format) > 32 || len(body) > 64<<10 || !boundedJSONNesting(body, maxFuzzJSONDepth) {
 			t.Skip()
 		}
 		modes := []string{"block", "strip", "obfs"}
 		cfg := mustConfig(t, fmt.Sprintf("mode: %s\nignore_case: %t\nwords: [SECRET]\n", modes[modeByte%3], fold))
-		beforeExcluded := oracleExcludedTokens(format, body)
 		got, err := transformRequest(body, format, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Invalid {
-			if validJSONObject(body) && knownFormat(format) {
-				t.Fatalf("valid JSON object marked invalid: %s", body)
-			}
-			return
-		}
-		if got.Blocked != nil {
-			if got.Blocked.Term != "SECRET" || !allowedCanonicalRole(got.Blocked.Role) {
-				t.Fatalf("blocked = %#v", got.Blocked)
-			}
-			return
-		}
-		if len(got.Body) == 0 {
-			return
-		}
-		if !json.Valid(got.Body) {
-			t.Fatalf("changed output is invalid JSON: %s", got.Body)
-		}
-		if after := oracleExcludedTokens(format, got.Body); !reflect.DeepEqual(after, beforeExcluded) {
-			t.Fatalf("excluded raw tokens changed: before=%q after=%q", beforeExcluded, after)
+		if err := checkProtocolResult(format, body, cfg.Mode, fold, got); err != nil {
+			t.Fatal(err)
 		}
 	})
 }
@@ -119,6 +127,400 @@ func interactionStepsSeed(depth int) []byte {
 		node = `{"steps":[` + node + `]}`
 	}
 	return []byte(`{"input":[` + node + `]}`)
+}
+
+func checkProtocolResult(format string, body []byte, selected mode, fold bool, got transformResult) error {
+	if !knownFormat(format) {
+		if got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
+			return fmt.Errorf("unknown format returned %#v", got)
+		}
+		return nil
+	}
+	if !validJSONObject(body) {
+		if !got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
+			return fmt.Errorf("invalid request returned %#v", got)
+		}
+		return nil
+	}
+	if got.Invalid {
+		return fmt.Errorf("valid JSON object marked invalid: %s", body)
+	}
+
+	before, ok := oracleProtocolSpans(format, body)
+	if !ok {
+		return fmt.Errorf("oracle could not parse valid %s object", format)
+	}
+	matchingRoles := make(map[string]struct{})
+	for _, span := range before {
+		if oracleContains(span.Text, "SECRET", fold) {
+			matchingRoles[span.Role] = struct{}{}
+		}
+	}
+	matched := len(matchingRoles) != 0
+
+	switch selected {
+	case modeBlock:
+		if len(got.Body) != 0 {
+			return fmt.Errorf("block returned replacement body")
+		}
+		if !matched {
+			if got.Blocked != nil {
+				return fmt.Errorf("request without eligible match was blocked: %#v", got.Blocked)
+			}
+			return nil
+		}
+		if got.Blocked == nil || got.Blocked.Term != "SECRET" {
+			return fmt.Errorf("eligible match was not blocked with YAML term: %#v", got.Blocked)
+		}
+		if _, ok := matchingRoles[got.Blocked.Role]; !ok {
+			return fmt.Errorf("blocked role %q has no eligible match", got.Blocked.Role)
+		}
+		return nil
+	case modeStrip, modeObfs:
+		if got.Blocked != nil {
+			return fmt.Errorf("transform mode blocked request: %#v", got.Blocked)
+		}
+		if !matched {
+			if len(got.Body) != 0 {
+				return fmt.Errorf("request without eligible match was rebuilt")
+			}
+			return nil
+		}
+		if len(got.Body) == 0 {
+			return fmt.Errorf("eligible match returned no replacement body")
+		}
+	default:
+		return fmt.Errorf("unknown mode %q", selected)
+	}
+
+	if !json.Valid(got.Body) {
+		return fmt.Errorf("changed output is invalid JSON: %s", got.Body)
+	}
+	after, ok := oracleProtocolSpans(format, got.Body)
+	if !ok || len(after) != len(before) {
+		return fmt.Errorf("eligible spans changed shape: before=%#v after=%#v", before, after)
+	}
+	for i := range before {
+		want := oracleStrip(before[i].Text, "SECRET", fold)
+		if selected == modeObfs {
+			want = oracleObfuscate(before[i].Text, "SECRET", fold, "​")
+		}
+		if after[i].Role != before[i].Role || after[i].Text != want {
+			return fmt.Errorf("eligible span %d = %#v, want role %q text %q", i, after[i], before[i].Role, want)
+		}
+	}
+	beforeExcluded := oracleExcludedTokens(format, body)
+	if afterExcluded := oracleExcludedTokens(format, got.Body); !reflect.DeepEqual(afterExcluded, beforeExcluded) {
+		return fmt.Errorf("excluded raw tokens changed: before=%q after=%q", beforeExcluded, afterExcluded)
+	}
+	return nil
+}
+
+func oracleProtocolSpans(format string, body []byte) ([]oracleProtocolSpan, bool) {
+	if !validJSONObject(body) {
+		return nil, false
+	}
+	var spans []oracleProtocolSpan
+	switch format {
+	case "openai":
+		oracleOpenAISpans(body, &spans)
+	case "openai-response":
+		oracleOpenAIResponseSpans(body, &spans)
+	case "claude":
+		oracleClaudeSpans(body, &spans)
+	case "gemini":
+		oracleGeminiSpans(body, &spans)
+	case "interactions":
+		oracleInteractionsSpans(body, &spans)
+	default:
+		return nil, false
+	}
+	return spans, true
+}
+
+func oracleRoleEnabled(role string) bool {
+	return role == "system" || role == "developer" || role == "user"
+}
+
+func oracleAppendString(spans *[]oracleProtocolSpan, raw json.RawMessage, role string) {
+	if !oracleRoleEnabled(role) {
+		return
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		*spans = append(*spans, oracleProtocolSpan{Text: text, Role: role})
+	}
+}
+
+func oracleFirstField(object []byte, field string) (json.RawMessage, bool) {
+	var result json.RawMessage
+	found := false
+	ok := oracleForEachObject(object, func(key string, value json.RawMessage) {
+		if !found && key == field {
+			result = append(json.RawMessage(nil), value...)
+			found = true
+		}
+	})
+	return result, ok && found
+}
+
+func oracleStringField(object []byte, field string) (string, bool) {
+	raw, ok := oracleFirstField(object, field)
+	if !ok {
+		return "", false
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func oracleOpenAISpans(root []byte, spans *[]oracleProtocolSpan) {
+	messages, ok := oracleFirstField(root, "messages")
+	if !ok {
+		return
+	}
+	oracleForEachArray(messages, func(message json.RawMessage) {
+		role, ok := oracleStringField(message, "role")
+		if !ok || !oracleRoleEnabled(role) {
+			return
+		}
+		content, ok := oracleFirstField(message, "content")
+		if !ok {
+			return
+		}
+		oracleAppendString(spans, content, role)
+		oracleForEachArray(content, func(part json.RawMessage) {
+			if partType, ok := oracleStringField(part, "type"); ok && partType == "text" {
+				if text, ok := oracleFirstField(part, "text"); ok {
+					oracleAppendString(spans, text, role)
+				}
+			}
+		})
+	})
+}
+
+func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
+	if instructions, ok := oracleFirstField(root, "instructions"); ok {
+		oracleAppendString(spans, instructions, "system")
+	}
+	input, ok := oracleFirstField(root, "input")
+	if !ok {
+		return
+	}
+	oracleAppendString(spans, input, "user")
+	oracleForEachArray(input, func(item json.RawMessage) {
+		if itemType, exists := oracleFirstField(item, "type"); exists {
+			var value string
+			if json.Unmarshal(itemType, &value) != nil || value != "" && value != "message" {
+				return
+			}
+		}
+		role, ok := oracleStringField(item, "role")
+		if !ok || !oracleRoleEnabled(role) {
+			return
+		}
+		content, ok := oracleFirstField(item, "content")
+		if !ok {
+			return
+		}
+		oracleAppendString(spans, content, role)
+		oracleForEachArray(content, func(part json.RawMessage) {
+			allowed := true
+			if rawType, exists := oracleFirstField(part, "type"); exists {
+				var partType string
+				allowed = json.Unmarshal(rawType, &partType) == nil && (partType == "" || partType == "input_text")
+			}
+			if allowed {
+				if text, ok := oracleFirstField(part, "text"); ok {
+					oracleAppendString(spans, text, role)
+				}
+			}
+		})
+	})
+}
+
+func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
+	if system, ok := oracleFirstField(root, "system"); ok {
+		oracleAppendString(spans, system, "system")
+		oracleForEachArray(system, func(block json.RawMessage) {
+			if blockType, ok := oracleStringField(block, "type"); ok && blockType == "text" {
+				if text, ok := oracleFirstField(block, "text"); ok {
+					oracleAppendString(spans, text, "system")
+				}
+			}
+		})
+	}
+	messages, ok := oracleFirstField(root, "messages")
+	if !ok {
+		return
+	}
+	oracleForEachArray(messages, func(message json.RawMessage) {
+		role, ok := oracleStringField(message, "role")
+		if !ok || role != "system" && role != "user" {
+			return
+		}
+		content, ok := oracleFirstField(message, "content")
+		if !ok {
+			return
+		}
+		oracleAppendString(spans, content, role)
+		oracleForEachArray(content, func(block json.RawMessage) {
+			if blockType, ok := oracleStringField(block, "type"); ok && blockType == "text" {
+				if text, ok := oracleFirstField(block, "text"); ok {
+					oracleAppendString(spans, text, role)
+				}
+			}
+		})
+	})
+}
+
+func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
+	for _, name := range []string{"systemInstruction", "system_instruction"} {
+		if instruction, ok := oracleFirstField(root, name); ok {
+			oracleGeminiParts(instruction, "system", spans)
+		}
+	}
+	contents, ok := oracleFirstField(root, "contents")
+	if !ok {
+		return
+	}
+	oracleForEachArray(contents, func(content json.RawMessage) {
+		role := "user"
+		if rawRole, exists := oracleFirstField(content, "role"); exists {
+			var value string
+			if json.Unmarshal(rawRole, &value) != nil || value != "user" {
+				return
+			}
+			role = value
+		}
+		oracleGeminiParts(content, role, spans)
+	})
+}
+
+func oracleGeminiParts(container json.RawMessage, role string, spans *[]oracleProtocolSpan) {
+	parts, ok := oracleFirstField(container, "parts")
+	if !ok {
+		return
+	}
+	oracleForEachArray(parts, func(part json.RawMessage) {
+		if oracleGeminiPartExcluded(part) {
+			return
+		}
+		if text, ok := oracleFirstField(part, "text"); ok {
+			oracleAppendString(spans, text, role)
+		}
+	})
+}
+
+func oracleInteractionsSpans(root []byte, spans *[]oracleProtocolSpan) {
+	if system, ok := oracleFirstField(root, "system_instruction"); ok {
+		oracleAppendString(spans, system, "system")
+		if text, ok := oracleFirstField(system, "text"); ok {
+			oracleAppendString(spans, text, "system")
+		}
+		oracleInteractionParts(system, "system", spans)
+	}
+	input, ok := oracleFirstField(root, "input")
+	if !ok {
+		return
+	}
+	oracleAppendString(spans, input, "user")
+	if bytes.HasPrefix(bytes.TrimSpace(input), []byte("{")) {
+		oracleInteractionItem(input, "user", spans, 0)
+		return
+	}
+	oracleForEachArray(input, func(item json.RawMessage) {
+		oracleAppendString(spans, item, "user")
+		if bytes.HasPrefix(bytes.TrimSpace(item), []byte("{")) {
+			oracleInteractionItem(item, "user", spans, 0)
+		}
+	})
+}
+
+func oracleInteractionItem(item json.RawMessage, inheritedRole string, spans *[]oracleProtocolSpan, depth int) {
+	if depth > maxFuzzJSONDepth {
+		return
+	}
+	role := inheritedRole
+	if rawRole, exists := oracleFirstField(item, "role"); exists {
+		var value string
+		if json.Unmarshal(rawRole, &value) != nil {
+			return
+		}
+		switch value {
+		case "user":
+			role = "user"
+		case "model", "assistant":
+			role = "assistant"
+		default:
+			return
+		}
+	}
+	if rawType, exists := oracleFirstField(item, "type"); exists {
+		var value string
+		if json.Unmarshal(rawType, &value) != nil {
+			return
+		}
+		switch value {
+		case "", "user_input":
+		case "model_output":
+			role = "assistant"
+		default:
+			return
+		}
+	}
+	if content, ok := oracleFirstField(item, "content"); ok {
+		oracleAppendString(spans, content, role)
+		if bytes.HasPrefix(bytes.TrimSpace(content), []byte("{")) {
+			oracleInteractionPart(content, role, spans)
+		} else {
+			oracleForEachArray(content, func(part json.RawMessage) {
+				oracleInteractionPart(part, role, spans)
+			})
+		}
+	}
+	oracleInteractionParts(item, role, spans)
+	if steps, ok := oracleFirstField(item, "steps"); ok {
+		oracleForEachArray(steps, func(step json.RawMessage) {
+			if bytes.HasPrefix(bytes.TrimSpace(step), []byte("{")) {
+				oracleInteractionItem(step, role, spans, depth+1)
+			}
+		})
+	}
+}
+
+func oracleInteractionParts(container json.RawMessage, role string, spans *[]oracleProtocolSpan) {
+	parts, ok := oracleFirstField(container, "parts")
+	if !ok {
+		return
+	}
+	oracleForEachArray(parts, func(part json.RawMessage) {
+		oracleInteractionPart(part, role, spans)
+	})
+}
+
+func oracleInteractionPart(part json.RawMessage, role string, spans *[]oracleProtocolSpan) {
+	if !oracleInteractionPartAllowed(part) {
+		return
+	}
+	if text, ok := oracleFirstField(part, "text"); ok {
+		oracleAppendString(spans, text, role)
+	}
+}
+
+func oracleInteractionPartAllowed(part json.RawMessage) bool {
+	if !bytes.HasPrefix(bytes.TrimSpace(part), []byte("{")) {
+		return false
+	}
+	if partType, exists := oracleFirstField(part, "type"); exists {
+		var value string
+		if json.Unmarshal(partType, &value) != nil || value != "" && value != "text" {
+			return false
+		}
+	}
+	return !oracleGeminiPartExcluded(part)
 }
 
 func boundedTerms(packed string, maxTerms, maxScalars int) []string {
@@ -169,10 +571,15 @@ func applyRulesToTextsForTest(texts []string, cfg *configSnapshot) fuzzRuleResul
 	for i, text := range texts {
 		spans[i] = textSpan{Text: text, Role: fuzzRole(i)}
 	}
-	blocked, _ := applyMode(spans, cfg)
-	result := fuzzRuleResult{Texts: make([]string, len(spans))}
+	blocked, changed := applyMode(spans, cfg)
+	result := fuzzRuleResult{
+		Texts:       make([]string, len(spans)),
+		SpanChanged: make([]bool, len(spans)),
+		Changed:     changed,
+	}
 	for i := range spans {
 		result.Texts[i] = spans[i].Text
+		result.SpanChanged[i] = spans[i].Changed
 	}
 	if blocked != nil {
 		result.Blocked = &fuzzBlock{Term: blocked.Term, Role: blocked.Role}
@@ -181,7 +588,10 @@ func applyRulesToTextsForTest(texts []string, cfg *configSnapshot) fuzzRuleResul
 }
 
 func oracleApply(texts []string, cfg *configSnapshot) fuzzRuleResult {
-	result := fuzzRuleResult{Texts: append([]string(nil), texts...)}
+	result := fuzzRuleResult{
+		Texts:       append([]string(nil), texts...),
+		SpanChanged: make([]bool, len(texts)),
+	}
 	switch cfg.Mode {
 	case modeBlock:
 		for _, rule := range cfg.Rules {
@@ -195,13 +605,23 @@ func oracleApply(texts []string, cfg *configSnapshot) fuzzRuleResult {
 	case modeStrip:
 		for _, rule := range cfg.Rules {
 			for i, text := range result.Texts {
-				result.Texts[i] = oracleStrip(text, rule.Term, cfg.IgnoreCase)
+				next := oracleStrip(text, rule.Term, cfg.IgnoreCase)
+				if next != text {
+					result.Texts[i] = next
+					result.SpanChanged[i] = true
+					result.Changed = true
+				}
 			}
 		}
 	case modeObfs:
 		for _, rule := range cfg.Rules {
 			for i, text := range result.Texts {
-				result.Texts[i] = oracleObfuscate(text, rule.Term, cfg.IgnoreCase, cfg.ObfsChar)
+				next := oracleObfuscate(text, rule.Term, cfg.IgnoreCase, cfg.ObfsChar)
+				if next != text {
+					result.Texts[i] = next
+					result.SpanChanged[i] = true
+					result.Changed = true
+				}
 			}
 		}
 	}
@@ -399,9 +819,98 @@ func oracleExcludedTokens(format string, body []byte) [][]byte {
 					})
 				})
 			}
+		case "interactions":
+			switch key {
+			case "system_instruction":
+				oracleInteractionExcludedParts(value, &tokens)
+			case "input":
+				oracleInteractionsExcluded(value, "user", &tokens, 0)
+			}
 		}
 	})
 	return tokens
+}
+
+func oracleInteractionExcludedParts(container json.RawMessage, tokens *[][]byte) {
+	parts, ok := oracleFirstField(container, "parts")
+	if !ok {
+		return
+	}
+	oracleForEachArray(parts, func(part json.RawMessage) {
+		if !oracleInteractionPartAllowed(part) {
+			appendOracleToken(tokens, part)
+		}
+	})
+}
+
+func oracleInteractionsExcluded(raw json.RawMessage, inheritedRole string, tokens *[][]byte, depth int) {
+	if depth > maxFuzzJSONDepth {
+		return
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.HasPrefix(trimmed, []byte("[")) {
+		oracleForEachArray(raw, func(item json.RawMessage) {
+			oracleInteractionsExcluded(item, inheritedRole, tokens, depth)
+		})
+		return
+	}
+	if !bytes.HasPrefix(trimmed, []byte("{")) {
+		return
+	}
+
+	role := inheritedRole
+	if rawRole, exists := oracleFirstField(raw, "role"); exists {
+		var value string
+		if json.Unmarshal(rawRole, &value) != nil {
+			appendOracleToken(tokens, raw)
+			return
+		}
+		switch value {
+		case "user":
+			role = "user"
+		case "model", "assistant":
+			role = "assistant"
+		default:
+			appendOracleToken(tokens, raw)
+			return
+		}
+	}
+	if rawType, exists := oracleFirstField(raw, "type"); exists {
+		var value string
+		if json.Unmarshal(rawType, &value) != nil {
+			appendOracleToken(tokens, raw)
+			return
+		}
+		switch value {
+		case "", "user_input":
+		case "model_output":
+			role = "assistant"
+		default:
+			appendOracleToken(tokens, raw)
+			return
+		}
+	}
+
+	if content, ok := oracleFirstField(raw, "content"); ok {
+		contentTrimmed := bytes.TrimSpace(content)
+		if bytes.HasPrefix(contentTrimmed, []byte("{")) {
+			if !oracleInteractionPartAllowed(content) {
+				appendOracleToken(tokens, content)
+			}
+		} else {
+			oracleForEachArray(content, func(part json.RawMessage) {
+				if !oracleInteractionPartAllowed(part) {
+					appendOracleToken(tokens, part)
+				}
+			})
+		}
+	}
+	oracleInteractionExcludedParts(raw, tokens)
+	if steps, ok := oracleFirstField(raw, "steps"); ok {
+		oracleForEachArray(steps, func(step json.RawMessage) {
+			oracleInteractionsExcluded(step, role, tokens, depth+1)
+		})
+	}
 }
 
 func oracleClaudeExcluded(messages json.RawMessage, tokens *[][]byte) {
@@ -430,7 +939,12 @@ func oracleGeminiExcludedParts(parts json.RawMessage, tokens *[][]byte) {
 
 func oracleGeminiPartExcluded(part json.RawMessage) bool {
 	excluded := false
+	seen := make(map[string]struct{})
 	oracleForEachObject(part, func(key string, value json.RawMessage) {
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
 		switch key {
 		case "functionCall", "functionResponse", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "codeExecutionResult", "thoughtSignature":
 			excluded = true
