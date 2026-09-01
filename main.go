@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -70,12 +71,70 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	}
 }
 
-func interceptBeforeAuth([]byte) ([]byte, error) {
-	return okEnvelope(pluginapi.RequestInterceptResponse{})
+func interceptBeforeAuth(raw []byte) ([]byte, error) {
+	var request pluginapi.RequestInterceptRequest
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return nil, err
+	}
+	cfg := loadedSnapshot()
+	if !knownSourceFormat(request.SourceFormat) {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	result, err := transformRequest(request.Body, request.SourceFormat, cfg)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case result.Invalid:
+		return terminatedRequest(censorshipError{
+			Type:    "invalid_request_error",
+			Code:    "censorship_invalid_request",
+			Message: "request body must be a JSON object",
+		})
+	case result.Blocked != nil:
+		return terminatedRequest(censorshipError{
+			Type:    "invalid_request_error",
+			Code:    "censorship_blocked",
+			Message: "request blocked by censorship rule",
+			Term:    result.Blocked.Term,
+			Role:    result.Blocked.Role,
+		})
+	case len(result.Body) != 0:
+		return okEnvelope(pluginapi.RequestInterceptResponse{Body: result.Body})
+	default:
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
 }
 
 func interceptAfterAuth([]byte) ([]byte, error) {
 	return okEnvelope(pluginapi.RequestInterceptResponse{})
+}
+
+type censorshipErrorBody struct {
+	Error censorshipError `json:"error"`
+}
+
+type censorshipError struct {
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Term    string `json:"term,omitempty"`
+	Role    string `json:"role,omitempty"`
+}
+
+func terminatedRequest(detail censorshipError) ([]byte, error) {
+	body, err := json.Marshal(censorshipErrorBody{Error: detail})
+	if err != nil {
+		return nil, err
+	}
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	return okEnvelope(pluginapi.RequestInterceptResponse{
+		Terminate:       true,
+		StatusCode:      http.StatusBadRequest,
+		ResponseHeaders: headers,
+		ResponseBody:    body,
+	})
 }
 
 func okEnvelope(value any) ([]byte, error) {
