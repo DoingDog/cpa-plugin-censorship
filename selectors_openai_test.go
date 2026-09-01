@@ -68,3 +68,70 @@ func TestOpenAISelectorCanonicalRoles(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) { assertBlockedRole(t, "openai", tc.body, tc.role) })
 	}
 }
+
+func TestOpenAIResponsesSelectorRowsAndExclusions(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, developer, user, assistant, tool]\n")
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "top-level strings",
+			body: `{"instructions":"SECRET system","input":"SECRET user","metadata":{"note":"SECRET"}}`,
+			want: `{"instructions":" system","input":" user","metadata":{"note":"SECRET"}}`,
+		},
+		{
+			name: "message items",
+			body: `{"input":[
+				{"type":"message","role":"system","content":"SECRET s"},
+				{"type":"","role":"user","content":"SECRET empty type"},
+				{"role":"developer","content":[{"type":"input_text","text":"SECRET d"},{"type":"","text":"SECRET e"},{"text":"SECRET m"}]},
+				{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET u"},{"type":"output_text","text":"SECRET wrong output"},{"type":"input_image","image_url":"SECRET"}]},
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET a"}]},
+				{"type":"message","content":"SECRET no role"},
+				{"type":"message","role":"tool","content":"SECRET bad role"},
+				{"type":"message","role":"user","content":123},
+				{"type":"function_call_output","role":"user","output":"SECRET result","content":"SECRET fake"},
+				{"type":"custom_tool_call_output","role":"user","output":"SECRET custom"},
+				{"type":"unknown","role":"user","content":"SECRET unknown"}
+			],"tools":[{"name":"SECRET","description":"SECRET"}]}`,
+			want: `{"input":[
+				{"type":"message","role":"system","content":" s"},
+				{"type":"","role":"user","content":" empty type"},
+				{"role":"developer","content":[{"type":"input_text","text":" d"},{"type":"","text":" e"},{"text":" m"}]},
+				{"type":"message","role":"user","content":[{"type":"input_text","text":" u"},{"type":"output_text","text":"SECRET wrong output"},{"type":"input_image","image_url":"SECRET"}]},
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":" a"}]},
+				{"type":"message","content":"SECRET no role"},
+				{"type":"message","role":"tool","content":"SECRET bad role"},
+				{"type":"message","role":"user","content":123},
+				{"type":"function_call_output","role":"user","output":"SECRET result","content":"SECRET fake"},
+				{"type":"custom_tool_call_output","role":"user","output":"SECRET custom"},
+				{"type":"unknown","role":"user","content":"SECRET unknown"}
+			],"tools":[{"name":"SECRET","description":"SECRET"}]}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := interceptRPC(t, "openai-response", []byte(tc.body))
+			if resp.Terminate || string(resp.Body) != tc.want {
+				t.Fatalf("body = %s, want %s, terminate = %t", resp.Body, tc.want, resp.Terminate)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesSelectorCanonicalRoles(t *testing.T) {
+	cases := []struct {
+		name, body, role string
+	}{
+		{name: "instructions", body: `{"instructions":"SECRET"}`, role: "system"},
+		{name: "input string", body: `{"input":"SECRET"}`, role: "user"},
+		{name: "message string", body: `{"input":[{"type":"message","role":"developer","content":"SECRET"}]}`, role: "developer"},
+		{name: "input text", body: `{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET"}]}]}`, role: "user"},
+		{name: "output text", body: `{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET"}]}]}`, role: "assistant"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) { assertBlockedRole(t, "openai-response", tc.body, tc.role) })
+	}
+}

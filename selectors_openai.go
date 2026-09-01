@@ -35,4 +35,51 @@ func collectOpenAI(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	})
 }
 
-func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan) {}
+func openAIResponsesMessageType(item gjson.Result) bool {
+	itemType := item.Get("type")
+	return !itemType.Exists() || itemType.Type == gjson.String && (itemType.Str == "" || itemType.Str == "message")
+}
+
+func openAIResponsesRole(item gjson.Result) (string, bool) {
+	role := item.Get("role")
+	if role.Type != gjson.String {
+		return "", false
+	}
+	switch role.Str {
+	case "system", "developer", "user", "assistant":
+		return role.Str, true
+	default:
+		return "", false
+	}
+}
+
+func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan) {
+	appendStringSpan(spans, root.Get("instructions"), "system", roles)
+	input := root.Get("input")
+	appendStringSpan(spans, input, "user", roles)
+	if !input.IsArray() {
+		return
+	}
+	input.ForEach(func(_, item gjson.Result) bool {
+		if !item.IsObject() || !openAIResponsesMessageType(item) {
+			return true
+		}
+		role, ok := openAIResponsesRole(item)
+		if !ok {
+			return true
+		}
+		content := item.Get("content")
+		appendStringSpan(spans, content, role, roles)
+		if content.IsArray() {
+			content.ForEach(func(_, part gjson.Result) bool {
+				partType := part.Get("type")
+				allowed := !partType.Exists() || partType.Type == gjson.String && (partType.Str == "" || partType.Str == "input_text" || role == "assistant" && partType.Str == "output_text")
+				if allowed {
+					appendStringSpan(spans, part.Get("text"), role, roles)
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
