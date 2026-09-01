@@ -72,6 +72,9 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		if err := packageLibrary(binaryPath, zipPath); err != nil {
 			return err
 		}
+		if err := writeChecksum(zipPath+".sha256", zipPath); err != nil {
+			return err
+		}
 		zipPaths = append(zipPaths, zipPath)
 	}
 	if len(zipPaths) == 0 {

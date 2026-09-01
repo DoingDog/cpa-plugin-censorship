@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -164,8 +165,20 @@ func TestPackagerCLIVersionSourcesProduceSameBasename(t *testing.T) {
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("packager: %v\n%s", err, output)
 			}
-			if _, err := os.Stat(filepath.Join(out, "censorship_1.2.3_linux_amd64.zip")); err != nil {
+			archive := filepath.Join(out, "censorship_1.2.3_linux_amd64.zip")
+			if _, err := os.Stat(archive); err != nil {
 				t.Fatal(err)
+			}
+			checksum, err := os.ReadFile(archive + ".sha256")
+			if err != nil {
+				t.Fatal(err)
+			}
+			aggregate, err := os.ReadFile(filepath.Join(out, "checksums.txt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(checksum, aggregate) {
+				t.Fatalf("checksum = %q, aggregate = %q", checksum, aggregate)
 			}
 		})
 	}
