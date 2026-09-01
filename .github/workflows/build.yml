@@ -68,14 +68,17 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            MAKE_VERSION="${GITHUB_REF_NAME}"
           else
             VERSION="0.0.0-dev"
+            MAKE_VERSION="0.0.0-dev"
           fi
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
       - name: Build and package
         shell: ${{ matrix.GOOS == 'windows' && 'msys2 {0}' || 'bash' }}
-        run: make package VERSION="${VERSION}" GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }}
+        run: make package VERSION="${MAKE_VERSION}" GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.GOOS }}-${{ matrix.GOARCH }}
@@ -97,10 +100,13 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            MAKE_VERSION="${GITHUB_REF_NAME}"
           else
             VERSION="0.0.0-dev"
+            MAKE_VERSION="0.0.0-dev"
           fi
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
       - uses: go-cross/cgo-actions@v1
         env:
@@ -140,10 +146,13 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            MAKE_VERSION="${GITHUB_REF_NAME}"
           else
             VERSION="0.0.0-dev"
+            MAKE_VERSION="0.0.0-dev"
           fi
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
       - uses: go-cross/cgo-actions@v1
         env:

@@ -306,7 +306,7 @@ func TestBuildWorkflowContract(t *testing.T) {
 	}
 	if !hasReleaseMetadata(build) ||
 		!jobRunContains(build, "make package") ||
-		!jobRunContains(build, `VERSION="${VERSION}"`) ||
+		!jobRunContains(build, `VERSION="${MAKE_VERSION}"`) ||
 		!jobRunContains(build, "GOOS=${{ matrix.GOOS }}") ||
 		!jobRunContains(build, "GOARCH=${{ matrix.GOARCH }}") ||
 		jobActionWith(build, "msys2/setup-msys2@v2", "path-type") != "inherit" ||
@@ -410,8 +410,11 @@ func hasReleaseMetadata(job workflowJob) bool {
 			continue
 		}
 		return strings.Contains(step.Run, `VERSION="${GITHUB_REF_NAME#v}"`) &&
+			strings.Contains(step.Run, `MAKE_VERSION="${GITHUB_REF_NAME}"`) &&
 			strings.Contains(step.Run, `VERSION="0.0.0-dev"`) &&
+			strings.Contains(step.Run, `MAKE_VERSION="0.0.0-dev"`) &&
 			strings.Contains(step.Run, `echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"`) &&
+			strings.Contains(step.Run, `echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"`) &&
 			strings.Contains(step.Run, `echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"`)
 	}
 	return false
