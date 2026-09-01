@@ -51,6 +51,15 @@ func pluginRegistration() registration {
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister:
+		var lifecycle lifecycleRequest
+		if err := json.Unmarshal(request, &lifecycle); err != nil {
+			return errorEnvelope("plugin_error", err.Error()), nil
+		}
+		next, err := parseConfigYAML(lifecycle.ConfigYAML)
+		if err != nil {
+			return errorEnvelope("plugin_error", err.Error()), nil
+		}
+		installSnapshot(next)
 		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodRequestInterceptBefore:
 		return interceptBeforeAuth(request)
