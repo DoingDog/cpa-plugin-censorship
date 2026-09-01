@@ -69,30 +69,87 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 			}
 		}
 		return nil, changed
+	case modeObfs:
+		changed := false
+		for _, rule := range cfg.Rules {
+			for i := range spans {
+				text, matched := obfuscateRule(spans[i].Text, rule, cfg.IgnoreCase, cfg.ObfsChar)
+				if matched {
+					spans[i].Text = text
+					spans[i].Changed = true
+					changed = true
+				}
+			}
+		}
+		return nil, changed
 	}
 	return nil, false
 }
 
 func rebuildBody(body []byte, spans []textSpan) ([]byte, error) {
-	out := make([]byte, 0, len(body))
-	position := 0
-	changed := false
-	for _, span := range spans {
+	finalLen := len(body)
+	var replacements [][]byte
+	previousEnd := 0
+	maxInt := int(^uint(0) >> 1)
+	for i, span := range spans {
 		if !span.Changed {
 			continue
+		}
+		if span.RawStart < previousEnd || span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > len(body) {
+			return nil, errInvalidSpan
 		}
 		replacement, err := json.Marshal(span.Text)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, body[position:span.RawStart]...)
-		out = append(out, replacement...)
-		position = span.RawEnd
-		changed = true
+		if replacements == nil {
+			replacements = make([][]byte, len(spans))
+		}
+		replacements[i] = replacement
+		rawLen := span.RawEnd - span.RawStart
+		if rawLen > finalLen {
+			return nil, errInvalidSpan
+		}
+		finalLen -= rawLen
+		if len(replacement) > maxInt-finalLen {
+			return nil, errInvalidSpan
+		}
+		finalLen += len(replacement)
+		previousEnd = span.RawEnd
 	}
-	if !changed {
+	if replacements == nil {
 		return nil, nil
 	}
-	out = append(out, body[position:]...)
+
+	out := make([]byte, finalLen)
+	source, destination := len(body), finalLen
+	for i := len(spans) - 1; i >= 0; i-- {
+		if !spans[i].Changed {
+			continue
+		}
+		span := spans[i]
+		tailLen := source - span.RawEnd
+		if tailLen < 0 || tailLen > destination {
+			return nil, errInvalidSpan
+		}
+		destination -= tailLen
+		copy(out[destination:destination+tailLen], body[span.RawEnd:source])
+		replacement := replacements[i]
+		if len(replacement) > destination {
+			return nil, errInvalidSpan
+		}
+		destination -= len(replacement)
+		copy(out[destination:destination+len(replacement)], replacement)
+		source = span.RawStart
+	}
+	if source > destination {
+		return nil, errInvalidSpan
+	}
+	destination -= source
+	copy(out[destination:destination+source], body[:source])
+	source = 0
+	if source != 0 || destination != 0 {
+		return nil, errInvalidSpan
+	}
 	return out, nil
 }

@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -75,5 +79,86 @@ func TestStripUsesLeftmostNonOverlappingOccurrences(t *testing.T) {
 	got, err := transformRequest(body, "openai", cfg)
 	if err != nil || string(got.Body) != `{"messages":[{"role":"user","content":"a"}]}` {
 		t.Fatalf("body = %s, err = %v", got.Body, err)
+	}
+}
+
+func TestObfsPreservesMatchedCaseAndInsertsOncePerOccurrence(t *testing.T) {
+	cfg := mustConfig(t, "mode: obfs\nignore_case: true\nwords: [Alpha, 世界]\nobfs:\n  char: '⁠'\n")
+	body := []byte(`{"messages":[{"role":"user","content":"ALPHA Alpha 世界世界"}]}`)
+	got, err := transformRequest(body, "openai", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"messages":[{"role":"user","content":"A⁠LPHA A⁠lpha 世⁠界世⁠界"}]}`
+	if string(got.Body) != want {
+		t.Fatalf("body = %s, want %s", got.Body, want)
+	}
+}
+
+func TestRebuildMatchesDecodedEscapesAndUsesEncodingJSONEscaping(t *testing.T) {
+	cfg := mustConfig(t, "mode: obfs\nwords: ['<X>']\n")
+	u := string([]byte{0x5c, 'u'})
+	encoded := u + "003cX" + u + "003e" + u + "0026" + u + "2028" + u + "2029"
+	body := []byte(`{"messages":[{"role":"user","content":"` + encoded + `"}],"raw":"` + encoded + ` excluded"}`)
+	got, err := transformRequest(body, "openai", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantToken := u + "003c" + "​" + "X" + u + "003e" + u + "0026" + u + "2028" + u + "2029"
+	want := []byte(`{"messages":[{"role":"user","content":"` + wantToken + `"}],"raw":"` + encoded + ` excluded"}`)
+	if !bytes.Equal(got.Body, want) {
+		t.Fatalf("body = %q, want %q", got.Body, want)
+	}
+}
+
+func TestTransformIsByteDeterministic(t *testing.T) {
+	cfg := mustConfig(t, "mode: obfs\nignore_case: true\nwords: [Alpha]\n")
+	body := []byte(" { \"messages\" : [ { \"role\" : \"user\", \"content\" : \"ALPHA Alpha\" } ], \"n\":1e+03 } ")
+	want := []byte(" { \"messages\" : [ { \"role\" : \"user\", \"content\" : \"A" + "​" + "LPHA A" + "​" + "lpha\" } ], \"n\":1e+03 } ")
+	var first []byte
+	var firstHash [32]byte
+	for i := 0; i < 100; i++ {
+		got, err := transformRequest(body, "openai", cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hash := sha256.Sum256(got.Body)
+		if i == 0 {
+			first = append([]byte(nil), got.Body...)
+			firstHash = hash
+			if !bytes.Equal(first, want) {
+				t.Fatalf("span-external bytes changed: got %q, want %q", first, want)
+			}
+			continue
+		}
+		if !bytes.Equal(got.Body, first) || hash != firstHash {
+			t.Fatalf("iteration %d was nondeterministic", i)
+		}
+	}
+
+	const workers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				got, err := transformRequest(body, "openai", cfg)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if !bytes.Equal(got.Body, first) || sha256.Sum256(got.Body) != firstHash {
+					errs <- fmt.Errorf("concurrent transform was nondeterministic")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
