@@ -59,6 +59,12 @@ func BenchmarkTransformScenarios(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			cfg := mustBenchmarkConfig(b, tc.yaml)
 			body := benchmarkScenarioBody(tc.text, tc.lastText, tc.nodes, tc.excludedPosition)
+			if tc.excludedPosition != "" {
+				got, err := transformRequest(body, "openai", cfg)
+				if err != nil || got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
+					b.Fatalf("excluded payload preflight = %#v, %v", got, err)
+				}
+			}
 			b.ReportAllocs()
 			b.SetBytes(int64(len(body)))
 			b.ResetTimer()
