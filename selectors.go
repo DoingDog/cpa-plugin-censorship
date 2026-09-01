@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"sort"
 
 	"github.com/tidwall/gjson"
 )
@@ -42,10 +43,31 @@ func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSp
 	case "interactions":
 		collectInteractions(root, roles, &spans)
 	}
+	sort.Slice(spans, func(i, j int) bool {
+		return spans[i].RawStart < spans[j].RawStart
+	})
+	for i, span := range spans {
+		if span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > len(body) {
+			return nil, errInvalidSpan
+		}
+		if i > 0 && spans[i-1].RawEnd > span.RawStart {
+			return nil, errInvalidSpan
+		}
+	}
 	return spans, nil
 }
 
-func appendStringSpan(*[]textSpan, gjson.Result, string, scopeSet) {}
+func appendStringSpan(spans *[]textSpan, value gjson.Result, role string, roles scopeSet) {
+	if value.Type != gjson.String || !roles.has(role) || len(value.Raw) == 0 || value.Index < 0 || value.Index > int(^uint(0)>>1)-len(value.Raw) {
+		return
+	}
+	*spans = append(*spans, textSpan{
+		RawStart: value.Index,
+		RawEnd:   value.Index + len(value.Raw),
+		Text:     value.Str,
+		Role:     role,
+	})
+}
 
 func geminiTextPartAllowed(part gjson.Result) bool {
 	for _, key := range []string{

@@ -43,7 +43,16 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	return transformResult{Body: out}, err
 }
 
-func applyMode([]textSpan, *configSnapshot) (*blockMatch, bool) {
+func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
+	if cfg.Mode == modeBlock {
+		for _, rule := range cfg.Rules {
+			for i := range spans {
+				if containsRule(spans[i].Text, rule, cfg.IgnoreCase) {
+					return &blockMatch{Term: rule.Term, Role: spans[i].Role}, false
+				}
+			}
+		}
+	}
 	return nil, false
 }
 
