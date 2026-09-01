@@ -77,8 +77,9 @@ func decodeResult[T any](t *testing.T, env pluginabi.Envelope) T {
 
 func lifecycleJSON(t *testing.T, configYAML string) []byte {
 	t.Helper()
+	config := []byte(configYAML)
 	raw, err := json.Marshal(lifecycleRequest{
-		ConfigYAML:    []byte(configYAML),
+		ConfigYAML:    &config,
 		SchemaVersion: pluginabi.SchemaVersion,
 	})
 	if err != nil {
@@ -233,6 +234,46 @@ func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T
 	}
 	if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" || logs[0].Fields["error"] == "" {
 		t.Fatalf("host logs = %#v", logs)
+	}
+}
+
+func TestReconfigureRejectsMissingConfigYAMLAndKeepsLastKnownGood(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "null request", raw: `null`},
+		{name: "empty object", raw: `{}`},
+		{name: "missing config_yaml", raw: `{"schema_version":4}`},
+		{name: "null config_yaml", raw: `{"config_yaml":null,"schema_version":4}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "mode: block\nwords: [alpha-only]\n")
+			var logs []hostLogRequest
+			setHostCallbackForTest(func(method string, request []byte) ([]byte, error) {
+				if method == pluginabi.MethodHostLog {
+					var req hostLogRequest
+					if err := json.Unmarshal(request, &req); err != nil {
+						return nil, err
+					}
+					logs = append(logs, req)
+				}
+				return okEnvelope(struct{}{})
+			})
+			t.Cleanup(func() { setHostCallbackForTest(nil) })
+
+			var env pluginabi.Envelope
+			decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginReconfigure, []byte(tc.raw)), &env)
+			_ = decodeResult[registration](t, env)
+			if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" || logs[0].Fields["error"] == "" {
+				t.Fatalf("host logs = %#v", logs)
+			}
+			got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"alpha-only"}]}`))
+			if !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"alpha-only"`)) {
+				t.Fatalf("malformed reconfigure replaced last-known-good: %#v", got)
+			}
+		})
 	}
 }
 

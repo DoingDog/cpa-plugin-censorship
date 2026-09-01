@@ -15,8 +15,8 @@ func main() {}
 var pluginVersion = "0.0.0-dev"
 
 type lifecycleRequest struct {
-	ConfigYAML    []byte `json:"config_yaml"`
-	SchemaVersion uint32 `json:"schema_version"`
+	ConfigYAML    *[]byte `json:"config_yaml"`
+	SchemaVersion uint32  `json:"schema_version"`
 }
 
 type registration struct {
@@ -89,11 +89,14 @@ func handlePluginReconfigure(raw []byte) ([]byte, error) {
 }
 
 func parseLifecycleSnapshot(raw []byte) (*configSnapshot, error) {
-	var lifecycle lifecycleRequest
+	var lifecycle *lifecycleRequest
 	if err := json.Unmarshal(raw, &lifecycle); err != nil {
 		return nil, err
 	}
-	return parseConfigYAML(lifecycle.ConfigYAML)
+	if lifecycle == nil || lifecycle.ConfigYAML == nil {
+		return nil, fmt.Errorf("config_yaml must be present and non-null")
+	}
+	return parseConfigYAML(*lifecycle.ConfigYAML)
 }
 
 func interceptBeforeAuth(raw []byte) ([]byte, error) {
