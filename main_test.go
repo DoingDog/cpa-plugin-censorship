@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -35,7 +36,7 @@ func TestRegistrationDeclaresOnlyRequestInterceptor(t *testing.T) {
 	if got.SchemaVersion != pluginabi.SchemaVersion || got.Metadata.Name != "censorship" || got.Metadata.Version != pluginVersion {
 		t.Fatalf("registration = %#v", got)
 	}
-	if got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" || got.Metadata.ConfigFields == nil || len(got.Metadata.ConfigFields) != 0 {
+	if got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" || got.Metadata.ConfigFields == nil {
 		t.Fatalf("metadata = %#v", got.Metadata)
 	}
 	if !got.Capabilities["request_interceptor"] {
@@ -44,6 +45,29 @@ func TestRegistrationDeclaresOnlyRequestInterceptor(t *testing.T) {
 	for _, name := range []string{"request_lifecycle_plugin", "response_interceptor", "response_stream_interceptor", "websocket_response_observer", "management_api", "model_router", "executor"} {
 		if got.Capabilities[name] {
 			t.Fatalf("capability %q unexpectedly enabled", name)
+		}
+	}
+}
+
+func TestRegistrationExposesEditableConfigFields(t *testing.T) {
+	fields := pluginRegistration().Metadata.ConfigFields
+	want := []struct {
+		name       string
+		typeName   pluginapi.ConfigFieldType
+		enumValues []string
+	}{
+		{name: "mode", typeName: pluginapi.ConfigFieldTypeEnum, enumValues: []string{"block", "strip", "obfs"}},
+		{name: "ignore_case", typeName: pluginapi.ConfigFieldTypeBoolean},
+		{name: "words", typeName: pluginapi.ConfigFieldTypeArray},
+		{name: "scope", typeName: pluginapi.ConfigFieldTypeObject},
+		{name: "obfs", typeName: pluginapi.ConfigFieldTypeObject},
+	}
+	if len(fields) != len(want) {
+		t.Fatalf("config field count = %d, want %d: %#v", len(fields), len(want), fields)
+	}
+	for i, field := range fields {
+		if field.Name != want[i].name || field.Type != want[i].typeName || !reflect.DeepEqual(field.EnumValues, want[i].enumValues) || field.Description == "" {
+			t.Errorf("config field %d = %#v, want name=%q type=%q enum=%v and a description", i, field, want[i].name, want[i].typeName, want[i].enumValues)
 		}
 	}
 }

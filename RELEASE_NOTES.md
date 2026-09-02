@@ -1,8 +1,12 @@
-# Censorship initial release
+# Censorship v0.1.1
+
+## Visual configuration
+
+This release exposes `mode`, `ignore_case`, `words`, `scope`, and `obfs` through standard CPA `ConfigFields` metadata. CPA Manager Plus renders an enum selector, a boolean switch, a JSON array editor, and JSON object editors, then saves the values into the existing CPA YAML structure.
 
 Censorship is a pure CLIProxyAPI request-interceptor plugin. It is request-only; never inspects or changes model output, response bodies, SSE chunks, or server WebSocket events. It has no custom panel, menu, or Management API.
 
-Configuration lives only in CPA YAML: words is the only term source; the plugin has no built-in terms, fallback terms, or online word-list download.
+Configuration remains stored in CPA YAML: words is the only term source; the plugin has no built-in terms, fallback terms, or online word-list download.
 
 ## Configuration
 
@@ -125,4 +129,4 @@ censorship_<version>_<goos>_<goarch>.zip.sha256
 
 Supported tuples are `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`, and `freebsd/amd64`. One lowercase ASCII `v` is removed from tag, `VERSION`, and packager `-version` inputs.
 
-Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. This release does not add a license file. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.
+Each ZIP contains the platform library and the repository `LICENSE`. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.

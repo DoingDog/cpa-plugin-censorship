@@ -44,7 +44,13 @@ func pluginRegistration() registration {
 			Version:          pluginVersion,
 			Author:           "DoingDog",
 			GitHubRepository: "https://github.com/DoingDog/cpa-plugin-censorship",
-			ConfigFields:     []pluginapi.ConfigField{},
+			ConfigFields: []pluginapi.ConfigField{
+				{Name: "mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"block", "strip", "obfs"}, Description: "Action for matched text: block (default), strip, or obfs."},
+				{Name: "ignore_case", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Match terms with Go unicode.SimpleFold equivalence (default false)."},
+				{Name: "words", Type: pluginapi.ConfigFieldTypeArray, Description: "Ordered array of non-empty literal terms; rules run in array order (default [])."},
+				{Name: "scope", Type: pluginapi.ConfigFieldTypeObject, Description: "Optional object with formats and roles arrays; defaults to all supported formats and system, developer, and user roles."},
+				{Name: "obfs", Type: pluginapi.ConfigFieldTypeObject, Description: "Obfuscation object whose char is U+200B or U+2060; used only by obfs mode (default U+200B)."},
+			},
 		},
 		Capabilities: registrationCapabilities{RequestInterceptor: true},
 	}

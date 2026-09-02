@@ -22,6 +22,8 @@ Start or restart CPA to load a newly installed library. Once loaded, valid non-H
 
 ## Configuration
 
+CPA management clients can edit the five plugin-owned top-level fields exposed through standard `ConfigFields` metadata. `mode` is an enum, `ignore_case` is a boolean, `words` is a JSON array, and `scope` and `obfs` are JSON objects. The saved values remain ordinary CPA YAML configuration.
+
 ```yaml
 plugins:
   enabled: true
