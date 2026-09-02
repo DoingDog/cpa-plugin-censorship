@@ -270,9 +270,10 @@ Legacy Completions没有额外raw `prompt` selector。该handler在调用hook前
 | `input` | 顶层field | string | `user` | `user` |
 | `input[i].content` | item `type`缺失、空字符串或精确为 `message`；item `role`精确为 `system`、`developer`、`user`或 `assistant` | string | 与item role同名 | 对应role |
 | `input[i].content[j].text` | item满足上一行；content part `type`缺失、空字符串或精确为 `input_text` | string | 与item role同名 | 对应role |
-| `input[i].content[j].text` | item `type`缺失、空字符串或精确为 `message`；item `role == "assistant"`；part `type == "output_text"` | string | `assistant` | `assistant` |
+| `input[i].content[j].text` | item `type`缺失、空字符串或精确为 `message`；part `type == "output_text"` | string | `assistant` | `assistant` |
+| `input[i].content[j].refusal` | item `type`缺失、空字符串或精确为 `message`；part `type == "refusal"` | string | `assistant` | `assistant` |
 
-item缺少role时no-op。`output_text`只允许在assistant message下出现。任何其他item或part type全部no-op，包括所有function/custom-tool input和output。
+item缺少role时no-op。`output_text`和`refusal`都按canonical role=`assistant`处理，不受source item role影响。任何其他item或part type全部no-op，包括所有function/custom-tool input和output。
 
 Responses WebSocket model-executed turn进入hook前已完成CPA normalization，但仍使用该表相对于当前execution body选择span。[`internal/translator/openai/openai/responses/openai_openai-responses_request.go:L166-L217`](https://github.com/router-for-me/CLIProxyAPI/blob/81e1b5374f99c212f196f34956eeed964a46b8fa/internal/translator/openai/openai/responses/openai_openai-responses_request.go#L166-L217)
 
@@ -294,10 +295,10 @@ Responses WebSocket model-executed turn进入hook前已完成CPA normalization�
 |---|---|---|---|---|
 | `systemInstruction.parts[i].text` | part不含machine discriminator，`thought`不是boolean true且无 `thoughtSignature` | string | `system` | `system` |
 | `system_instruction.parts[i].text` | 与上一行相同 | string | `system` | `system` |
-| `contents[i].parts[j].text` | content `role`缺失或精确为 `user`；part满足system part的排除条件 | string | `user` | `user` |
-| `contents[i].parts[j].text` | content `role == "model"`；part满足system part的排除条件 | string | `assistant` | `assistant` |
+| `contents[i].parts[j].text` | content `role`缺失且按CPA user/model alternation得到 `user`，或精确为 `user`；part满足system part的排除条件 | string | `user` | `user` |
+| `contents[i].parts[j].text` | content `role`缺失且按CPA user/model alternation得到 `model`，或精确为 `model`；part满足system part的排除条件 | string | `assistant` | `assistant` |
 
-machine discriminator包括 `functionCall`、`functionResponse`、`inlineData`、`inline_data`、`fileData`、`file_data`、`executableCode`和 `codeExecutionResult`。同一part包含任一machine discriminator时，即使也包含string `text`，整个part仍no-op。content role存在但不是 `user`或 `model`时，整个content no-op。[`internal/translator/openai/gemini/openai_gemini_request.go:L132-L265`](https://github.com/router-for-me/CLIProxyAPI/blob/81e1b5374f99c212f196f34956eeed964a46b8fa/internal/translator/openai/gemini/openai_gemini_request.go#L132-L265)
+machine discriminator包括 camelCase 和 snake_case 的 `functionCall`、`functionResponse`、`inlineData`、`fileData`、`executableCode`、`codeExecutionResult`，以及 `thoughtSignature`、`functionCall.thought_signature`、`functionResponse.thought_signature` 和 `extra_content.google.thought_signature`。同一part包含任一machine discriminator时，即使也包含string `text`，整个part仍no-op。content role缺失或不是 `user`、`model`时，当前content no-op，但仍按 CPA user/model alternation 推进后续缺失role。[`internal/translator/openai/gemini/openai_gemini_request.go:L132-L265`](https://github.com/router-for-me/CLIProxyAPI/blob/81e1b5374f99c212f196f34956eeed964a46b8fa/internal/translator/openai/gemini/openai_gemini_request.go#L132-L265)
 
 ### 7.5 `interactions`
 
@@ -305,9 +306,9 @@ System instruction rows：
 
 | JSON path | Parent条件 | Leaf type | Canonical role | 所需scope role |
 |---|---|---|---|---|
-| `system_instruction` | 顶层field | string | `system` | `system` |
-| `system_instruction.text` | `system_instruction`为object | string | `system` | `system` |
-| `system_instruction.parts[i].text` | part `type`缺失、空字符串或精确为 `text`，且不含Gemini machine discriminator | string | `system` | `system` |
+| `system_instruction`或fallback `systemInstruction` | 顶层field；优先使用 `system_instruction`，缺失时使用 `systemInstruction` | string | `system` | `system` |
+| `system_instruction.text`或fallback `systemInstruction.text` | instruction为object | string | `system` | `system` |
+| `system_instruction.parts[i].text`或fallback `systemInstruction.parts[i].text` | instruction为object；part `type`缺失、空字符串或精确为 `text`，且不含Gemini machine discriminator | string | `system` | `system` |
 | `input` | 顶层field | string | `user` | `user` |
 | `input[i]` | array element自身为string | string | `user` | `user` |
 
@@ -326,6 +327,8 @@ System instruction rows：
 ### 7.6 未知格式和类型错误
 
 未知 `SourceFormat`立即no-op。已知格式中的未知role、未知typed node、缺失必需discriminator和candidate leaf类型错误只跳过对应candidate或subtree，不终止整个合法JSON请求。
+
+对已启用的known `SourceFormat`，request body必须是JSON object，且任意层object不得包含重复member name。违反这两项约束时返回`censorship_invalid_request`，不向upstream发送请求。JSON string中的文本不作为嵌套object检查。
 
 ## 8. Mode语义
 
@@ -412,7 +415,7 @@ Transform(body, snapshot, pluginVersion)
 
 1. load一次snapshot。
 2. `SourceFormat`未知、`words`为空、`scope.formats`显式为空、当前格式未启用或 `scope.roles`显式为空时，立即no-op且不解析body。
-3. 其余已启用的已知格式要求顶层为合法JSON object。JSON syntax错误或合法但非object的顶层值返回400 `censorship_invalid_request`。
+3. 其余已启用的已知格式要求顶层为合法JSON object，且object member name不得重复。JSON syntax错误、重复member或合法但非object的顶层值返回400 `censorship_invalid_request`。
 4. 用显式selector收集 `{rawStart, rawEnd, decodedText, canonicalRole}`。
 5. 按 `rawStart`排序并验证span不重叠。
 6. 对内存中的node text执行mode逻辑。

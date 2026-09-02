@@ -100,7 +100,7 @@ func TestOpenAIResponsesSelectorRowsAndExclusions(t *testing.T) {
 				{"type":"message","role":"system","content":" s"},
 				{"type":"","role":"user","content":" empty type"},
 				{"role":"developer","content":[{"type":"input_text","text":" d"},{"type":"","text":" e"},{"text":" m"}]},
-				{"type":"message","role":"user","content":[{"type":"input_text","text":" u"},{"type":"output_text","text":"SECRET wrong output"},{"type":"input_image","image_url":"SECRET"}]},
+				{"type":"message","role":"user","content":[{"type":"input_text","text":" u"},{"type":"output_text","text":" wrong output"},{"type":"input_image","image_url":"SECRET"}]},
 				{"type":"message","role":"assistant","content":[{"type":"output_text","text":" a"}]},
 				{"type":"message","content":"SECRET no role"},
 				{"type":"message","role":"tool","content":"SECRET bad role"},
@@ -118,6 +118,27 @@ func TestOpenAIResponsesSelectorRowsAndExclusions(t *testing.T) {
 				t.Fatalf("body = %s, want %s, terminate = %t", resp.Body, tc.want, resp.Terminate)
 			}
 		})
+	}
+}
+
+func TestOpenAIResponsesAssistantOutputShapesUseAssistantScope(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"input":[
+		{"type":"message","role":"user","content":[{"type":"output_text","text":"SECRET user output"}]},
+		{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"SECRET refusal"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET user input"}]}
+	]}`)
+	resp := interceptRPC(t, "openai-response", body)
+	if resp.Terminate {
+		t.Fatalf("response = %#v", resp)
+	}
+	want := `{"input":[
+		{"type":"message","role":"user","content":[{"type":"output_text","text":" user output"}]},
+		{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":" refusal"}]},
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET user input"}]}
+	]}`
+	if string(resp.Body) != want {
+		t.Fatalf("body = %s, want %s", resp.Body, want)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -121,6 +122,33 @@ func TestBeforeAuthRejectsEnabledInvalidJSON(t *testing.T) {
 		if gjson.GetBytes(resp.ResponseBody, "error.code").String() != "censorship_invalid_request" || bytes.Contains(resp.ResponseBody, body) {
 			t.Fatalf("response body = %s", resp.ResponseBody)
 		}
+	}
+}
+
+func TestBeforeAuthRejectsDuplicateJSONMembers(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	for _, body := range [][]byte{
+		[]byte(`{"messages":[],"messages":[{"role":"user","content":"SECRET"}]}`),
+		[]byte(`{"messages":[{"role":"assistant","role":"user","content":"SECRET"}]}`),
+		[]byte(`{"messages":[{"role":"user","content":"clean","content":"SECRET"}]}`),
+		[]byte(`{"messages":[{"role":"user","content":"SECRET","n":1e10000}],"messages":[]}`),
+	} {
+		resp := interceptRPC(t, "openai", body)
+		if !resp.Terminate || resp.StatusCode != 400 || resp.ResponseHeaders.Get("Content-Type") != "application/json" {
+			t.Fatalf("response for %q = %#v", body, resp)
+		}
+		if gjson.GetBytes(resp.ResponseBody, "error.code").String() != "censorship_invalid_request" || bytes.Contains(resp.ResponseBody, body) {
+			t.Fatalf("response body = %s", resp.ResponseBody)
+		}
+	}
+}
+
+func TestDuplicateJSONMembersInsideStringRemainOpaque(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	body := []byte(`{"messages":[{"role":"user","content":"{\"x\":1,\"x\":2} SECRET"}]}`)
+	resp := interceptRPC(t, "openai", body)
+	if resp.Terminate || string(resp.Body) != `{"messages":[{"role":"user","content":"{\"x\":1,\"x\":2} "}]}` {
+		t.Fatalf("response = %#v", resp)
 	}
 }
 
@@ -283,5 +311,82 @@ func reconfigureConfig(t *testing.T, configYAML string) {
 	decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginReconfigure, lifecycleJSON(t, configYAML)), &env)
 	if !env.OK {
 		t.Fatalf("reconfigure: %#v", env.Error)
+	}
+}
+
+func TestDocumentationListsConfigAndLimits(t *testing.T) {
+	const configExample = `plugins:
+  enabled: true
+  configs:
+    censorship:
+      enabled: true
+      mode: block
+      ignore_case: false
+      words:
+        - example
+      scope:
+        formats: [openai, openai-response, claude, gemini, interactions]
+        roles: [system, developer, user]
+      obfs:
+        char: "​"`
+
+	required := []string{
+		configExample,
+		"no custom panel, menu, or Management API",
+		"request-only; never inspects or changes model output",
+		"`enabled`: boolean; host-owned",
+		"`mode`: string; default `block`",
+		"`ignore_case`: boolean; default `false`",
+		"With `ignore_case: false`, matching is a case-sensitive literal substring operation.",
+		"`words`: sequence of strings; default `[]`",
+		"words is the only term source; the plugin has no built-in terms",
+		"`scope.formats`: sequence of strings; default all five formats",
+		"`scope.roles`: sequence of strings; default `system`, `developer`, and `user`",
+		"OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role.",
+		"Missing Gemini roles follow CPA's user/model alternation.",
+		"Invalid Gemini roles advance CPA's user/model alternation but remain unselected.",
+		"Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent.",
+		"Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers.",
+		"Enabled known formats reject JSON objects with duplicate member names at any nesting depth.",
+		"`obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`",
+		"block checks rules before document order and returns the YAML term with canonical role",
+		"strip and obfs process all leftmost non-overlapping occurrences before the next rule",
+		"obfs preserves original case and inserts after the first Unicode scalar",
+		"unicode.SimpleFold",
+		"Alpha/aLPHA",
+		"Greek sigma",
+		"Kelvin sign",
+		"straße/STRASSE does not match",
+		"no Unicode normalization",
+		"assistant is inspected only when explicitly listed in scope.roles",
+		"tool is inspected only for OpenAI string tool content and Claude typed text tool_result content",
+		"valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel",
+		"invalid reconfiguration keeps the last-known-good snapshot",
+		"Never changes tool calls, tool schemas, arguments, reasoning, thinking, other tool/function results, JSON keys, machine JSON, binary uploads, or image/audio/video/file base64.",
+		"1. hook is not raw ingress; document order follows current execution-body spans",
+		"2. preprocessing can observe uncensored input",
+		"3. Responses WebSocket covers only model-executed turns",
+		"4. `generate=false` prewarm bypasses the plugin",
+		"5. `/v1/realtime`, Live, sideband, and DataChannel bypass the plugin",
+		"6. Alpha Search bypasses the plugin",
+		"7. WebSocket block events omit `term` and `role`",
+		"8. RequestInterceptor failures are fail-open",
+		"9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost",
+		"10. Home mode does not watch local YAML",
+		"11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA",
+		"censorship_<version>_<goos>_<goarch>.zip",
+		".zip.sha256",
+		"64 lowercase hex characters, two spaces, and the archive basename",
+	}
+	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, token := range required {
+			if !bytes.Contains(raw, []byte(token)) {
+				t.Errorf("%s missing %q", name, token)
+			}
+		}
 	}
 }

@@ -60,6 +60,24 @@ func TestInteractionsContentMachinePartsAreExcluded(t *testing.T) {
 	}
 }
 
+func TestInteractionsPartsExcludeSnakeCaseMachineFields(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"input":[{"type":"user_input","parts":[
+		{"text":"SECRET thought_signature","thought_signature":"sig"},
+		{"text":"SECRET nested functionCall","functionCall":{"thought_signature":"sig"}},
+		{"text":"SECRET nested functionResponse","functionResponse":{"thought_signature":"sig"}},
+		{"text":"SECRET extra_content","extra_content":{"google":{"thought_signature":"sig"}}},
+		{"text":"SECRET function_call","function_call":{"name":"tool"}},
+		{"text":"SECRET function_response","function_response":{"response":{}}},
+		{"text":"SECRET executable_code","executable_code":{"code":"SECRET"}},
+		{"text":"SECRET code_execution_result","code_execution_result":{"output":"SECRET"}}
+	]}]}`)
+	resp := interceptRPC(t, "interactions", body)
+	if resp.Terminate || len(resp.ResponseBody) != 0 || len(resp.Body) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestInteractionsTopLevelStringRows(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, user]\n")
 	cases := []struct {
@@ -73,6 +91,25 @@ func TestInteractionsTopLevelStringRows(t *testing.T) {
 		if string(resp.Body) != tc.want {
 			t.Fatalf("body = %s, want %s", resp.Body, tc.want)
 		}
+	}
+}
+
+func TestInteractionsCamelCaseSystemInstructionRows(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	cases := []struct {
+		body, want string
+	}{
+		{body: `{"systemInstruction":"SECRET system"}`, want: `{"systemInstruction":" system"}`},
+		{body: `{"systemInstruction":{"text":"SECRET object"}}`, want: `{"systemInstruction":{"text":" object"}}`},
+		{body: `{"systemInstruction":{"parts":[{"type":"text","text":"SECRET part"}]}}`, want: `{"systemInstruction":{"parts":[{"type":"text","text":" part"}]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.body, func(t *testing.T) {
+			resp := interceptRPC(t, "interactions", []byte(tc.body))
+			if resp.Terminate || string(resp.Body) != tc.want {
+				t.Fatalf("body = %s, want %s", resp.Body, tc.want)
+			}
+		})
 	}
 }
 

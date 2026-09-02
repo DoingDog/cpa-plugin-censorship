@@ -24,6 +24,19 @@ func TestHTTPBlockIncludesTermAndRole(t *testing.T) {
 	}
 }
 
+func TestHTTPRejectsDuplicateJSONMembers(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
+	body := []byte(`{"model":"censorship-integration-model","messages":[],"messages":[{"role":"user","content":"SECRET"}]}`)
+	status, header, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", body)
+	if status != 400 || header.Get("Content-Type") != "application/json" || gjson.GetBytes(response, "error.code").String() != "censorship_invalid_request" {
+		t.Fatalf("status=%d header=%v body=%s", status, header, response)
+	}
+	if upstream.requestCount() != 0 {
+		t.Fatal("duplicate-member request reached upstream")
+	}
+}
+
 func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nignore_case: true\nwords: [Alpha]\n")

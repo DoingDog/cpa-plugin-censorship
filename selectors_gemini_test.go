@@ -46,6 +46,50 @@ func TestGeminiSelectorRowsAndMachineExclusions(t *testing.T) {
 	}
 }
 
+func TestGeminiMissingRolesAlternateCanonicalRoles(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"prior"}]},{"parts":[{"text":"SECRET assistant"}]},{"parts":[{"text":"SECRET user"}]}]}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate {
+		t.Fatalf("response = %#v", resp)
+	}
+	want := `{"contents":[{"role":"user","parts":[{"text":"prior"}]},{"parts":[{"text":"SECRET assistant"}]},{"parts":[{"text":" user"}]}]}`
+	if string(resp.Body) != want {
+		t.Fatalf("body = %s, want %s", resp.Body, want)
+	}
+}
+
+func TestGeminiInvalidRolesAdvanceCanonicalAlternation(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"prior"}]},{"role":"assistant","parts":[{"text":"ignored"}]},{"parts":[{"text":"SECRET user"}]}]}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate {
+		t.Fatalf("response = %#v", resp)
+	}
+	want := `{"contents":[{"role":"user","parts":[{"text":"prior"}]},{"role":"assistant","parts":[{"text":"ignored"}]},{"parts":[{"text":" user"}]}]}`
+	if string(resp.Body) != want {
+		t.Fatalf("body = %s, want %s", resp.Body, want)
+	}
+}
+
+func TestGeminiSelectorExcludesSnakeCaseMachineParts(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"contents":[{"role":"model","parts":[
+		{"text":"SECRET thought_signature","thought_signature":"sig"},
+		{"text":"SECRET nested functionCall","functionCall":{"thought_signature":"sig"}},
+		{"text":"SECRET nested functionResponse","functionResponse":{"thought_signature":"sig"}},
+		{"text":"SECRET extra_content","extra_content":{"google":{"thought_signature":"sig"}}},
+		{"text":"SECRET function_call","function_call":{"name":"tool"}},
+		{"text":"SECRET function_response","function_response":{"response":{}}},
+		{"text":"SECRET executable_code","executable_code":{"code":"SECRET"}},
+		{"text":"SECRET code_execution_result","code_execution_result":{"output":"SECRET"}}
+	]}]}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate || len(resp.ResponseBody) != 0 || len(resp.Body) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestGeminiSelectorCanonicalRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string

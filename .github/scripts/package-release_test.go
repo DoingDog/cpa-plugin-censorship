@@ -246,11 +246,13 @@ type workflowPlatform struct {
 }
 
 type workflowStep struct {
-	ID   string            `yaml:"id"`
-	Uses string            `yaml:"uses"`
-	Run  string            `yaml:"run"`
-	Env  map[string]string `yaml:"env"`
-	With map[string]any    `yaml:"with"`
+	ID    string            `yaml:"id"`
+	Uses  string            `yaml:"uses"`
+	Run   string            `yaml:"run"`
+	If    string            `yaml:"if"`
+	Shell string            `yaml:"shell"`
+	Env   map[string]string `yaml:"env"`
+	With  map[string]any    `yaml:"with"`
 }
 
 func TestBuildWorkflowContract(t *testing.T) {
@@ -306,6 +308,8 @@ func TestBuildWorkflowContract(t *testing.T) {
 	}
 	if !hasReleaseMetadata(build) ||
 		!jobRunContains(build, "make package") ||
+		!jobRunWithShellAndIf(build, "make package", "bash", "${{ matrix.GOOS != 'windows' }}") ||
+		!jobRunWithShellAndIf(build, "make package", "msys2 {0}", "${{ matrix.GOOS == 'windows' }}") ||
 		!jobRunContains(build, `VERSION="${MAKE_VERSION}"`) ||
 		!jobRunContains(build, "GOOS=${{ matrix.GOOS }}") ||
 		!jobRunContains(build, "GOARCH=${{ matrix.GOARCH }}") ||
@@ -398,6 +402,15 @@ func normalizeNeeds(value any) []string {
 func jobRunContains(job workflowJob, fragment string) bool {
 	for _, step := range job.Steps {
 		if strings.Contains(step.Run, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func jobRunWithShellAndIf(job workflowJob, fragment, shell, condition string) bool {
+	for _, step := range job.Steps {
+		if strings.Contains(step.Run, fragment) && step.Shell == shell && step.If == condition {
 			return true
 		}
 	}

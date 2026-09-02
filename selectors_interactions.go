@@ -4,6 +4,9 @@ import "github.com/tidwall/gjson"
 
 func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	systemInstruction := root.Get("system_instruction")
+	if !systemInstruction.Exists() {
+		systemInstruction = root.Get("systemInstruction")
+	}
 	switch {
 	case systemInstruction.Type == gjson.String:
 		appendStringSpan(spans, systemInstruction, "system", roles)

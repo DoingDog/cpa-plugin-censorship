@@ -73,9 +73,16 @@ func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan
 		if content.IsArray() {
 			content.ForEach(func(_, part gjson.Result) bool {
 				partType := part.Get("type")
-				allowed := !partType.Exists() || partType.Type == gjson.String && (partType.Str == "" || partType.Str == "input_text" || role == "assistant" && partType.Str == "output_text")
-				if allowed {
-					appendStringSpan(spans, part.Get("text"), role, roles)
+				if partType.Type == gjson.String && partType.Str == "refusal" {
+					appendStringSpan(spans, part.Get("refusal"), "assistant", roles)
+					return true
+				}
+				if !partType.Exists() || partType.Type == gjson.String && (partType.Str == "" || partType.Str == "input_text" || partType.Str == "output_text") {
+					partRole := role
+					if partType.Str == "output_text" {
+						partRole = "assistant"
+					}
+					appendStringSpan(spans, part.Get("text"), partRole, roles)
 				}
 				return true
 			})

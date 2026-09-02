@@ -57,6 +57,7 @@ func TestProtocolOracleRejectsWrongResults(t *testing.T) {
 		{name: "missing transform", body: matching, mode: modeStrip},
 		{name: "spurious block", body: excluded, mode: modeBlock, got: transformResult{Blocked: &blockMatch{Term: "SECRET", Role: "user"}}},
 		{name: "unchanged transform", body: matching, mode: modeStrip, got: transformResult{Body: matching}},
+		{name: "duplicate member accepted", body: []byte(`{"messages":[],"messages":[]}`), mode: modeStrip},
 	}
 	for _, tc := range cases {
 		if err := checkProtocolResult("openai", tc.body, tc.mode, false, tc.got); err == nil {
@@ -150,6 +151,12 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 	if !validJSONObject(body) {
 		if !got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
 			return fmt.Errorf("invalid request returned %#v", got)
+		}
+		return nil
+	}
+	if oracleHasDuplicateJSONMembers(body) {
+		if !got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
+			return fmt.Errorf("duplicate JSON object members returned %#v", got)
 		}
 		return nil
 	}
@@ -338,14 +345,25 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 		}
 		oracleAppendString(spans, content, role)
 		oracleForEachArray(content, func(part json.RawMessage) {
-			allowed := true
+			partRole := role
+			partType := ""
 			if rawType, exists := oracleFirstField(part, "type"); exists {
-				var partType string
-				allowed = json.Unmarshal(rawType, &partType) == nil && (partType == "" || partType == "input_text")
+				if json.Unmarshal(rawType, &partType) != nil {
+					return
+				}
 			}
-			if allowed {
+			switch partType {
+			case "output_text", "refusal":
+				partRole = "assistant"
+			}
+			switch partType {
+			case "refusal":
+				if refusal, ok := oracleFirstField(part, "refusal"); ok {
+					oracleAppendString(spans, refusal, partRole)
+				}
+			case "", "input_text", "output_text":
 				if text, ok := oracleFirstField(part, "text"); ok {
-					oracleAppendString(spans, text, role)
+					oracleAppendString(spans, text, partRole)
 				}
 			}
 		})
@@ -397,17 +415,43 @@ func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 	if !ok {
 		return
 	}
+	previousRole := ""
 	oracleForEachArray(contents, func(content json.RawMessage) {
-		role := "user"
+		role := ""
 		if rawRole, exists := oracleFirstField(content, "role"); exists {
 			var value string
-			if json.Unmarshal(rawRole, &value) != nil || value != "user" {
+			if json.Unmarshal(rawRole, &value) != nil {
+				previousRole = oracleNextGeminiRole(previousRole)
 				return
 			}
-			role = value
+			switch value {
+			case "user":
+				role = "user"
+				previousRole = value
+			case "model":
+				role = "assistant"
+				previousRole = value
+			default:
+				previousRole = oracleNextGeminiRole(previousRole)
+				return
+			}
+		} else {
+			previousRole = oracleNextGeminiRole(previousRole)
+			if previousRole == "user" {
+				role = "user"
+			} else {
+				role = "assistant"
+			}
 		}
 		oracleGeminiParts(content, role, spans)
 	})
+}
+
+func oracleNextGeminiRole(previousRole string) string {
+	if previousRole == "" || previousRole == "model" {
+		return "user"
+	}
+	return "model"
 }
 
 func oracleGeminiParts(container json.RawMessage, role string, spans *[]oracleProtocolSpan) {
@@ -426,7 +470,11 @@ func oracleGeminiParts(container json.RawMessage, role string, spans *[]oraclePr
 }
 
 func oracleInteractionsSpans(root []byte, spans *[]oracleProtocolSpan) {
-	if system, ok := oracleFirstField(root, "system_instruction"); ok {
+	system, ok := oracleFirstField(root, "system_instruction")
+	if !ok {
+		system, ok = oracleFirstField(root, "systemInstruction")
+	}
+	if ok {
 		oracleAppendString(spans, system, "system")
 		if text, ok := oracleFirstField(system, "text"); ok {
 			oracleAppendString(spans, text, "system")
@@ -844,7 +892,7 @@ func oracleExcludedTokens(format string, body []byte) [][]byte {
 			}
 		case "interactions":
 			switch key {
-			case "system_instruction":
+			case "system_instruction", "systemInstruction":
 				oracleInteractionExcludedParts(value, &tokens)
 			case "input":
 				oracleInteractionsExcluded(value, "user", &tokens, 0)
@@ -960,6 +1008,18 @@ func oracleGeminiExcludedParts(parts json.RawMessage, tokens *[][]byte) {
 	})
 }
 
+func TestOracleGeminiPartExcludesNestedMachineFields(t *testing.T) {
+	for _, part := range []json.RawMessage{
+		[]byte(`{"text":"SECRET","functionCall":{"thought_signature":"sig"}}`),
+		[]byte(`{"text":"SECRET","functionResponse":{"thought_signature":"sig"}}`),
+		[]byte(`{"text":"SECRET","extra_content":{"google":{"thought_signature":"sig"}}}`),
+	} {
+		if !oracleGeminiPartExcluded(part) {
+			t.Errorf("oracleGeminiPartExcluded(%s) = false", part)
+		}
+	}
+}
+
 func oracleGeminiPartExcluded(part json.RawMessage) bool {
 	excluded := false
 	seen := make(map[string]struct{})
@@ -969,7 +1029,7 @@ func oracleGeminiPartExcluded(part json.RawMessage) bool {
 		}
 		seen[key] = struct{}{}
 		switch key {
-		case "functionCall", "functionResponse", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "codeExecutionResult", "thoughtSignature":
+		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
 			excluded = true
 		case "thought":
 			var thought bool
@@ -978,7 +1038,62 @@ func oracleGeminiPartExcluded(part json.RawMessage) bool {
 			}
 		}
 	})
+	for _, path := range [][]string{
+		{"functionCall", "thoughtSignature"},
+		{"functionCall", "thought_signature"},
+		{"functionResponse", "thoughtSignature"},
+		{"functionResponse", "thought_signature"},
+		{"extra_content", "google", "thought_signature"},
+	} {
+		if oracleJSONFieldPathExists(part, path...) {
+			return true
+		}
+	}
 	return excluded
+}
+
+func oracleJSONFieldPathExists(raw json.RawMessage, path ...string) bool {
+	if len(path) == 0 {
+		return true
+	}
+	value, ok := oracleFirstField(raw, path[0])
+	if !ok {
+		return false
+	}
+	return len(path) == 1 || oracleJSONFieldPathExists(value, path[1:]...)
+}
+
+func oracleHasDuplicateJSONMembers(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.HasPrefix(trimmed, []byte("{")) {
+		seen := make(map[string]struct{})
+		duplicate := false
+		if !oracleForEachObject(raw, func(key string, value json.RawMessage) {
+			if _, exists := seen[key]; exists {
+				duplicate = true
+				return
+			}
+			seen[key] = struct{}{}
+			if !duplicate && oracleHasDuplicateJSONMembers(value) {
+				duplicate = true
+			}
+		}) {
+			return false
+		}
+		return duplicate
+	}
+	if bytes.HasPrefix(trimmed, []byte("[")) {
+		duplicate := false
+		if !oracleForEachArray(raw, func(value json.RawMessage) {
+			if !duplicate && oracleHasDuplicateJSONMembers(value) {
+				duplicate = true
+			}
+		}) {
+			return false
+		}
+		return duplicate
+	}
+	return false
 }
 
 func oracleUniqueStringField(object json.RawMessage, field string) (string, bool) {

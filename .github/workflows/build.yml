@@ -76,8 +76,13 @@ jobs:
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
           echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-      - name: Build and package
-        shell: ${{ matrix.GOOS == 'windows' && 'msys2 {0}' || 'bash' }}
+      - name: Build and package on Unix
+        if: "${{ matrix.GOOS != 'windows' }}"
+        shell: bash
+        run: make package VERSION="${MAKE_VERSION}" GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }}
+      - name: Build and package on Windows
+        if: "${{ matrix.GOOS == 'windows' }}"
+        shell: msys2 {0}
         run: make package VERSION="${MAKE_VERSION}" GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }}
       - uses: actions/upload-artifact@v4
         with:
