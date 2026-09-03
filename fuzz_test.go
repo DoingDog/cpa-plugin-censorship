@@ -613,10 +613,21 @@ func snapshotForFuzz(terms []string, modeByte uint8, fold bool) *configSnapshot 
 		rules[i] = compiledRule{Term: term, Runes: []rune(term)}
 	}
 	return &configSnapshot{
-		Mode:       selected,
-		IgnoreCase: fold,
-		Rules:      rules,
-		ObfsChar:   "​",
+		Mode:         selected,
+		IgnoreCase:   fold,
+		Rules:        rules,
+		ObfsChar:     "​",
+		BlockMatcher: newFoldMatcher(rules),
+	}
+}
+
+func TestSnapshotForFuzzPrecompilesFoldBlockMatcher(t *testing.T) {
+	cfg := snapshotForFuzz([]string{"SECRET"}, 0, true)
+	if cfg == nil {
+		t.Fatal("snapshotForFuzz returned nil")
+	}
+	if cfg.BlockMatcher == nil {
+		t.Fatal("snapshotForFuzz left BlockMatcher nil")
 	}
 }
 

@@ -13,6 +13,77 @@ func TestFoldMatcherSelectsLowestRuleIndexAcrossOccurrences(t *testing.T) {
 	}
 }
 
+func TestFoldClassRuneUnifiesKelvinSign(t *testing.T) {
+	if got, want := foldClassRune('K'), foldClassRune('K'); got != want {
+		t.Fatalf("foldClassRune(K) = %U, foldClassRune(K) = %U; want equal keys", got, want)
+	}
+	if got, want := foldClassRune('K'), foldClassRune('k'); got != want {
+		t.Fatalf("foldClassRune(K) = %U, foldClassRune(k) = %U; want equal keys", got, want)
+	}
+}
+
+func TestFoldMatcherIncludesFailureSuffixRules(t *testing.T) {
+	rules := []compiledRule{
+		{Term: "bc", Runes: []rune("bc")},
+		{Term: "abc", Runes: []rune("abc")},
+	}
+	matcher := newFoldMatcher(rules)
+	if got, ok := matcher.match("ABC"); !ok || got != 0 {
+		t.Fatalf("matcher.match() = %d, %t; want suffix rule index 0, true", got, ok)
+	}
+}
+
+func TestFoldMatcherMatchesRuleMajorOracle(t *testing.T) {
+	cases := []struct {
+		name  string
+		rules []string
+		text  string
+	}{
+		{name: "prefix", rules: []string{"a", "aa"}, text: "cAA"},
+		{name: "suffix", rules: []string{"bc", "abc"}, text: "zABC"},
+		{name: "duplicate-folded", rules: []string{"K", "k"}, text: "K"},
+		{name: "sigma", rules: []string{"Σ", "ς"}, text: "σ"},
+		{name: "different-byte-length", rules: []string{"K"}, text: "K"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rules := make([]compiledRule, len(tc.rules))
+			for i, term := range tc.rules {
+				rules[i] = compiledRule{Term: term, Runes: []rune(term)}
+			}
+			want := -1
+			for i, rule := range rules {
+				if containsRule(tc.text, rule, true) {
+					want = i
+					break
+				}
+			}
+			got, ok := newFoldMatcher(rules).match(tc.text)
+			if got != want || ok != (want >= 0) {
+				t.Fatalf("matcher.match() = %d, %t; want oracle %d, %t", got, ok, want, want >= 0)
+			}
+		})
+	}
+}
+
+func TestFoldBlockMatcherDoesNotCrossSpans(t *testing.T) {
+	rules := []compiledRule{{Term: "abc", Runes: []rune("abc")}}
+	cfg := &configSnapshot{
+		Mode:         modeBlock,
+		IgnoreCase:   true,
+		Rules:        rules,
+		BlockMatcher: newFoldMatcher(rules),
+	}
+	spans := []textSpan{
+		{Text: "ab", Role: "user"},
+		{Text: "c", Role: "developer"},
+	}
+	blocked, changed := applyMode(spans, cfg)
+	if changed || blocked != nil {
+		t.Fatalf("applyMode() = %#v, %t; want no block across spans", blocked, changed)
+	}
+}
+
 func TestFoldBlockMatcherPreservesRuleMajorDocumentRole(t *testing.T) {
 	rules := []compiledRule{
 		{Term: "ab", Runes: []rune("ab")},
@@ -47,8 +118,8 @@ func TestFoldStripRuleProcessesAllNonOverlappingOccurrences(t *testing.T) {
 func TestFoldObfuscateRulePreservesSourceCasePerOccurrence(t *testing.T) {
 	const char = "⁠"
 	got, matched := obfuscateFoldRule("aAaA", []rune("aa"), char)
-	if !matched || got != "a"+char+"Aa"+char+"A" {
-		t.Fatalf("obfuscateFoldRule() = %q, %t; want %q, true", got, matched, "a"+char+"Aa"+char+"A")
+	if !matched || got != "a"+char+"A"+"a"+char+"A" {
+		t.Fatalf("obfuscateFoldRule() = %q, %t; want %q, true", got, matched, "a"+char+"A"+"a"+char+"A")
 	}
 }
 

@@ -199,12 +199,13 @@ func benchmarkFixture(size, wordCount int, fold bool) ([]byte, *configSnapshot) 
 		rules[i] = compiledRule{Term: term, Runes: []rune(term)}
 	}
 	cfg := &configSnapshot{
-		Mode:       modeBlock,
-		IgnoreCase: fold,
-		Rules:      rules,
-		Formats:    scopeSet{"openai": {}},
-		Roles:      scopeSet{"user": {}},
-		ObfsChar:   "​",
+		Mode:         modeBlock,
+		IgnoreCase:   fold,
+		Rules:        rules,
+		Formats:      scopeSet{"openai": {}},
+		Roles:        scopeSet{"user": {}},
+		ObfsChar:     "​",
+		BlockMatcher: newFoldMatcher(rules),
 	}
 	const prefix = `{"messages":[{"role":"user","content":"`
 	const suffix = `"}]}`

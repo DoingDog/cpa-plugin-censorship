@@ -26,12 +26,13 @@ type compiledRule struct {
 type scopeSet map[string]struct{}
 
 type configSnapshot struct {
-	Mode       mode
-	IgnoreCase bool
-	Rules      []compiledRule
-	Formats    scopeSet
-	Roles      scopeSet
-	ObfsChar   string
+	Mode         mode
+	IgnoreCase   bool
+	Rules        []compiledRule
+	Formats      scopeSet
+	Roles        scopeSet
+	ObfsChar     string
+	BlockMatcher *foldMatcher
 }
 
 var activeConfig atomic.Pointer[configSnapshot]
@@ -193,6 +194,7 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 			}
 		}
 	}
+	cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
 	return cfg, nil
 }
 

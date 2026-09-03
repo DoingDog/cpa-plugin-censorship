@@ -49,12 +49,34 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 	switch cfg.Mode {
 	case modeBlock:
-		for _, rule := range cfg.Rules {
-			for i := range spans {
-				if containsRule(spans[i].Text, rule, cfg.IgnoreCase) {
-					return &blockMatch{Term: rule.Term, Role: spans[i].Role}, false
+		if !cfg.IgnoreCase {
+			for _, rule := range cfg.Rules {
+				for i := range spans {
+					if containsRule(spans[i].Text, rule, false) {
+						return &blockMatch{Term: rule.Term, Role: spans[i].Role}, false
+					}
 				}
 			}
+			break
+		}
+		matcher := cfg.BlockMatcher
+		if matcher == nil {
+			matcher = newFoldMatcher(cfg.Rules)
+		}
+		bestRule := -1
+		bestRole := ""
+		for _, span := range spans {
+			ruleIndex, ok := matcher.match(span.Text)
+			if ok && (bestRule < 0 || ruleIndex < bestRule) {
+				bestRule = ruleIndex
+				bestRole = span.Role
+				if bestRule == 0 {
+					break
+				}
+			}
+		}
+		if bestRule >= 0 {
+			return &blockMatch{Term: cfg.Rules[bestRule].Term, Role: bestRole}, false
 		}
 	case modeStrip:
 		changed := false
