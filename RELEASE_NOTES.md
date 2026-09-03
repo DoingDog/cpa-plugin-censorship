@@ -1,4 +1,12 @@
-# Censorship v0.1.1
+# Censorship v0.1.2
+
+## Performance
+
+Folded `block` matching now uses a precompiled SimpleFold-aware trie with failure links, so each eligible span is scanned once instead of once per rule. The matcher preserves YAML rule priority, document-order role selection, Unicode scalar boundaries, and span isolation.
+
+Folded `strip` and `obfs` rewrites now stream directly into a `strings.Builder` without retaining an occurrence list. Dense obfuscation reserves the maximum non-overlapping output capacity, avoiding repeated builder growth and copy operations. Fuzz snapshots reuse their precompiled matcher.
+
+The focused TDD checks cover Kelvin sign canonicalization, failure suffixes, prefix and duplicate folded rules, Unicode cases, cross-span isolation, rule-major role selection, all non-overlapping rewrite occurrences, and source-case-preserving obfuscation.
 
 ## Visual configuration
 
