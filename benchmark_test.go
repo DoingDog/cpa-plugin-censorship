@@ -34,6 +34,34 @@ func BenchmarkTransformMatrix(b *testing.B) {
 	}
 }
 
+func BenchmarkFoldStripDense(b *testing.B) {
+	text := strings.Repeat("a", 1<<20)
+	rule := compiledRule{Term: "A", Runes: []rune("A")}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(text)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got, matched := stripRule(text, rule, true)
+		if !matched || len(got) != 0 {
+			b.Fatalf("stripRule() matched=%t len=%d", matched, len(got))
+		}
+	}
+}
+
+func BenchmarkFoldObfuscateDense(b *testing.B) {
+	text := strings.Repeat("a", 1<<20)
+	rule := compiledRule{Term: "A", Runes: []rune("A")}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(text)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got, matched := obfuscateRule(text, rule, true, "⁠")
+		if !matched || len(got) != len(text)*4 {
+			b.Fatalf("obfuscateRule() matched=%t len=%d", matched, len(got))
+		}
+	}
+}
+
 func BenchmarkTransformScenarios(b *testing.B) {
 	cases := []struct {
 		name, yaml, text string
