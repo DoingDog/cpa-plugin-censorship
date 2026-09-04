@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/tidwall/gjson"
 )
 
 const maxFuzzJSONDepth = 256
@@ -92,6 +94,30 @@ func FuzzRuleEngineAgainstOracle(f *testing.F) {
 		want := oracleApply([]string{text, "prefix " + text}, cfg)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %#v, want %#v", got, want)
+		}
+	})
+}
+
+func FuzzDuplicateWalkerAgainstOracle(f *testing.F) {
+	for _, body := range [][]byte{
+		[]byte(`{"x":0,"\u0078":1}`),
+		[]byte(`{"\ud800\u0061":0,"\ufffda":1}`),
+		[]byte(`{"\ud800\u0061":0,"\ufffd":1}`),
+		[]byte(`{"left":{"x":0},"right":{"x":1}}`),
+		[]byte(`{"items":[{"x":0},{"nested":{"x":1,"x":2}}]}`),
+		[]byte(`{"value":"{\"x\":1,\"x\":2}"}`),
+		[]byte(`{"tools":[{"x":0,"x":1}],"media":{"x":0,"x":1}}`),
+	} {
+		f.Add(body)
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		if len(body) > 64<<10 || !boundedJSONNesting(body, maxFuzzJSONDepth) || !gjson.ValidBytes(body) {
+			t.Skip()
+		}
+		got := hasDuplicateJSONMembers(gjson.ParseBytes(body))
+		want := oracleHasDuplicateJSONMembers(body)
+		if got != want {
+			t.Fatalf("hasDuplicateJSONMembers(%s) = %t, oracle = %t", body, got, want)
 		}
 	})
 }

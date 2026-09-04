@@ -176,6 +176,59 @@ func TestDuplicateJSONMembersInsideStringRemainOpaque(t *testing.T) {
 	}
 }
 
+func TestDuplicateMemberWalkerAcceptsParsedRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{name: "duplicate member", body: []byte(`{"x":0,"x":1}`), want: true},
+		{name: "sibling objects", body: []byte(`{"left":{"x":0},"right":{"x":1}}`)},
+		{name: "array nesting", body: []byte(`{"items":[{"x":0},{"nested":{"x":1,"x":2}}]}`), want: true},
+		{name: "JSON-looking string", body: []byte(`{"value":"{\"x\":1,\"x\":2}"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasDuplicateJSONMembers(gjson.ParseBytes(tc.body)); got != tc.want {
+				t.Fatalf("hasDuplicateJSONMembers(%s) = %t, want %t", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDuplicateMemberWalkerCanonicalizesMemberNames(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{name: "escaped ASCII", body: []byte(`{"x":0,"\u0078":1}`), want: true},
+		{name: "lone surrogate followed by escape", body: []byte(`{"\ud800\u0061":0,"\ufffda":1}`), want: true},
+		{name: "lone surrogate differs from replacement only", body: []byte(`{"\ud800\u0061":0,"\ufffd":1}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasDuplicateJSONMembers(gjson.ParseBytes(tc.body)); got != tc.want {
+				t.Fatalf("hasDuplicateJSONMembers(%s) = %t, want %t", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDuplicateMemberWalkerChecksExcludedSubtrees(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "tools", body: []byte(`{"messages":[],"tools":[{"x":0,"x":1}]}`)},
+		{name: "media", body: []byte(`{"messages":[],"media":{"x":0,"x":1}}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !hasDuplicateJSONMembers(gjson.ParseBytes(tc.body)) {
+				t.Fatalf("hasDuplicateJSONMembers(%s) = false, want true", tc.body)
+			}
+		})
+	}
+}
+
 func TestAfterAuthAlwaysNoOpsWithoutParsingRequest(t *testing.T) {
 	raw := mustHandle(t, pluginabi.MethodRequestInterceptAfter, []byte(`not-json`))
 	var env pluginabi.Envelope
