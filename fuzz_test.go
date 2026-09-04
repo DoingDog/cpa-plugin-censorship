@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -129,13 +130,23 @@ func FuzzFoldKMPAgainstOracle(f *testing.F) {
 		if err := compileSnapshot(cfg); err != nil {
 			t.Fatal(err)
 		}
-		got, matched := rewriteFoldedKMP(text, cfg.Rules[0], cfg.ObfsChar, selected == modeObfs)
-		want := oracleStrip(text, term, true)
-		if selected == modeObfs {
-			want = oracleObfuscate(text, term, true, cfg.ObfsChar)
+		dispatchText := text
+		if len(dispatchText) < foldKMPMinTextBytes {
+			dispatchText += strings.Repeat("\x00", foldKMPMinTextBytes-len(dispatchText))
 		}
-		if got != want || matched != (want != text) {
-			t.Fatalf("rewriteFoldedKMP() bytes = % x, %t; oracle = % x, %t", got, matched, want, want != text)
+		var got string
+		var matched bool
+		if selected == modeObfs {
+			got, matched = obfuscateRule(dispatchText, cfg.Rules[0], true, cfg.ObfsChar)
+		} else {
+			got, matched = stripRule(dispatchText, cfg.Rules[0], true)
+		}
+		want := oracleStrip(dispatchText, term, true)
+		if selected == modeObfs {
+			want = oracleObfuscate(dispatchText, term, true, cfg.ObfsChar)
+		}
+		if got != want || matched != (want != dispatchText) {
+			t.Fatalf("folded rewrite dispatch bytes = % x, %t; oracle = % x, %t", got, matched, want, want != dispatchText)
 		}
 	})
 }
@@ -1243,6 +1254,8 @@ func oracleForEachArray(raw []byte, visit func(json.RawMessage)) bool {
 	return err == nil && token == json.Delim(']')
 }
 
+var errOracleInvalidSpan = errors.New("oracle invalid changed span")
+
 func FuzzRebuildBodyAgainstMarshalOracle(f *testing.F) {
 	for _, seed := range []struct {
 		first, second string
@@ -1298,10 +1311,17 @@ func FuzzRebuildBodyAgainstMarshalOracle(f *testing.F) {
 
 		got, gotErr := rebuildBody(body, spans)
 		want, wantErr := marshalRebuildOracle(body, spans)
-		if (gotErr != nil) != (wantErr != nil) {
-			t.Fatalf("error = %v, oracle error = %v", gotErr, wantErr)
-		}
-		if gotErr != nil {
+		if wantErr == nil {
+			if gotErr != nil {
+				t.Fatalf("error = %v, oracle error = nil", gotErr)
+			}
+		} else {
+			if !errors.Is(wantErr, errOracleInvalidSpan) {
+				t.Fatalf("unclassified oracle error = %v", wantErr)
+			}
+			if !errors.Is(gotErr, errInvalidSpan) {
+				t.Fatalf("error class = %v, want %v", gotErr, errInvalidSpan)
+			}
 			return
 		}
 		if !bytes.Equal(got, want) {
@@ -1325,7 +1345,7 @@ func marshalRebuildOracle(body []byte, spans []textSpan) ([]byte, error) {
 			continue
 		}
 		if span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > len(body) || span.RawStart < previousEnd {
-			return nil, fmt.Errorf("invalid changed span")
+			return nil, errOracleInvalidSpan
 		}
 		encoded, err := json.Marshal(span.Text)
 		if err != nil {
