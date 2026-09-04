@@ -498,6 +498,28 @@ func benchmarkFoldRewriteStrategy(text string, cfg *configSnapshot, preflight bo
 	return changed
 }
 
+func TestBenchmarkPositionedText(t *testing.T) {
+	const size = 32
+	const match = "BLOCKME"
+	tests := []struct {
+		position string
+		want     int
+	}{
+		{position: "first", want: 0},
+		{position: "middle", want: (size - len(match)) / 2},
+		{position: "last", want: size - len(match)},
+	}
+	for _, test := range tests {
+		text := benchmarkPositionedText(size, match, test.position)
+		if len(text) != size {
+			t.Fatalf("%s text length = %d, want %d", test.position, len(text), size)
+		}
+		if got := strings.Index(text, match); got != test.want {
+			t.Fatalf("%s match index = %d, want %d", test.position, got, test.want)
+		}
+	}
+}
+
 func runBenchmarkExactBlockStrategies(b *testing.B) {
 	cases := []struct {
 		rules, text, target int
