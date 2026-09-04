@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -188,5 +189,103 @@ func TestFoldMatcherFailureToRootUsesASCIITable(t *testing.T) {
 	matcher.nodes[0].next = nil
 	if got, ok := matcher.match("acB"); !ok || got != 1 {
 		t.Fatalf("matcher.match() after failure to root = %d, %t; want 1, true", got, ok)
+	}
+}
+
+var (
+	exactRewriteTextSink  string
+	exactRewriteMatchSink bool
+)
+
+func TestRewriteExactReportsMatchesByLength(t *testing.T) {
+	obfs := &configSnapshot{
+		Mode:     modeObfs,
+		Rules:    []compiledRule{{Term: "éx"}},
+		ObfsChar: "​",
+	}
+	if err := compileSnapshot(obfs); err != nil {
+		t.Fatal(err)
+	}
+	invalidTerm := string([]byte{0xff, 'x'})
+	invalid := &configSnapshot{
+		Mode:     modeObfs,
+		Rules:    []compiledRule{{Term: invalidTerm}},
+		ObfsChar: "​",
+	}
+	if err := compileSnapshot(invalid); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		text      string
+		rule      compiledRule
+		obfuscate bool
+		want      string
+		matched   bool
+	}{
+		{name: "strip hit", text: "aaaaa", rule: compiledRule{Term: "aa"}, want: "a", matched: true},
+		{name: "strip miss", text: "plain", rule: compiledRule{Term: "aa"}, want: "plain"},
+		{name: "obfs multibyte", text: "éxéx", rule: obfs.Rules[0], obfuscate: true, want: "é​xé​x", matched: true},
+		{name: "obfs miss", text: "plain", rule: obfs.Rules[0], obfuscate: true, want: "plain"},
+		{name: "obfs invalid UTF-8", text: "a" + invalidTerm, rule: invalid.Rules[0], obfuscate: true, want: "a" + string([]byte{0xff}) + "​x", matched: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, matched := rewriteExact(test.text, test.rule, test.obfuscate)
+			if got != test.want || matched != test.matched {
+				t.Fatalf("rewriteExact() = %q, %t; want %q, %t", got, matched, test.want, test.matched)
+			}
+		})
+	}
+}
+
+func TestExactRewriteMissAllocatesNothing(t *testing.T) {
+	obfs := &configSnapshot{
+		Mode:     modeObfs,
+		Rules:    []compiledRule{{Term: "secret"}},
+		ObfsChar: "​",
+	}
+	if err := compileSnapshot(obfs); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name      string
+		rule      compiledRule
+		obfuscate bool
+	}{
+		{name: "strip", rule: compiledRule{Term: "secret"}},
+		{name: "obfs", rule: obfs.Rules[0], obfuscate: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			allocs := testing.AllocsPerRun(1000, func() {
+				exactRewriteTextSink, exactRewriteMatchSink = rewriteExact("plain text", test.rule, test.obfuscate)
+			})
+			if allocs != 0 {
+				t.Fatalf("rewriteExact() miss allocations = %.1f, want 0", allocs)
+			}
+		})
+	}
+}
+
+func TestExactObfuscationHitAllocationCeiling(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode:     modeObfs,
+		Rules:    []compiledRule{{Term: "éx"}},
+		ObfsChar: "⁠",
+	}
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Repeat("éx", 256)
+	allocs := testing.AllocsPerRun(100, func() {
+		exactRewriteTextSink, exactRewriteMatchSink = rewriteExact(text, cfg.Rules[0], true)
+	})
+	if allocs > 1 {
+		t.Fatalf("rewriteExact() hit allocations = %.1f, want <= 1", allocs)
+	}
+	if !exactRewriteMatchSink || len(exactRewriteTextSink) != len(text)+256*len(cfg.ObfsChar) {
+		t.Fatalf("rewriteExact() hit = len %d, %t", len(exactRewriteTextSink), exactRewriteMatchSink)
 	}
 }

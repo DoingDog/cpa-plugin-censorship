@@ -257,3 +257,29 @@ func TestSyntheticSnapshotsUseProductionCompiler(t *testing.T) {
 		t.Fatalf("exact benchmark snapshot = %#v", benchmarkExact)
 	}
 }
+
+func TestCompileSnapshotPrecomputesExactReplacement(t *testing.T) {
+	cfg := mustConfig(t, "mode: obfs\nwords: [éx]\nobfs:\n  char: '⁠'\n")
+	if got, want := cfg.Rules[0].ExactReplacement, "é⁠x"; got != want {
+		t.Fatalf("ExactReplacement = %q, want %q", got, want)
+	}
+
+	folded := mustConfig(t, "mode: obfs\nignore_case: true\nwords: [éx]\n")
+	if got := folded.Rules[0].ExactReplacement; got != "" {
+		t.Fatalf("folded ExactReplacement = %q, want empty", got)
+	}
+
+	term := string([]byte{0xff, 'x'})
+	synthetic := &configSnapshot{
+		Mode:     modeObfs,
+		Rules:    []compiledRule{{Term: term}},
+		ObfsChar: "​",
+	}
+	if err := compileSnapshot(synthetic); err != nil {
+		t.Fatal(err)
+	}
+	want := string([]byte{0xff}) + "​x"
+	if got := synthetic.Rules[0].ExactReplacement; got != want {
+		t.Fatalf("invalid UTF-8 ExactReplacement bytes = % x, want % x", got, want)
+	}
+}
