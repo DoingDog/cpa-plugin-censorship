@@ -37,6 +37,122 @@ func foldClassRune(r rune) rune {
 	return minimum
 }
 
+type byteMatcherNode struct {
+	next    map[byte]int
+	fail    int
+	minRule int
+}
+
+type byteMatcher struct {
+	nodes     []byteMatcherNode
+	root      [256]int
+	firstRule int
+}
+
+func (matcher *byteMatcher) transition(state int, key byte) (int, bool) {
+	if state == 0 {
+		next := matcher.root[key]
+		return next, next != 0
+	}
+	next, ok := matcher.nodes[state].next[key]
+	return next, ok
+}
+
+func (matcher *byteMatcher) setTransition(state int, key byte, next int) {
+	if state == 0 {
+		matcher.root[key] = next
+		return
+	}
+	if matcher.nodes[state].next == nil {
+		matcher.nodes[state].next = make(map[byte]int)
+	}
+	matcher.nodes[state].next[key] = next
+}
+
+func newByteMatcher(rules []compiledRule, ruleOffset int) *byteMatcher {
+	matcher := &byteMatcher{
+		nodes:     []byteMatcherNode{{minRule: -1}},
+		firstRule: ruleOffset,
+	}
+	for localIndex, rule := range rules {
+		if rule.Term == "" {
+			continue
+		}
+		state := 0
+		for i := 0; i < len(rule.Term); i++ {
+			key := rule.Term[i]
+			next, ok := matcher.transition(state, key)
+			if !ok {
+				next = len(matcher.nodes)
+				matcher.setTransition(state, key, next)
+				matcher.nodes = append(matcher.nodes, byteMatcherNode{minRule: -1})
+			}
+			state = next
+		}
+		ruleIndex := ruleOffset + localIndex
+		if matcher.nodes[state].minRule < 0 || ruleIndex < matcher.nodes[state].minRule {
+			matcher.nodes[state].minRule = ruleIndex
+		}
+	}
+
+	queue := make([]int, 0, len(matcher.nodes))
+	for _, child := range matcher.root {
+		if child != 0 {
+			queue = append(queue, child)
+		}
+	}
+	for head := 0; head < len(queue); head++ {
+		current := queue[head]
+		for key, child := range matcher.nodes[current].next {
+			failure := matcher.nodes[current].fail
+			for {
+				if next, ok := matcher.transition(failure, key); ok {
+					failure = next
+					break
+				}
+				if failure == 0 {
+					break
+				}
+				failure = matcher.nodes[failure].fail
+			}
+			matcher.nodes[child].fail = failure
+			if inherited := matcher.nodes[failure].minRule; inherited >= 0 && (matcher.nodes[child].minRule < 0 || inherited < matcher.nodes[child].minRule) {
+				matcher.nodes[child].minRule = inherited
+			}
+			queue = append(queue, child)
+		}
+	}
+	return matcher
+}
+
+func (matcher *byteMatcher) match(text string) (int, bool) {
+	if matcher == nil || len(matcher.nodes) == 0 {
+		return -1, false
+	}
+	state := 0
+	bestRule := -1
+	for i := 0; i < len(text); i++ {
+		key := text[i]
+		for {
+			next, ok := matcher.transition(state, key)
+			if ok {
+				state = next
+				break
+			}
+			if state == 0 {
+				break
+			}
+			state = matcher.nodes[state].fail
+		}
+		if ruleIndex := matcher.nodes[state].minRule; ruleIndex == matcher.firstRule {
+			return ruleIndex, true
+		} else if ruleIndex >= 0 && (bestRule < 0 || ruleIndex < bestRule) {
+			bestRule = ruleIndex
+		}
+	}
+	return bestRule, bestRule >= 0
+}
+
 type foldMatcherNode struct {
 	next    map[rune]int
 	fail    int

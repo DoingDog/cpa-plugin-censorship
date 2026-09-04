@@ -29,13 +29,14 @@ type compiledRule struct {
 type scopeSet map[string]struct{}
 
 type configSnapshot struct {
-	Mode         mode
-	IgnoreCase   bool
-	Rules        []compiledRule
-	Formats      scopeSet
-	Roles        scopeSet
-	ObfsChar     string
-	BlockMatcher *foldMatcher
+	Mode              mode
+	IgnoreCase        bool
+	Rules             []compiledRule
+	Formats           scopeSet
+	Roles             scopeSet
+	ObfsChar          string
+	BlockMatcher      *foldMatcher
+	ExactBlockMatcher *byteMatcher
 }
 
 var activeConfig atomic.Pointer[configSnapshot]
@@ -205,6 +206,7 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 
 func compileSnapshot(cfg *configSnapshot) error {
 	cfg.BlockMatcher = nil
+	cfg.ExactBlockMatcher = nil
 	for i := range cfg.Rules {
 		rule := &cfg.Rules[i]
 		rule.Runes = nil
@@ -229,6 +231,10 @@ func compileSnapshot(cfg *configSnapshot) error {
 			}
 		}
 		return nil
+	}
+
+	if cfg.Mode == modeBlock && len(cfg.Rules) >= exactByteMatcherMinRules {
+		cfg.ExactBlockMatcher = newByteMatcher(cfg.Rules[exactByteMatcherPrefixRules:], exactByteMatcherPrefixRules)
 	}
 
 	if cfg.Mode == modeObfs {

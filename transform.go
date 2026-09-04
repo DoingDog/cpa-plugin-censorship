@@ -18,10 +18,17 @@ type textSpan struct {
 const (
 	foldRewritePreflightMinRules     = 8
 	foldRewritePreflightMinTextBytes = 4 << 10
+	exactByteMatcherMinRules         = 256
+	exactByteMatcherMinTextBytes     = 16 << 10
+	exactByteMatcherPrefixRules      = 4
 )
 
 func useFoldRewritePreflight(ruleCount, textBytes int) bool {
 	return ruleCount >= foldRewritePreflightMinRules && textBytes >= foldRewritePreflightMinTextBytes
+}
+
+func useExactByteMatcher(ruleCount, totalTextBytes int) bool {
+	return ruleCount >= exactByteMatcherMinRules && totalTextBytes >= exactByteMatcherMinTextBytes
 }
 
 type blockMatch struct {
@@ -57,6 +64,52 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	return transformResult{Body: out}, err
 }
 
+func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) {
+	matcher := cfg.ExactBlockMatcher
+	if matcher != nil {
+		totalTextBytes := 0
+		for _, span := range spans {
+			totalTextBytes += len(span.Text)
+		}
+		if useExactByteMatcher(len(cfg.Rules), totalTextBytes) {
+			prefixCount := exactByteMatcherPrefixRules
+			if prefixCount > len(cfg.Rules) {
+				prefixCount = len(cfg.Rules)
+			}
+			for ruleIndex := 0; ruleIndex < prefixCount; ruleIndex++ {
+				for _, span := range spans {
+					if containsRule(span.Text, cfg.Rules[ruleIndex], false) {
+						return ruleIndex, span.Role, true
+					}
+				}
+			}
+
+			bestRule := -1
+			bestRole := ""
+			for _, span := range spans {
+				ruleIndex, matched := matcher.match(span.Text)
+				if matched && (bestRule < 0 || ruleIndex < bestRule) {
+					bestRule = ruleIndex
+					bestRole = span.Role
+					if bestRule == prefixCount {
+						break
+					}
+				}
+			}
+			return bestRule, bestRole, bestRule >= 0
+		}
+	}
+
+	for ruleIndex, rule := range cfg.Rules {
+		for _, span := range spans {
+			if containsRule(span.Text, rule, false) {
+				return ruleIndex, span.Role, true
+			}
+		}
+	}
+	return -1, "", false
+}
+
 func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 	if cfg.IgnoreCase && cfg.BlockMatcher != nil && (cfg.Mode == modeStrip || cfg.Mode == modeObfs) {
 		for i := range spans {
@@ -71,12 +124,9 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 	switch cfg.Mode {
 	case modeBlock:
 		if !cfg.IgnoreCase {
-			for _, rule := range cfg.Rules {
-				for i := range spans {
-					if containsRule(spans[i].Text, rule, false) {
-						return &blockMatch{Term: rule.Term, Role: spans[i].Role}, false
-					}
-				}
+			ruleIndex, role, matched := matchExactBlock(spans, cfg)
+			if matched {
+				return &blockMatch{Term: cfg.Rules[ruleIndex].Term, Role: role}, false
 			}
 			break
 		}
