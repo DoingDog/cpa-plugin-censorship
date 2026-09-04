@@ -550,7 +550,7 @@ func runBenchmarkExactBlockStrategies(b *testing.B) {
 		tc := tc
 		rules := benchmarkRules(tc.rules, "")
 		rules[tc.target] = compiledRule{Term: target}
-		text := benchmarkSizedText(tc.text, target)
+		text := benchmarkPositionedText(tc.text, target, tc.match)
 		cfg := benchmarkSnapshot(modeBlock, false, append([]compiledRule(nil), rules...))
 		spans := [...]textSpan{{Text: text, Role: "user"}}
 		for _, strategy := range strategies {
@@ -767,6 +767,24 @@ func benchmarkSnapshot(mode mode, ignoreCase bool, rules []compiledRule) *config
 		panic(err)
 	}
 	return cfg
+}
+
+func benchmarkPositionedText(size int, match, position string) string {
+	if len(match) > size {
+		panic("benchmark match exceeds text size")
+	}
+	padding := size - len(match)
+	prefix := padding
+	switch position {
+	case "first":
+		prefix = 0
+	case "middle":
+		prefix = padding / 2
+	case "last":
+	default:
+		panic("unknown benchmark match position")
+	}
+	return strings.Repeat("x", prefix) + match + strings.Repeat("x", padding-prefix)
 }
 
 func benchmarkSizedText(size int, match string) string {
