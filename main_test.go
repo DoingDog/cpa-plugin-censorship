@@ -13,6 +13,45 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+var okEnvelopeByteSink []byte
+
+func TestOKEnvelopeExactBytesAndAllocationCeiling(t *testing.T) {
+	type result struct {
+		Value string `json:"value"`
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  []byte
+	}{
+		{name: "value", value: result{Value: "x"}, want: []byte(`{"ok":true,"result":{"value":"x"}}`)},
+		{name: "null", value: nil, want: []byte(`{"ok":true,"result":null}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := okEnvelope(tc.value)
+			if err != nil {
+				t.Fatalf("okEnvelope() error = %v", err)
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("okEnvelope() = %s, want %s", got, tc.want)
+			}
+		})
+	}
+
+	response := pluginapi.RequestInterceptResponse{Body: bytes.Repeat([]byte("x"), 1<<20)}
+	allocs := testing.AllocsPerRun(100, func() {
+		var err error
+		okEnvelopeByteSink, err = okEnvelope(response)
+		if err != nil {
+			panic(err)
+		}
+	})
+	if allocs > 4 {
+		t.Fatalf("okEnvelope() allocations = %.1f, want <= 4", allocs)
+	}
+}
+
 func TestRegistrationDeclaresOnlyRequestInterceptor(t *testing.T) {
 	raw, err := handleMethod(pluginabi.MethodPluginRegister, []byte(`{"config_yaml":"","schema_version":4}`))
 	if err != nil {
