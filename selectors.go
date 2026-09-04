@@ -25,6 +25,21 @@ func knownSourceFormat(sourceFormat string) bool {
 	}
 }
 
+func selectorHasEnabledRole(sourceFormat string, roles scopeSet) bool {
+	switch sourceFormat {
+	case "openai":
+		return roles.has("system") || roles.has("developer") || roles.has("user") || roles.has("assistant") || roles.has("tool")
+	case "openai-response":
+		return roles.has("system") || roles.has("developer") || roles.has("user") || roles.has("assistant")
+	case "claude":
+		return roles.has("system") || roles.has("user") || roles.has("assistant") || roles.has("tool")
+	case "gemini", "interactions":
+		return roles.has("system") || roles.has("user") || roles.has("assistant")
+	default:
+		return false
+	}
+}
+
 func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSpan, error) {
 	if !gjson.ValidBytes(body) || len(bytes.TrimSpace(body)) == 0 {
 		return nil, errInvalidRequest
@@ -32,6 +47,9 @@ func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSp
 	root := gjson.ParseBytes(body)
 	if !root.IsObject() || hasDuplicateJSONMembers(root) {
 		return nil, errInvalidRequest
+	}
+	if len(roles) != 0 && !selectorHasEnabledRole(sourceFormat, roles) {
+		return nil, nil
 	}
 	var spans []textSpan
 	switch sourceFormat {

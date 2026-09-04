@@ -3,18 +3,20 @@ package main
 import "github.com/tidwall/gjson"
 
 func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
-	system := root.Get("system")
-	appendStringSpan(spans, system, "system", roles)
-	if system.IsArray() {
-		system.ForEach(func(_, block gjson.Result) bool {
-			if block.IsObject() {
-				blockType := block.Get("type")
-				if blockType.Type == gjson.String && blockType.Str == "text" {
-					appendStringSpan(spans, block.Get("text"), "system", roles)
+	if roles.has("system") {
+		system := root.Get("system")
+		appendStringSpan(spans, system, "system", roles)
+		if system.IsArray() {
+			system.ForEach(func(_, block gjson.Result) bool {
+				if block.IsObject() {
+					blockType := block.Get("type")
+					if blockType.Type == gjson.String && blockType.Str == "text" {
+						appendStringSpan(spans, block.Get("text"), "system", roles)
+					}
 				}
-			}
-			return true
-		})
+				return true
+			})
+		}
 	}
 
 	messages := root.Get("messages")
@@ -30,7 +32,14 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			return true
 		}
 		switch role.Str {
-		case "system", "user", "assistant":
+		case "system", "assistant":
+			if !roles.has(role.Str) {
+				return true
+			}
+		case "user":
+			if !roles.has("user") && !roles.has("tool") {
+				return true
+			}
 		default:
 			return true
 		}
@@ -50,9 +59,11 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			}
 			switch blockType.Str {
 			case "text":
-				appendStringSpan(spans, block.Get("text"), role.Str, roles)
+				if roles.has(role.Str) {
+					appendStringSpan(spans, block.Get("text"), role.Str, roles)
+				}
 			case "tool_result":
-				if role.Str != "user" {
+				if role.Str != "user" || !roles.has("tool") {
 					return true
 				}
 				toolContent := block.Get("content")

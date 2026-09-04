@@ -3,27 +3,32 @@ package main
 import "github.com/tidwall/gjson"
 
 func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
-	systemInstruction := root.Get("system_instruction")
-	if !systemInstruction.Exists() {
-		systemInstruction = root.Get("systemInstruction")
-	}
-	switch {
-	case systemInstruction.Type == gjson.String:
-		appendStringSpan(spans, systemInstruction, "system", roles)
-	case systemInstruction.IsObject():
-		appendStringSpan(spans, systemInstruction.Get("text"), "system", roles)
-		parts := systemInstruction.Get("parts")
-		if parts.IsArray() {
-			parts.ForEach(func(_, part gjson.Result) bool {
-				text, allowed := scanTextPart(part, true)
-				if allowed {
-					appendStringSpan(spans, text, "system", roles)
-				}
-				return true
-			})
+	if roles.has("system") {
+		systemInstruction := root.Get("system_instruction")
+		if !systemInstruction.Exists() {
+			systemInstruction = root.Get("systemInstruction")
+		}
+		switch {
+		case systemInstruction.Type == gjson.String:
+			appendStringSpan(spans, systemInstruction, "system", roles)
+		case systemInstruction.IsObject():
+			appendStringSpan(spans, systemInstruction.Get("text"), "system", roles)
+			parts := systemInstruction.Get("parts")
+			if parts.IsArray() {
+				parts.ForEach(func(_, part gjson.Result) bool {
+					text, allowed := scanTextPart(part, true)
+					if allowed {
+						appendStringSpan(spans, text, "system", roles)
+					}
+					return true
+				})
+			}
 		}
 	}
 
+	if !roles.has("user") && !roles.has("assistant") {
+		return
+	}
 	input := root.Get("input")
 	switch {
 	case input.Type == gjson.String:
@@ -77,34 +82,36 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 		}
 	}
 
-	content := item.Get("content")
-	switch {
-	case content.Type == gjson.String:
-		appendStringSpan(spans, content, role, roles)
-	case content.IsObject():
-		text, allowed := scanTextPart(content, true)
-		if allowed {
-			appendStringSpan(spans, text, role, roles)
+	if roles.has(role) {
+		content := item.Get("content")
+		switch {
+		case content.Type == gjson.String:
+			appendStringSpan(spans, content, role, roles)
+		case content.IsObject():
+			text, allowed := scanTextPart(content, true)
+			if allowed {
+				appendStringSpan(spans, text, role, roles)
+			}
+		case content.IsArray():
+			content.ForEach(func(_, part gjson.Result) bool {
+				text, allowed := scanTextPart(part, true)
+				if allowed {
+					appendStringSpan(spans, text, role, roles)
+				}
+				return true
+			})
 		}
-	case content.IsArray():
-		content.ForEach(func(_, part gjson.Result) bool {
-			text, allowed := scanTextPart(part, true)
-			if allowed {
-				appendStringSpan(spans, text, role, roles)
-			}
-			return true
-		})
-	}
 
-	parts := item.Get("parts")
-	if parts.IsArray() {
-		parts.ForEach(func(_, part gjson.Result) bool {
-			text, allowed := scanTextPart(part, true)
-			if allowed {
-				appendStringSpan(spans, text, role, roles)
-			}
-			return true
-		})
+		parts := item.Get("parts")
+		if parts.IsArray() {
+			parts.ForEach(func(_, part gjson.Result) bool {
+				text, allowed := scanTextPart(part, true)
+				if allowed {
+					appendStringSpan(spans, text, role, roles)
+				}
+				return true
+			})
+		}
 	}
 
 	steps := item.Get("steps")

@@ -3,7 +3,11 @@ package main
 import "github.com/tidwall/gjson"
 
 func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
-	collectParts := func(parts gjson.Result, role string) {
+	collectParts := func(content gjson.Result, role string) {
+		if !roles.has(role) {
+			return
+		}
+		parts := content.Get("parts")
 		if !parts.IsArray() {
 			return
 		}
@@ -16,8 +20,10 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		})
 	}
 
-	collectParts(root.Get("systemInstruction.parts"), "system")
-	collectParts(root.Get("system_instruction.parts"), "system")
+	if roles.has("system") {
+		collectParts(root.Get("systemInstruction"), "system")
+		collectParts(root.Get("system_instruction"), "system")
+	}
 
 	contents := root.Get("contents")
 	if !contents.IsArray() {
@@ -26,24 +32,26 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	previousRole := ""
 	contents.ForEach(func(_, content gjson.Result) bool {
 		role := content.Get("role")
+		var effectiveRole string
 		switch {
 		case !role.Exists():
-			effectiveRole := nextGeminiRole(previousRole)
-			previousRole = effectiveRole
-			if effectiveRole == "user" {
-				collectParts(content.Get("parts"), "user")
+			previousRole = nextGeminiRole(previousRole)
+			if previousRole == "user" {
+				effectiveRole = "user"
 			} else {
-				collectParts(content.Get("parts"), "assistant")
+				effectiveRole = "assistant"
 			}
 		case role.Type == gjson.String && role.Str == "user":
 			previousRole = "user"
-			collectParts(content.Get("parts"), "user")
+			effectiveRole = "user"
 		case role.Type == gjson.String && role.Str == "model":
 			previousRole = "model"
-			collectParts(content.Get("parts"), "assistant")
+			effectiveRole = "assistant"
 		default:
 			previousRole = nextGeminiRole(previousRole)
+			return true
 		}
+		collectParts(content, effectiveRole)
 		return true
 	})
 }
