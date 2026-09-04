@@ -242,6 +242,9 @@ func TestRebuildBodyUsesEncoderDefaultEscaping(t *testing.T) {
 var rebuildBodyAllocationSink []byte
 
 func TestRebuildBodyAllocationCeiling(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation ceilings are measured without race instrumentation")
+	}
 	const spanCount = 64
 	const allocationCeiling = 8
 	body := make([]byte, 0, spanCount*16)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"reflect"
 	"testing"
@@ -27,6 +28,19 @@ func TestOKEnvelopeExactBytesAndAllocationCeiling(t *testing.T) {
 	}{
 		{name: "value", value: result{Value: "x"}, want: []byte(`{"ok":true,"result":{"value":"x"}}`)},
 		{name: "null", value: nil, want: []byte(`{"ok":true,"result":null}`)},
+		{
+			name: "request intercept response",
+			value: pluginapi.RequestInterceptResponse{
+				Headers:         http.Header{"X-Test": {"<&", "z"}},
+				Body:            []byte{0, 1, 2},
+				ClearHeaders:    []string{"X-Old"},
+				Terminate:       true,
+				StatusCode:      400,
+				ResponseHeaders: http.Header{"Content-Type": {"application/json"}},
+				ResponseBody:    []byte(`{"error":"<bad>"}`),
+			},
+			want: []byte(`{"ok":true,"result":{"Headers":{"X-Test":["\u003c\u0026","z"]},"Body":"AAEC","ClearHeaders":["X-Old"],"Terminate":true,"StatusCode":400,"ResponseHeaders":{"Content-Type":["application/json"]},"ResponseBody":"eyJlcnJvciI6IjxiYWQ+In0="}}`),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := okEnvelope(tc.value)
@@ -37,6 +51,10 @@ func TestOKEnvelopeExactBytesAndAllocationCeiling(t *testing.T) {
 				t.Fatalf("okEnvelope() = %s, want %s", got, tc.want)
 			}
 		})
+	}
+
+	if raceDetectorEnabled {
+		return
 	}
 
 	response := pluginapi.RequestInterceptResponse{Body: bytes.Repeat([]byte("x"), 1<<20)}
