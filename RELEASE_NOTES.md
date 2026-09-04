@@ -1,6 +1,12 @@
-# Censorship v0.1.2
+# Censorship v0.1.3
 
 ## Performance
+
+Request selection now reuses the parsed JSON root for duplicate-member validation, scans Gemini and Interactions text parts once, and skips disabled-role content traversal after global validation. Canonical assistant and tool overrides, Gemini role alternation, Interactions role inheritance, duplicate-member rejection, and hard exclusions remain unchanged.
+
+Request rewriting now preflights folded total misses, rebuilds changed JSON string spans with one forward encoder, marshals successful RPC envelopes once, compiles only mode-specific snapshot data, indexes ASCII fold-root transitions, and removes redundant exact rewrite scans. AfterAuth remains a fixed no-op and skips the plugin-side C-to-Go input copy after method dispatch.
+
+Large exact block workloads now use an adaptive byte Aho-Corasick matcher, while long folded strip and obfs rewrites use adaptive KMP. The selected thresholds retain rule-major ordering, leftmost non-overlapping matches, source byte spans, SimpleFold behavior, and zero-allocation exact block matching.
 
 Folded `block` matching now uses a precompiled SimpleFold-aware trie with failure links, so each eligible span is scanned once instead of once per rule. The matcher preserves YAML rule priority, document-order role selection, Unicode scalar boundaries, and span isolation.
 
@@ -122,7 +128,7 @@ This also excludes tool names and IDs, protocol discriminators, model names, met
 6. Alpha Search bypasses the plugin.
 7. WebSocket block events omit `term` and `role`. That path can emit status 400 and close, but cannot retain the custom HTTP fields.
 8. RequestInterceptor failures are fail-open. This includes current CPA error, panic, and fuse handling.
-9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost. AfterAuth is always a no-op in this plugin, but transport cost remains.
+9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost. The host still encodes and carries the full body on every AfterAuth call, but after recognizing the fixed no-op method, the plugin does not perform a C-to-Go input copy.
 10. Home mode does not watch local YAML.
 11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA.
 
