@@ -1312,3 +1312,34 @@ func marshalRebuildOracle(body []byte, spans []textSpan) ([]byte, error) {
 	copy(out[destination:destination+source], body[:source])
 	return out, nil
 }
+
+func FuzzByteMatcherAgainstOrderedContains(f *testing.F) {
+	f.Add("first then later", "later|first", uint8(0))
+	f.Add("abc", "bc|abc", uint8(0))
+	f.Add("plain", "abc|def", uint8(0))
+	f.Add(string([]byte{'a', 0xff, 0x00, 'x'}), string([]byte{0xff, 0x00, 'x', '|', 'z'}), uint8(0))
+
+	f.Fuzz(func(t *testing.T, text, packed string, offsetByte uint8) {
+		terms := boundedTerms(packed, 32, 32)
+		if len(terms) == 0 || len(text) > 1024 {
+			t.Skip()
+		}
+		offset := int(offsetByte) % len(terms)
+		rules := make([]compiledRule, len(terms))
+		for i, term := range terms {
+			rules[i] = compiledRule{Term: term}
+		}
+
+		want := -1
+		for i := offset; i < len(rules); i++ {
+			if strings.Contains(text, rules[i].Term) {
+				want = i
+				break
+			}
+		}
+		got, ok := newByteMatcher(rules[offset:], offset).match(text)
+		if got != want || ok != (want >= 0) {
+			t.Fatalf("match() = %d, %t; want %d, %t", got, ok, want, want >= 0)
+		}
+	})
+}

@@ -289,3 +289,103 @@ func TestExactObfuscationHitAllocationCeiling(t *testing.T) {
 		t.Fatalf("rewriteExact() hit = len %d, %t", len(exactRewriteTextSink), exactRewriteMatchSink)
 	}
 }
+
+func TestByteMatcherPreservesExactBlockOrder(t *testing.T) {
+	tests := []struct {
+		name  string
+		rules []string
+		text  string
+		want  int
+		ok    bool
+	}{
+		{name: "lowest YAML index despite later occurrence", rules: []string{"later", "first"}, text: "first then later", want: 0, ok: true},
+		{name: "failure suffix", rules: []string{"bc", "abc"}, text: "abc", want: 0, ok: true},
+		{name: "prefix", rules: []string{"ab", "abc"}, text: "abc", want: 0, ok: true},
+		{name: "duplicate rules", rules: []string{"hit", "hit"}, text: "hit", want: 0, ok: true},
+		{name: "overlap", rules: []string{"aa", "aaa"}, text: "aaa", want: 0, ok: true},
+		{name: "NUL", rules: []string{"\x00b", "other"}, text: "a\x00b", want: 0, ok: true},
+		{name: "no match", rules: []string{"abc", "def"}, text: "plain", want: -1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rules := make([]compiledRule, len(test.rules))
+			for i, term := range test.rules {
+				rules[i] = compiledRule{Term: term}
+			}
+			got, ok := newByteMatcher(rules, 0).match(test.text)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("match() = %d, %t; want %d, %t", got, ok, test.want, test.ok)
+			}
+		})
+	}
+
+	rules := []compiledRule{{Term: "prefix"}, {Term: "tail"}, {Term: "last"}}
+	if got, ok := newByteMatcher(rules[1:], 1).match("last tail"); !ok || got != 1 {
+		t.Fatalf("offset matcher = %d, %t; want 1, true", got, ok)
+	}
+}
+
+func TestByteMatcherDoesNotCrossSpans(t *testing.T) {
+	matcher := newByteMatcher([]compiledRule{{Term: "abc"}}, 0)
+	for _, text := range []string{"ab", "c"} {
+		if got, ok := matcher.match(text); ok || got != -1 {
+			t.Fatalf("match(%q) = %d, %t; want -1, false", text, got, ok)
+		}
+	}
+}
+
+func TestByteMatcherMatchesInvalidUTF8ByByte(t *testing.T) {
+	term := string([]byte{0xff, 0x00, 'x'})
+	text := "prefix" + term + string([]byte{0xfe})
+	matcher := newByteMatcher([]compiledRule{{Term: term}}, 0)
+	if got, ok := matcher.match(text); !ok || got != 0 {
+		t.Fatalf("invalid UTF-8 match = %d, %t; want 0, true", got, ok)
+	}
+	if got, ok := matcher.match(string([]byte{0xff, 0x00, 'y'})); ok || got != -1 {
+		t.Fatalf("invalid UTF-8 near miss = %d, %t; want -1, false", got, ok)
+	}
+}
+
+func TestAdaptiveExactBlockBoundary(t *testing.T) {
+	for _, test := range []struct {
+		rules, textBytes int
+		want             bool
+	}{
+		{rules: 31, textBytes: 1 << 20},
+		{rules: 32, textBytes: 4095},
+		{rules: 32, textBytes: 4096, want: true},
+		{rules: 128, textBytes: 64 << 10, want: true},
+	} {
+		if got := useExactByteMatcher(test.rules, test.textBytes); got != test.want {
+			t.Errorf("useExactByteMatcher(%d, %d) = %t, want %t", test.rules, test.textBytes, got, test.want)
+		}
+	}
+
+	rules := make([]compiledRule, 32)
+	for i := range rules {
+		rules[i] = compiledRule{Term: "term-" + string(rune('A'+i))}
+	}
+	exactBlock := &configSnapshot{Mode: modeBlock, Rules: append([]compiledRule(nil), rules...)}
+	if err := compileSnapshot(exactBlock); err != nil {
+		t.Fatal(err)
+	}
+	if exactBlock.ExactBlockMatcher == nil {
+		t.Fatal("exact block snapshot left ExactBlockMatcher nil")
+	}
+
+	exactStrip := &configSnapshot{Mode: modeStrip, Rules: append([]compiledRule(nil), rules...)}
+	if err := compileSnapshot(exactStrip); err != nil {
+		t.Fatal(err)
+	}
+	if exactStrip.ExactBlockMatcher != nil {
+		t.Fatal("exact strip snapshot compiled ExactBlockMatcher")
+	}
+
+	foldedBlock := &configSnapshot{Mode: modeBlock, IgnoreCase: true, Rules: append([]compiledRule(nil), rules...)}
+	if err := compileSnapshot(foldedBlock); err != nil {
+		t.Fatal(err)
+	}
+	if foldedBlock.ExactBlockMatcher != nil {
+		t.Fatal("folded block snapshot compiled ExactBlockMatcher")
+	}
+}
