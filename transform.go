@@ -7,11 +7,21 @@ import (
 )
 
 type textSpan struct {
-	RawStart int
-	RawEnd   int
-	Text     string
-	Role     string
-	Changed  bool
+	RawStart        int
+	RawEnd          int
+	Text            string
+	Role            string
+	Changed         bool
+	SkipFoldRewrite bool
+}
+
+const (
+	foldRewritePreflightMinRules     = 8
+	foldRewritePreflightMinTextBytes = 4 << 10
+)
+
+func useFoldRewritePreflight(ruleCount, textBytes int) bool {
+	return ruleCount >= foldRewritePreflightMinRules && textBytes >= foldRewritePreflightMinTextBytes
 }
 
 type blockMatch struct {
@@ -48,6 +58,16 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 }
 
 func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
+	if cfg.IgnoreCase && cfg.BlockMatcher != nil && (cfg.Mode == modeStrip || cfg.Mode == modeObfs) {
+		for i := range spans {
+			spans[i].SkipFoldRewrite = false
+			if useFoldRewritePreflight(len(cfg.Rules), len(spans[i].Text)) {
+				_, matched := cfg.BlockMatcher.match(spans[i].Text)
+				spans[i].SkipFoldRewrite = !matched
+			}
+		}
+	}
+
 	switch cfg.Mode {
 	case modeBlock:
 		if !cfg.IgnoreCase {
@@ -83,6 +103,9 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 		changed := false
 		for _, rule := range cfg.Rules {
 			for i := range spans {
+				if cfg.IgnoreCase && spans[i].SkipFoldRewrite {
+					continue
+				}
 				text, matched := stripRule(spans[i].Text, rule, cfg.IgnoreCase)
 				if matched {
 					spans[i].Text = text
@@ -96,6 +119,9 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 		changed := false
 		for _, rule := range cfg.Rules {
 			for i := range spans {
+				if cfg.IgnoreCase && spans[i].SkipFoldRewrite {
+					continue
+				}
 				text, matched := obfuscateRule(spans[i].Text, rule, cfg.IgnoreCase, cfg.ObfsChar)
 				if matched {
 					spans[i].Text = text

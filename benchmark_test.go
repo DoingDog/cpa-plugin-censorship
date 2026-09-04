@@ -484,9 +484,9 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 
 func benchmarkFoldRewriteStrategy(text string, cfg *configSnapshot, preflight bool) bool {
 	if preflight {
-		if _, matched := cfg.BlockMatcher.match(text); !matched {
-			return false
-		}
+		spans := [...]textSpan{{Text: text}}
+		_, changed := applyMode(spans[:], cfg)
+		return changed
 	}
 	changed := false
 	for _, rule := range cfg.Rules {

@@ -224,7 +224,7 @@ func compileSnapshot(cfg *configSnapshot) error {
 		case modeBlock:
 			cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
 		case modeStrip, modeObfs:
-			if len(cfg.Rules) >= 8 {
+			if len(cfg.Rules) >= foldRewritePreflightMinRules {
 				cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
 			}
 		}
