@@ -162,7 +162,7 @@ make package VERSION=v0.1.0 GOOS=windows GOARCH=amd64
 6. Alpha Search bypasses the plugin.
 7. WebSocket block events omit `term` and `role`. CPA can emit status 400 and close, but that path cannot retain the plugin's custom HTTP error fields.
 8. RequestInterceptor failures are fail-open. This includes current CPA error, panic, and fuse handling.
-9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost. This plugin's AfterAuth handler is always a no-op, but the ABI transport cost remains.
+9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost. The host still encodes and carries the full body on every AfterAuth call, but after recognizing the fixed no-op method, the plugin does not perform a C-to-Go input copy.
 10. Home mode does not watch local YAML. Use a configuration path that CPA watches or another host-supported reconfiguration mechanism.
 11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA.
 

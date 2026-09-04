@@ -60,6 +60,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 )
 
+func shouldCopyPluginRequest(method string) bool {
+	return method != pluginabi.MethodRequestInterceptAfter
+}
+
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
 	if host == nil || plugin == nil {
@@ -98,11 +102,12 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	if method == nil || response == nil {
 		return 1
 	}
+	methodName := C.GoString(method)
 	var requestBytes []byte
-	if request != nil && requestLen > 0 {
+	if shouldCopyPluginRequest(methodName) && request != nil && requestLen > 0 {
 		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	payload, err := handleMethod(C.GoString(method), requestBytes)
+	payload, err := handleMethod(methodName, requestBytes)
 	if err != nil {
 		payload = errorEnvelope("plugin_error", err.Error())
 	}
