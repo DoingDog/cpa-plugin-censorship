@@ -1197,3 +1197,101 @@ func oracleForEachArray(raw []byte, visit func(json.RawMessage)) bool {
 	token, err = decoder.Token()
 	return err == nil && token == json.Delim(']')
 }
+
+func FuzzRebuildBodyAgainstMarshalOracle(f *testing.F) {
+	for _, seed := range []struct {
+		first, second string
+		mask          uint8
+	}{
+		{"first", "second", 3},
+		{"<>&\u2028\u2029", "newline\ntext", 1},
+		{"", "unchanged", 0},
+	} {
+		f.Add(seed.first, seed.second, seed.mask)
+	}
+	f.Fuzz(func(t *testing.T, first, second string, mask uint8) {
+		if len(first) > 1024 || len(second) > 1024 {
+			t.Skip()
+		}
+
+		firstToken, err := json.Marshal("original:" + first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondToken, err := json.Marshal("original:" + second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := make([]byte, 0, len(firstToken)+len(secondToken)+96)
+		body = append(body, " \n { \"first\" : "...)
+		firstStart := len(body)
+		body = append(body, firstToken...)
+		firstEnd := len(body)
+		body = append(body, " , \"number\" : 1e+03 , \"unknown\" : \"\u003c\" , \"second\" : "...)
+		secondStart := len(body)
+		body = append(body, secondToken...)
+		secondEnd := len(body)
+		body = append(body, " , \"media\" : \"AA==\" } \n "...)
+		spans := []textSpan{
+			{RawStart: firstStart, RawEnd: firstEnd, Text: first, Changed: mask&1 != 0},
+			{RawStart: secondStart, RawEnd: secondEnd, Text: second, Changed: mask&2 != 0},
+		}
+
+		got, gotErr := rebuildBody(body, spans)
+		want, wantErr := marshalRebuildOracle(body, spans)
+		if (gotErr != nil) != (wantErr != nil) {
+			t.Fatalf("error = %v, oracle error = %v", gotErr, wantErr)
+		}
+		if gotErr != nil {
+			return
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("body = %q, want %q", got, want)
+		}
+	})
+}
+
+func marshalRebuildOracle(body []byte, spans []textSpan) ([]byte, error) {
+	type replacement struct {
+		start int
+		end   int
+		bytes []byte
+	}
+
+	previousEnd := 0
+	finalLen := len(body)
+	replacements := make([]replacement, 0, len(spans))
+	for _, span := range spans {
+		if !span.Changed {
+			continue
+		}
+		if span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > len(body) || span.RawStart < previousEnd {
+			return nil, fmt.Errorf("invalid changed span")
+		}
+		encoded, err := json.Marshal(span.Text)
+		if err != nil {
+			return nil, err
+		}
+		finalLen += len(encoded) - (span.RawEnd - span.RawStart)
+		replacements = append(replacements, replacement{start: span.RawStart, end: span.RawEnd, bytes: encoded})
+		previousEnd = span.RawEnd
+	}
+	if len(replacements) == 0 {
+		return nil, nil
+	}
+
+	out := make([]byte, finalLen)
+	source, destination := len(body), len(out)
+	for i := len(replacements) - 1; i >= 0; i-- {
+		replacement := replacements[i]
+		tailLen := source - replacement.end
+		destination -= tailLen
+		copy(out[destination:destination+tailLen], body[replacement.end:source])
+		destination -= len(replacement.bytes)
+		copy(out[destination:destination+len(replacement.bytes)], replacement.bytes)
+		source = replacement.start
+	}
+	destination -= source
+	copy(out[destination:destination+source], body[:source])
+	return out, nil
+}

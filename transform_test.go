@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -160,5 +161,118 @@ func TestTransformIsByteDeterministic(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Fatal(err)
+	}
+}
+
+func TestRebuildBodyValidatesBeforeWriting(t *testing.T) {
+	body := []byte(`{"first":"one","second":"two"}`)
+	first := textSpan{RawStart: 9, RawEnd: 14, Text: "changed", Changed: true}
+	second := textSpan{RawStart: 24, RawEnd: 29, Text: "changed", Changed: true}
+	cases := []struct {
+		name  string
+		spans []textSpan
+	}{
+		{"negative start", []textSpan{{RawStart: -1, RawEnd: 1, Changed: true}}},
+		{"empty range", []textSpan{{RawStart: 9, RawEnd: 9, Changed: true}}},
+		{"range past body", []textSpan{{RawStart: 24, RawEnd: len(body) + 1, Changed: true}}},
+		{"out of order", []textSpan{second, first}},
+		{"overlap", []textSpan{first, {RawStart: 13, RawEnd: 29, Changed: true}}},
+		{"invalid span after valid span", []textSpan{first, {RawStart: -1, RawEnd: 1, Changed: true}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := rebuildBody(body, tc.spans)
+			if !errors.Is(err, errInvalidSpan) {
+				t.Fatalf("error = %v, want errInvalidSpan", err)
+			}
+			if out != nil {
+				t.Fatalf("output = %q, want nil", out)
+			}
+		})
+	}
+
+	out, err := rebuildBody(body, []textSpan{{RawStart: -1, RawEnd: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != nil {
+		t.Fatalf("output without changed spans = %q, want nil", out)
+	}
+}
+
+func TestRebuildBodyUsesEncoderDefaultEscaping(t *testing.T) {
+	body := []byte(` { "first" : "old" , "number" : 1e+03 , "second" : "other" , "media" : "AA==" } `)
+	firstStart := bytes.Index(body, []byte(`"old"`))
+	firstEnd := firstStart + len(`"old"`)
+	secondStart := bytes.Index(body, []byte(`"other"`))
+	secondEnd := secondStart + len(`"other"`)
+	firstText := "<>&\u2028\u2029" + string([]byte{0xff}) + "\n"
+	secondText := "\n<&>\u2028\u2029" + string([]byte{0xfe})
+	firstToken, err := json.Marshal(firstText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondToken, err := json.Marshal(secondText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := rebuildBody(body, []textSpan{
+		{RawStart: firstStart, RawEnd: firstEnd, Text: firstText, Changed: true},
+		{RawStart: secondStart, RawEnd: secondEnd, Text: secondText, Changed: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := make([]byte, 0, len(body)+len(firstToken)+len(secondToken)-(firstEnd-firstStart)-(secondEnd-secondStart))
+	want = append(want, body[:firstStart]...)
+	want = append(want, firstToken...)
+	want = append(want, body[firstEnd:secondStart]...)
+	want = append(want, secondToken...)
+	want = append(want, body[secondEnd:]...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+	if bytes.Contains(got, []byte{'\n'}) {
+		t.Fatalf("body contains an encoder newline: %q", got)
+	}
+}
+
+var rebuildBodyAllocationSink []byte
+
+func TestRebuildBodyAllocationCeiling(t *testing.T) {
+	const spanCount = 64
+	const allocationCeiling = 8
+	body := make([]byte, 0, spanCount*16)
+	body = append(body, '[')
+	spans := make([]textSpan, 0, spanCount)
+	for i := 0; i < spanCount; i++ {
+		if i > 0 {
+			body = append(body, ',')
+		}
+		token, err := json.Marshal(fmt.Sprintf("original-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := len(body)
+		body = append(body, token...)
+		spans = append(spans, textSpan{
+			RawStart: start,
+			RawEnd:   len(body),
+			Text:     fmt.Sprintf("replacement-%d", i),
+			Changed:  true,
+		})
+	}
+	body = append(body, ']')
+
+	allocations := testing.AllocsPerRun(100, func() {
+		out, err := rebuildBody(body, spans)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rebuildBodyAllocationSink = out
+	})
+	if allocations > allocationCeiling {
+		t.Fatalf("allocations = %.1f, ceiling = %d", allocations, allocationCeiling)
 	}
 }
