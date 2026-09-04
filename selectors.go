@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 )
@@ -28,7 +30,7 @@ func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSp
 		return nil, errInvalidRequest
 	}
 	root := gjson.ParseBytes(body)
-	if !root.IsObject() || hasDuplicateJSONMembers(body) {
+	if !root.IsObject() || hasDuplicateJSONMembers(root) {
 		return nil, errInvalidRequest
 	}
 	var spans []textSpan
@@ -99,54 +101,50 @@ func geminiTextPartAllowed(part gjson.Result) bool {
 	return part.Get("thought").Type != gjson.True
 }
 
-func hasDuplicateJSONMembers(body []byte) bool {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	duplicate, err := jsonValueHasDuplicateMembers(decoder)
-	return err != nil || duplicate
+func hasDuplicateJSONMembers(root gjson.Result) bool {
+	if root.IsObject() {
+		seen := make(map[string]struct{})
+		duplicate := false
+		root.ForEach(func(key, value gjson.Result) bool {
+			name, ok := canonicalJSONMemberName(key)
+			if !ok {
+				duplicate = true
+				return false
+			}
+			if _, exists := seen[name]; exists {
+				duplicate = true
+				return false
+			}
+			seen[name] = struct{}{}
+			if hasDuplicateJSONMembers(value) {
+				duplicate = true
+				return false
+			}
+			return true
+		})
+		return duplicate
+	}
+	if root.IsArray() {
+		duplicate := false
+		root.ForEach(func(_, value gjson.Result) bool {
+			if hasDuplicateJSONMembers(value) {
+				duplicate = true
+				return false
+			}
+			return true
+		})
+		return duplicate
+	}
+	return false
 }
 
-func jsonValueHasDuplicateMembers(decoder *json.Decoder) (bool, error) {
-	token, err := decoder.Token()
-	if err != nil {
-		return false, err
+func canonicalJSONMemberName(key gjson.Result) (string, bool) {
+	if !strings.ContainsRune(key.Raw, '\\') && utf8.ValidString(key.Str) {
+		return key.Str, true
 	}
-	delim, ok := token.(json.Delim)
-	if !ok {
-		return false, nil
+	var decoded string
+	if err := json.Unmarshal([]byte(key.Raw), &decoded); err != nil {
+		return "", false
 	}
-
-	switch delim {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return false, err
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return false, errors.New("JSON object member name is not a string")
-			}
-			if _, exists := seen[key]; exists {
-				return true, nil
-			}
-			seen[key] = struct{}{}
-			if duplicate, err := jsonValueHasDuplicateMembers(decoder); err != nil || duplicate {
-				return duplicate, err
-			}
-		}
-		_, err = decoder.Token()
-		return false, err
-	case '[':
-		for decoder.More() {
-			if duplicate, err := jsonValueHasDuplicateMembers(decoder); err != nil || duplicate {
-				return duplicate, err
-			}
-		}
-		_, err = decoder.Token()
-		return false, err
-	default:
-		return false, nil
-	}
+	return decoded, true
 }
