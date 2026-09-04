@@ -499,33 +499,86 @@ func benchmarkFoldRewriteStrategy(text string, cfg *configSnapshot, preflight bo
 
 func runBenchmarkExactBlockStrategies(b *testing.B) {
 	cases := []struct {
-		rules, text int
-		set         string
+		rules, text, target int
+		match, set          string
+		tune                bool
 	}{
-		{rules: 32, text: 4 << 10, set: "calibration"},
-		{rules: 64, text: 16 << 10, set: "calibration"},
-		{rules: 128, text: 64 << 10, set: "calibration"},
-		{rules: 256, text: 16 << 10, set: "holdout"},
+		{rules: 32, text: 4 << 10, target: 31, match: "last", set: "holdout"},
+		{rules: 128, text: 64 << 10, target: 127, match: "last", set: "holdout"},
+		{rules: 256, text: 16 << 10, target: 255, match: "last", set: "calibration", tune: true},
+		{rules: 256, text: 64 << 10, target: 255, match: "last", set: "calibration", tune: true},
+		{rules: 256, text: 16 << 10, target: 0, match: "first", set: "holdout"},
+		{rules: 256, text: 16 << 10, target: 128, match: "middle", set: "holdout"},
 	}
-	const term = "BLOCKME"
+	strategies := []struct {
+		name       string
+		prefix     int
+		production bool
+	}{
+		{name: "baseline", prefix: -1},
+		{name: "ac-prefix-0", prefix: 0},
+		{name: "ac-prefix-4", prefix: 4},
+		{name: "ac-prefix-8", prefix: 8},
+		{name: "ac-prefix-16", prefix: 16},
+		{name: "production", production: true},
+	}
+	const target = "BLOCKME"
 	for _, tc := range cases {
 		tc := tc
-		b.Run(benchmarkBaselineName(modeBlock, tc.rules, tc.text, "literal", "last", tc.set), func(b *testing.B) {
-			cfg := benchmarkSnapshot(modeBlock, false, benchmarkRules(tc.rules, term))
-			body := benchmarkScenarioBody(benchmarkSizedText(tc.text, term), "", 1, "")
-			got, err := transformRequest(body, "openai", cfg)
-			if err != nil || got.Invalid || got.Body != nil || got.Blocked == nil || got.Blocked.Term != term || got.Blocked.Role != "user" {
-				b.Fatalf("transformRequest() = %#v, %v; want block for %q", got, err, term)
+		rules := benchmarkRules(tc.rules, "")
+		rules[tc.target] = compiledRule{Term: target}
+		text := benchmarkSizedText(tc.text, target)
+		cfg := benchmarkSnapshot(modeBlock, false, append([]compiledRule(nil), rules...))
+		spans := [...]textSpan{{Text: text, Role: "user"}}
+		for _, strategy := range strategies {
+			strategy := strategy
+			if !tc.tune && strategy.name != "baseline" && !strategy.production {
+				continue
 			}
-
-			b.ReportAllocs()
-			b.SetBytes(int64(len(body)))
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
-			}
-		})
+			b.Run(benchmarkStrategyName(strategy.name, modeBlock, tc.rules, tc.text, "literal", tc.match, tc.set), func(b *testing.B) {
+				var matcher *byteMatcher
+				if !strategy.production && strategy.prefix >= 0 {
+					matcher = newByteMatcher(rules[strategy.prefix:], strategy.prefix)
+				}
+				run := func() (int, bool) {
+					if strategy.production {
+						ruleIndex, _, matched := matchExactBlock(spans[:], cfg)
+						return ruleIndex, matched
+					}
+					return benchmarkExactBlockStrategy(text, rules, strategy.prefix, matcher)
+				}
+				if got, matched := run(); !matched || got != tc.target {
+					b.Fatalf("strategy match = %d, %t; want %d, true", got, matched, tc.target)
+				}
+				b.ReportAllocs()
+				b.SetBytes(int64(len(text)))
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					benchmarkFoldRuleSink, benchmarkBoolSink = run()
+				}
+			})
+		}
 	}
+}
+
+func benchmarkExactBlockStrategy(text string, rules []compiledRule, prefix int, matcher *byteMatcher) (int, bool) {
+	if prefix < 0 {
+		for ruleIndex, rule := range rules {
+			if strings.Contains(text, rule.Term) {
+				return ruleIndex, true
+			}
+		}
+		return -1, false
+	}
+	if prefix > len(rules) {
+		prefix = len(rules)
+	}
+	for ruleIndex := 0; ruleIndex < prefix; ruleIndex++ {
+		if strings.Contains(text, rules[ruleIndex].Term) {
+			return ruleIndex, true
+		}
+	}
+	return matcher.match(text)
 }
 
 func runBenchmarkFoldedRewriteStrategies(b *testing.B) {

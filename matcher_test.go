@@ -351,17 +351,18 @@ func TestAdaptiveExactBlockBoundary(t *testing.T) {
 		rules, textBytes int
 		want             bool
 	}{
-		{rules: 31, textBytes: 1 << 20},
-		{rules: 32, textBytes: 4095},
-		{rules: 32, textBytes: 4096, want: true},
-		{rules: 128, textBytes: 64 << 10, want: true},
+		{rules: 255, textBytes: 1 << 20},
+		{rules: 256, textBytes: (16 << 10) - 1},
+		{rules: 256, textBytes: 16 << 10, want: true},
+		{rules: 512, textBytes: 64 << 10, want: true},
+		{rules: 128, textBytes: 64 << 10},
 	} {
 		if got := useExactByteMatcher(test.rules, test.textBytes); got != test.want {
 			t.Errorf("useExactByteMatcher(%d, %d) = %t, want %t", test.rules, test.textBytes, got, test.want)
 		}
 	}
 
-	rules := make([]compiledRule, 32)
+	rules := make([]compiledRule, 256)
 	for i := range rules {
 		rules[i] = compiledRule{Term: "term-" + string(rune('A'+i))}
 	}
@@ -371,6 +372,14 @@ func TestAdaptiveExactBlockBoundary(t *testing.T) {
 	}
 	if exactBlock.ExactBlockMatcher == nil {
 		t.Fatal("exact block snapshot left ExactBlockMatcher nil")
+	}
+
+	belowBoundary := &configSnapshot{Mode: modeBlock, Rules: append([]compiledRule(nil), rules[:255]...)}
+	if err := compileSnapshot(belowBoundary); err != nil {
+		t.Fatal(err)
+	}
+	if belowBoundary.ExactBlockMatcher != nil {
+		t.Fatal("exact block snapshot below rule boundary compiled ExactBlockMatcher")
 	}
 
 	exactStrip := &configSnapshot{Mode: modeStrip, Rules: append([]compiledRule(nil), rules...)}
@@ -387,5 +396,63 @@ func TestAdaptiveExactBlockBoundary(t *testing.T) {
 	}
 	if foldedBlock.ExactBlockMatcher != nil {
 		t.Fatal("folded block snapshot compiled ExactBlockMatcher")
+	}
+}
+
+func TestAdaptiveExactBlockPreservesRuleAndDocumentOrder(t *testing.T) {
+	rules := make([]compiledRule, 256)
+	for i := range rules {
+		rules[i] = compiledRule{Term: "term-" + string(rune('A'+i))}
+	}
+	rules[1].Term = "prefix-hit"
+	rules[4].Term = "tail-low"
+	rules[255].Term = "tail-high"
+	cfg := &configSnapshot{Mode: modeBlock, Rules: rules}
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+	padding := strings.Repeat("x", 16<<10)
+
+	tests := []struct {
+		name     string
+		spans    []textSpan
+		wantTerm string
+		wantRole string
+	}{
+		{
+			name: "prefix rule beats earlier tail occurrence",
+			spans: []textSpan{
+				{Text: padding + " tail-high", Role: "user"},
+				{Text: "prefix-hit", Role: "developer"},
+			},
+			wantTerm: "prefix-hit",
+			wantRole: "developer",
+		},
+		{
+			name: "lower tail rule beats earlier span",
+			spans: []textSpan{
+				{Text: padding + " tail-high", Role: "user"},
+				{Text: "tail-low", Role: "developer"},
+			},
+			wantTerm: "tail-low",
+			wantRole: "developer",
+		},
+		{
+			name: "same tail rule keeps document order",
+			spans: []textSpan{
+				{Text: padding + " tail-low", Role: "user"},
+				{Text: "tail-low", Role: "developer"},
+			},
+			wantTerm: "tail-low",
+			wantRole: "user",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			blocked, changed := applyMode(test.spans, cfg)
+			if changed || blocked == nil || blocked.Term != test.wantTerm || blocked.Role != test.wantRole {
+				t.Fatalf("applyMode() = %#v, %t; want %q, %q", blocked, changed, test.wantTerm, test.wantRole)
+			}
+		})
 	}
 }
