@@ -162,6 +162,16 @@ func TestFoldKMPPreservesSourceByteSpans(t *testing.T) {
 	}
 }
 
+func TestFoldedRuleFallsBackWithoutFailureTable(t *testing.T) {
+	rule := forcedFoldedKMPRule("aaaab")
+	rule.FoldFailure = nil
+	prefix := strings.Repeat("a", 4<<10)
+	got, matched := stripRule(prefix+"aaaab", rule, true)
+	if !matched || got != prefix {
+		t.Fatalf("stripRule() = %q, %t; want unchanged prefix, true", got, matched)
+	}
+}
+
 func TestAdaptiveFoldKMPBoundary(t *testing.T) {
 	for _, test := range []struct {
 		textBytes, patternScalars int
