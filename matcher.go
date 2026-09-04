@@ -299,6 +299,78 @@ func foldMatchEnd(text string, start int, runes []rune) (int, bool) {
 	return position, true
 }
 
+func buildFoldFailure(pattern []rune) []int {
+	failure := make([]int, len(pattern))
+	for i, prefix := 1, 0; i < len(pattern); i++ {
+		for prefix > 0 && pattern[i] != pattern[prefix] {
+			prefix = failure[prefix-1]
+		}
+		if pattern[i] == pattern[prefix] {
+			prefix++
+		}
+		failure[i] = prefix
+	}
+	return failure
+}
+
+func rewriteFoldedKMP(text string, rule compiledRule, char string, obfuscate bool) (string, bool) {
+	pattern := rule.Runes
+	if len(pattern) == 0 || len(rule.FoldFailure) != len(pattern) {
+		return text, false
+	}
+	var out strings.Builder
+	written := 0
+	state := 0
+	matched := false
+	for scan := 0; scan < len(text); {
+		got, size := utf8.DecodeRuneInString(text[scan:])
+		key := foldClassRune(got)
+		for state > 0 && key != pattern[state] {
+			state = rule.FoldFailure[state-1]
+		}
+		if key == pattern[state] {
+			state++
+		}
+		scan += size
+		if state != len(pattern) {
+			continue
+		}
+
+		start := scan
+		for range pattern {
+			_, size = utf8.DecodeLastRuneInString(text[:start])
+			start -= size
+		}
+		if !matched && start == 0 && scan < len(text) {
+			if _, adjacent := foldMatchEnd(text, scan, pattern); adjacent {
+				return rewriteFolded(text, pattern, char, obfuscate)
+			}
+		}
+		if !matched {
+			capacity := len(text)
+			if obfuscate {
+				capacity += len(text) / len(pattern) * len(char)
+			}
+			out.Grow(capacity)
+			matched = true
+		}
+		out.WriteString(text[written:start])
+		if obfuscate {
+			_, firstSize := utf8.DecodeRuneInString(text[start:scan])
+			out.WriteString(text[start : start+firstSize])
+			out.WriteString(char)
+			out.WriteString(text[start+firstSize : scan])
+		}
+		written = scan
+		state = 0
+	}
+	if !matched {
+		return text, false
+	}
+	out.WriteString(text[written:])
+	return out.String(), true
+}
+
 func rewriteFolded(text string, runes []rune, char string, obfuscate bool) (string, bool) {
 	if len(runes) == 0 {
 		return text, false
@@ -362,12 +434,18 @@ func stripRule(text string, rule compiledRule, ignoreCase bool) (string, bool) {
 	if !ignoreCase {
 		return rewriteExact(text, rule, false)
 	}
+	if len(rule.FoldFailure) != 0 && len(text) >= foldKMPMinTextBytes {
+		return rewriteFoldedKMP(text, rule, "", false)
+	}
 	return stripFoldRule(text, rule.Runes)
 }
 
 func obfuscateRule(text string, rule compiledRule, ignoreCase bool, char string) (string, bool) {
 	if !ignoreCase {
 		return rewriteExact(text, rule, true)
+	}
+	if len(rule.FoldFailure) != 0 && len(text) >= foldKMPMinTextBytes {
+		return rewriteFoldedKMP(text, rule, char, true)
 	}
 	return obfuscateFoldRule(text, rule.Runes, char)
 }

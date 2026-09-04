@@ -229,6 +229,12 @@ func compileSnapshot(cfg *configSnapshot) error {
 			if len(cfg.Rules) >= foldRewritePreflightMinRules {
 				cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
 			}
+			for i := range cfg.Rules {
+				rule := &cfg.Rules[i]
+				if len(rule.Runes) >= foldKMPMinPatternScalars {
+					rule.FoldFailure = buildFoldFailure(rule.Runes)
+				}
+			}
 		}
 		return nil
 	}

@@ -21,6 +21,8 @@ const (
 	exactByteMatcherMinRules         = 256
 	exactByteMatcherMinTextBytes     = 16 << 10
 	exactByteMatcherPrefixRules      = 4
+	foldKMPMinPatternScalars         = 4
+	foldKMPMinTextBytes              = 4 << 10
 )
 
 func useFoldRewritePreflight(ruleCount, textBytes int) bool {
@@ -29,6 +31,10 @@ func useFoldRewritePreflight(ruleCount, textBytes int) bool {
 
 func useExactByteMatcher(ruleCount, totalTextBytes int) bool {
 	return ruleCount >= exactByteMatcherMinRules && totalTextBytes >= exactByteMatcherMinTextBytes
+}
+
+func useFoldedKMP(textBytes, patternScalars int) bool {
+	return textBytes >= foldKMPMinTextBytes && patternScalars >= foldKMPMinPatternScalars
 }
 
 type blockMatch struct {
