@@ -289,6 +289,7 @@ var (
 	benchmarkErrorSink     error
 	benchmarkFoldRuleSink  int
 	benchmarkSpansSink     []textSpan
+	benchmarkStringSink    string
 	benchmarkTransformSink transformResult
 )
 
@@ -582,35 +583,123 @@ func benchmarkExactBlockStrategy(text string, rules []compiledRule, prefix int, 
 }
 
 func runBenchmarkFoldedRewriteStrategies(b *testing.B) {
-	cases := []struct {
+	type benchmarkCase struct {
+		mode          mode
 		text, scalars int
+		script, match string
 		set           string
+		tune          bool
+	}
+	var cases []benchmarkCase
+	for _, scalars := range []int{4, 8, 16} {
+		for _, textBytes := range []int{4 << 10, 16 << 10, 64 << 10} {
+			cases = append(cases, benchmarkCase{
+				mode: modeStrip, text: textBytes, scalars: scalars,
+				script: "ascii", match: "none", set: "calibration", tune: true,
+			})
+		}
+	}
+	cases = append(cases,
+		benchmarkCase{mode: modeObfs, text: 64 << 10, scalars: 16, script: "ascii", match: "none", set: "holdout"},
+		benchmarkCase{mode: modeStrip, text: 64 << 10, scalars: 16, script: "ascii", match: "sparse", set: "holdout"},
+		benchmarkCase{mode: modeObfs, text: 64 << 10, scalars: 16, script: "ascii", match: "sparse", set: "holdout"},
+		benchmarkCase{mode: modeStrip, text: 64 << 10, scalars: 16, script: "ascii", match: "dense", set: "holdout"},
+		benchmarkCase{mode: modeObfs, text: 64 << 10, scalars: 16, script: "ascii", match: "dense", set: "holdout"},
+		benchmarkCase{mode: modeStrip, text: 64 << 10, scalars: 16, script: "ascii", match: "overlap", set: "holdout"},
+		benchmarkCase{mode: modeObfs, text: 64 << 10, scalars: 16, script: "sigma", match: "sparse", set: "holdout"},
+		benchmarkCase{mode: modeStrip, text: 64 << 10, scalars: 16, script: "kelvin", match: "sparse", set: "holdout"},
+		benchmarkCase{mode: modeObfs, text: 64 << 10, scalars: 16, script: "invalid-utf8", match: "sparse", set: "holdout"},
+		benchmarkCase{mode: modeStrip, text: 64 << 10, scalars: 3, script: "ascii", match: "none", set: "holdout"},
+		benchmarkCase{mode: modeStrip, text: (4 << 10) - 1, scalars: 16, script: "ascii", match: "none", set: "holdout"},
+	)
+	strategies := []struct {
+		name       string
+		kmp        bool
+		production bool
 	}{
-		{text: 4 << 10, scalars: 4, set: "calibration"},
-		{text: 16 << 10, scalars: 8, set: "calibration"},
-		{text: 64 << 10, scalars: 16, set: "holdout"},
+		{name: "baseline"},
+		{name: "kmp", kmp: true},
+		{name: "production", production: true},
 	}
 	for _, tc := range cases {
 		tc := tc
-		b.Run(benchmarkBaselineName(modeStrip, 1, tc.text, fmt.Sprintf("fold-%dscalars", tc.scalars), "folded", tc.set), func(b *testing.B) {
-			term := strings.Repeat("A", tc.scalars)
-			matchedText := strings.ToLower(term)
-			cfg := benchmarkSnapshot(modeStrip, true, benchmarkRules(1, term))
-			text := benchmarkSizedText(tc.text, matchedText)
-			body := benchmarkScenarioBody(text, "", 1, "")
-			want := benchmarkScenarioBody(strings.TrimSuffix(text, matchedText), "", 1, "")
-			got, err := transformRequest(body, "openai", cfg)
-			if err != nil || got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
-				b.Fatalf("transformRequest() = %#v, %v; want folded stripped body", got, err)
+		text, term := benchmarkFoldedRewriteInput(tc.text, tc.scalars, tc.script, tc.match)
+		cfg := benchmarkSnapshot(tc.mode, true, []compiledRule{{Term: term}})
+		rule := cfg.Rules[0]
+		want, wantMatched := rewriteFolded(text, rule.Runes, cfg.ObfsChar, tc.mode == modeObfs)
+		for _, strategy := range strategies {
+			strategy := strategy
+			if !tc.tune && strategy.kmp {
+				continue
 			}
+			name := benchmarkStrategyName(
+				strategy.name,
+				tc.mode,
+				1,
+				tc.text,
+				fmt.Sprintf("%s-%dscalars", tc.script, tc.scalars),
+				tc.match,
+				tc.set,
+			)
+			b.Run(name, func(b *testing.B) {
+				run := func() (string, bool) {
+					switch {
+					case strategy.production && tc.mode == modeObfs:
+						return obfuscateRule(text, rule, true, cfg.ObfsChar)
+					case strategy.production:
+						return stripRule(text, rule, true)
+					case strategy.kmp:
+						return rewriteFoldedKMP(text, rule, cfg.ObfsChar, tc.mode == modeObfs)
+					default:
+						return rewriteFolded(text, rule.Runes, cfg.ObfsChar, tc.mode == modeObfs)
+					}
+				}
+				if got, matched := run(); got != want || matched != wantMatched {
+					b.Fatalf("strategy bytes = % x, %t; want % x, %t", got, matched, want, wantMatched)
+				}
+				b.ReportAllocs()
+				b.SetBytes(int64(len(text)))
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					benchmarkStringSink, benchmarkBoolSink = run()
+				}
+			})
+		}
+	}
+}
 
-			b.ReportAllocs()
-			b.SetBytes(int64(len(body)))
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
-			}
-		})
+func benchmarkFoldedRewriteInput(textBytes, scalars int, script, match string) (string, string) {
+	patternPrefix, sourcePrefix := "A", "a"
+	patternSuffix, sourceSuffix := "B", "b"
+	switch script {
+	case "sigma":
+		patternPrefix, sourcePrefix = "Σ", "σ"
+	case "kelvin":
+		patternPrefix, sourcePrefix = "K", "K"
+	case "invalid-utf8":
+		patternPrefix = string([]byte{0xff})
+		sourcePrefix = string([]byte{0xfe})
+	}
+	term := strings.Repeat(patternPrefix, scalars-1) + patternSuffix
+	sourceTerm := strings.Repeat(sourcePrefix, scalars-1) + sourceSuffix
+	if match == "overlap" {
+		term = strings.Repeat(patternPrefix, scalars)
+		sourceTerm = strings.Repeat(sourcePrefix, scalars)
+	}
+	repeatBytes := func(unit string, size int) string {
+		return strings.Repeat(unit, size/len(unit)) + strings.Repeat("q", size%len(unit))
+	}
+	switch match {
+	case "none":
+		return repeatBytes(sourcePrefix, textBytes), term
+	case "sparse":
+		return repeatBytes(sourcePrefix, textBytes-len(sourceTerm)) + sourceTerm, term
+	case "dense":
+		return repeatBytes(sourceTerm, textBytes), term
+	case "overlap":
+		return repeatBytes(sourcePrefix, textBytes), term
+	default:
+		panic("unknown folded rewrite benchmark match")
 	}
 }
 
