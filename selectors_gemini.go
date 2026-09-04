@@ -8,8 +8,9 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			return
 		}
 		parts.ForEach(func(_, part gjson.Result) bool {
-			if geminiTextPartAllowed(part) {
-				appendStringSpan(spans, part.Get("text"), role, roles)
+			text, allowed := scanTextPart(part, false)
+			if allowed {
+				appendStringSpan(spans, text, role, roles)
 			}
 			return true
 		})

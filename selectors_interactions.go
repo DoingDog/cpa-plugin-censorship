@@ -15,8 +15,9 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		parts := systemInstruction.Get("parts")
 		if parts.IsArray() {
 			parts.ForEach(func(_, part gjson.Result) bool {
-				if interactionTextPartAllowed(part) && geminiTextPartAllowed(part) {
-					appendStringSpan(spans, part.Get("text"), "system", roles)
+				text, allowed := scanTextPart(part, true)
+				if allowed {
+					appendStringSpan(spans, text, "system", roles)
 				}
 				return true
 			})
@@ -81,13 +82,15 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 	case content.Type == gjson.String:
 		appendStringSpan(spans, content, role, roles)
 	case content.IsObject():
-		if interactionTextPartAllowed(content) && geminiTextPartAllowed(content) {
-			appendStringSpan(spans, content.Get("text"), role, roles)
+		text, allowed := scanTextPart(content, true)
+		if allowed {
+			appendStringSpan(spans, text, role, roles)
 		}
 	case content.IsArray():
 		content.ForEach(func(_, part gjson.Result) bool {
-			if interactionTextPartAllowed(part) && geminiTextPartAllowed(part) {
-				appendStringSpan(spans, part.Get("text"), role, roles)
+			text, allowed := scanTextPart(part, true)
+			if allowed {
+				appendStringSpan(spans, text, role, roles)
 			}
 			return true
 		})
@@ -96,8 +99,9 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 	parts := item.Get("parts")
 	if parts.IsArray() {
 		parts.ForEach(func(_, part gjson.Result) bool {
-			if interactionTextPartAllowed(part) && geminiTextPartAllowed(part) {
-				appendStringSpan(spans, part.Get("text"), role, roles)
+			text, allowed := scanTextPart(part, true)
+			if allowed {
+				appendStringSpan(spans, text, role, roles)
 			}
 			return true
 		})
@@ -112,12 +116,4 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 			return true
 		})
 	}
-}
-
-func interactionTextPartAllowed(part gjson.Result) bool {
-	if !part.IsObject() {
-		return false
-	}
-	partType := part.Get("type")
-	return !partType.Exists() || partType.Type == gjson.String && (partType.Str == "" || partType.Str == "text")
 }

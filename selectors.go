@@ -72,33 +72,39 @@ func appendStringSpan(spans *[]textSpan, value gjson.Result, role string, roles 
 	})
 }
 
-func geminiTextPartAllowed(part gjson.Result) bool {
-	for _, path := range []string{
-		"functionCall",
-		"functionResponse",
-		"function_call",
-		"function_response",
-		"inlineData",
-		"inline_data",
-		"fileData",
-		"file_data",
-		"executableCode",
-		"executable_code",
-		"codeExecutionResult",
-		"code_execution_result",
-		"thoughtSignature",
-		"thought_signature",
-		"functionCall.thoughtSignature",
-		"functionCall.thought_signature",
-		"functionResponse.thoughtSignature",
-		"functionResponse.thought_signature",
-		"extra_content.google.thought_signature",
-	} {
-		if part.Get(path).Exists() {
-			return false
-		}
+func scanTextPart(part gjson.Result, requireTextType bool) (text gjson.Result, allowed bool) {
+	if !part.IsObject() {
+		return text, false
 	}
-	return part.Get("thought").Type != gjson.True
+	var partType gjson.Result
+	typePresent := false
+	machinePart := false
+	thought := false
+	part.ForEach(func(key, value gjson.Result) bool {
+		switch key.Str {
+		case "text":
+			text = value
+		case "type":
+			typePresent = true
+			partType = value
+		case "thought":
+			thought = value.Type == gjson.True
+		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
+			machinePart = true
+		case "extra_content":
+			if value.Get("google.thought_signature").Exists() {
+				machinePart = true
+			}
+		}
+		return true
+	})
+	if machinePart || thought {
+		return text, false
+	}
+	if requireTextType && typePresent && (partType.Type != gjson.String || partType.Str != "" && partType.Str != "text") {
+		return text, false
+	}
+	return text, true
 }
 
 func hasDuplicateJSONMembers(root gjson.Result) bool {
