@@ -230,24 +230,28 @@ func obfuscateFoldRule(text string, runes []rune, char string) (string, bool) {
 	return rewriteFolded(text, runes, char, true)
 }
 
+func rewriteExact(text string, rule compiledRule, obfuscate bool) (string, bool) {
+	replacement := ""
+	if obfuscate {
+		replacement = rule.ExactReplacement
+	}
+	rewritten := strings.ReplaceAll(text, rule.Term, replacement)
+	if obfuscate {
+		return rewritten, len(rewritten) > len(text)
+	}
+	return rewritten, len(rewritten) < len(text)
+}
+
 func stripRule(text string, rule compiledRule, ignoreCase bool) (string, bool) {
 	if !ignoreCase {
-		if !strings.Contains(text, rule.Term) {
-			return text, false
-		}
-		return strings.ReplaceAll(text, rule.Term, ""), true
+		return rewriteExact(text, rule, false)
 	}
 	return stripFoldRule(text, rule.Runes)
 }
 
 func obfuscateRule(text string, rule compiledRule, ignoreCase bool, char string) (string, bool) {
 	if !ignoreCase {
-		if !strings.Contains(text, rule.Term) {
-			return text, false
-		}
-		_, firstSize := utf8.DecodeRuneInString(rule.Term)
-		replacement := rule.Term[:firstSize] + char + rule.Term[firstSize:]
-		return strings.ReplaceAll(text, rule.Term, replacement), true
+		return rewriteExact(text, rule, true)
 	}
 	return obfuscateFoldRule(text, rule.Runes, char)
 }
