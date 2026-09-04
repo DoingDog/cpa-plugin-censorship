@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 type textSpan struct {
@@ -72,22 +73,44 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 
 func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) {
 	matcher := cfg.ExactBlockMatcher
+	prefixCount := 0
 	if matcher != nil {
-		totalTextBytes := 0
-		for _, span := range spans {
-			totalTextBytes += len(span.Text)
+		prefixCount = exactByteMatcherPrefixRules
+		if prefixCount > len(cfg.Rules) {
+			prefixCount = len(cfg.Rules)
 		}
-		if useExactByteMatcher(len(cfg.Rules), totalTextBytes) {
-			prefixCount := exactByteMatcherPrefixRules
-			if prefixCount > len(cfg.Rules) {
-				prefixCount = len(cfg.Rules)
+		if len(spans) == 1 {
+			span := spans[0]
+			for ruleIndex := 0; ruleIndex < prefixCount; ruleIndex++ {
+				if strings.Contains(span.Text, cfg.Rules[ruleIndex].Term) {
+					return ruleIndex, span.Role, true
+				}
 			}
+		} else {
 			for ruleIndex := 0; ruleIndex < prefixCount; ruleIndex++ {
 				for _, span := range spans {
-					if containsRule(span.Text, cfg.Rules[ruleIndex], false) {
+					if strings.Contains(span.Text, cfg.Rules[ruleIndex].Term) {
 						return ruleIndex, span.Role, true
 					}
 				}
+			}
+		}
+
+		totalTextBytes := 0
+		if len(spans) == 1 {
+			totalTextBytes = len(spans[0].Text)
+		} else {
+			for _, span := range spans {
+				totalTextBytes += len(span.Text)
+			}
+		}
+		if useExactByteMatcher(len(cfg.Rules), totalTextBytes) {
+			if len(spans) == 1 {
+				ruleIndex, matched := matcher.match(spans[0].Text)
+				if matched {
+					return ruleIndex, spans[0].Role, true
+				}
+				return -1, "", false
 			}
 
 			bestRule := -1
@@ -106,9 +129,19 @@ func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) 
 		}
 	}
 
-	for ruleIndex, rule := range cfg.Rules {
+	if len(spans) == 1 {
+		span := spans[0]
+		for ruleIndex := prefixCount; ruleIndex < len(cfg.Rules); ruleIndex++ {
+			if strings.Contains(span.Text, cfg.Rules[ruleIndex].Term) {
+				return ruleIndex, span.Role, true
+			}
+		}
+		return -1, "", false
+	}
+
+	for ruleIndex := prefixCount; ruleIndex < len(cfg.Rules); ruleIndex++ {
 		for _, span := range spans {
-			if containsRule(span.Text, rule, false) {
+			if strings.Contains(span.Text, cfg.Rules[ruleIndex].Term) {
 				return ruleIndex, span.Role, true
 			}
 		}
