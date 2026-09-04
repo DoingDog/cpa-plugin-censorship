@@ -44,7 +44,28 @@ type foldMatcherNode struct {
 }
 
 type foldMatcher struct {
-	nodes []foldMatcherNode
+	nodes     []foldMatcherNode
+	asciiRoot [utf8.RuneSelf]int
+}
+
+func (matcher *foldMatcher) transition(state int, key rune) (int, bool) {
+	if state == 0 && key >= 0 && key < utf8.RuneSelf {
+		next := matcher.asciiRoot[key]
+		return next, next != 0
+	}
+	next, ok := matcher.nodes[state].next[key]
+	return next, ok
+}
+
+func (matcher *foldMatcher) setTransition(state int, key rune, next int) {
+	if state == 0 && key >= 0 && key < utf8.RuneSelf {
+		matcher.asciiRoot[key] = next
+		return
+	}
+	if matcher.nodes[state].next == nil {
+		matcher.nodes[state].next = make(map[rune]int)
+	}
+	matcher.nodes[state].next[key] = next
 }
 
 func newFoldMatcher(rules []compiledRule) *foldMatcher {
@@ -56,13 +77,10 @@ func newFoldMatcher(rules []compiledRule) *foldMatcher {
 		nodeIndex := 0
 		for _, r := range rule.Runes {
 			key := foldClassRune(r)
-			next, ok := matcher.nodes[nodeIndex].next[key]
+			next, ok := matcher.transition(nodeIndex, key)
 			if !ok {
-				if matcher.nodes[nodeIndex].next == nil {
-					matcher.nodes[nodeIndex].next = make(map[rune]int)
-				}
 				next = len(matcher.nodes)
-				matcher.nodes[nodeIndex].next[key] = next
+				matcher.setTransition(nodeIndex, key, next)
 				matcher.nodes = append(matcher.nodes, foldMatcherNode{minRule: -1})
 			}
 			nodeIndex = next
@@ -73,6 +91,11 @@ func newFoldMatcher(rules []compiledRule) *foldMatcher {
 	}
 
 	queue := make([]int, 0, len(matcher.nodes))
+	for _, child := range matcher.asciiRoot {
+		if child != 0 {
+			queue = append(queue, child)
+		}
+	}
 	for _, child := range matcher.nodes[0].next {
 		queue = append(queue, child)
 	}
@@ -81,7 +104,7 @@ func newFoldMatcher(rules []compiledRule) *foldMatcher {
 		for key, child := range matcher.nodes[current].next {
 			failure := matcher.nodes[current].fail
 			for {
-				if next, ok := matcher.nodes[failure].next[key]; ok {
+				if next, ok := matcher.transition(failure, key); ok {
 					failure = next
 					break
 				}
@@ -110,7 +133,7 @@ func (matcher *foldMatcher) match(text string) (int, bool) {
 		got, size := utf8.DecodeRuneInString(text[position:])
 		key := foldClassRune(got)
 		for {
-			next, ok := matcher.nodes[state].next[key]
+			next, ok := matcher.transition(state, key)
 			if ok {
 				state = next
 				break
