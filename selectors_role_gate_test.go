@@ -53,7 +53,7 @@ func TestSelectorRoleGatesPreserveCanonicalOverrides(t *testing.T) {
 	}
 
 	t.Run("openai responses output types use assistant", func(t *testing.T) {
-		assertSpans(`{"input":[{"type":"message","role":"user","content":[{"type":"output_text","text":"enabled output"}]},{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"enabled refusal"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"disabled input"}]}]}`,
+		assertSpans(`{"input":[{"type":"message","role":"user","content":[{"type":"output_text","text":"enabled output"}]},{"type":"message","role":"user","content":[{"type":"refusal","refusal":"enabled refusal"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"disabled input"}]}]}`,
 			"openai-response", scopeSet{"assistant": struct{}{}}, []struct{ text, role string }{
 				{text: "enabled output", role: "assistant"},
 				{text: "enabled refusal", role: "assistant"},
@@ -68,7 +68,7 @@ func TestSelectorRoleGatesPreserveCanonicalOverrides(t *testing.T) {
 	})
 
 	t.Run("gemini advances roles through disabled and invalid entries", func(t *testing.T) {
-		assertSpans(`{"contents":[{"role":"user","parts":[{"text":"disabled user"}]},{"parts":[{"text":"enabled assistant"}]},{"role":"assistant","parts":[{"text":"invalid role"}]},{"parts":[{"text":"enabled assistant after invalid"}]}]}`,
+		assertSpans(`{"contents":[{"role":"user","parts":[{"text":"disabled user"}]},{"parts":[{"text":"enabled assistant"}]},{"role":null,"parts":[{"text":"invalid role"}]},{"parts":[{"text":"enabled assistant after invalid"}]}]}`,
 			"gemini", scopeSet{"assistant": struct{}{}}, []struct{ text, role string }{
 				{text: "enabled assistant", role: "assistant"},
 				{text: "enabled assistant after invalid", role: "assistant"},
@@ -80,6 +80,13 @@ func TestSelectorRoleGatesPreserveCanonicalOverrides(t *testing.T) {
 			"interactions", scopeSet{"assistant": struct{}{}}, []struct{ text, role string }{
 				{text: "enabled nested assistant", role: "assistant"},
 				{text: "enabled model output", role: "assistant"},
+			})
+	})
+
+	t.Run("interactions user input preserves explicit assistant role", func(t *testing.T) {
+		assertSpans(`{"input":[{"role":"assistant","type":"user_input","content":"enabled assistant"}]}`,
+			"interactions", scopeSet{"assistant": struct{}{}}, []struct{ text, role string }{
+				{text: "enabled assistant", role: "assistant"},
 			})
 	})
 }

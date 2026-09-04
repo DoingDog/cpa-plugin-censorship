@@ -162,6 +162,7 @@ func TestScanTextPartPreservesProtocolRules(t *testing.T) {
 		{name: "snake nested functionResponse thought signature", part: `{"text":"accepted","functionResponse":{"thought_signature":null}}`, allowed: false},
 		{name: "extra content Google thought signature", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":null}}}`, allowed: false},
 		{name: "ordinary extra content", part: `{"text":"accepted","extra_content":{"google":{"note":"value"}}}`, requireTextType: true, allowed: true},
+		{name: "escaped machine key", part: `{"text":"accepted","\u0066unctionCall":null}`, requireTextType: true, allowed: false},
 	}
 	machineKeys := []string{
 		"functionCall", "functionResponse", "function_call", "function_response",
