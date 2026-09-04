@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 )
@@ -109,69 +110,57 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 }
 
 func rebuildBody(body []byte, spans []textSpan) ([]byte, error) {
-	finalLen := len(body)
-	var replacements [][]byte
-	previousEnd := 0
 	maxInt := int(^uint(0) >> 1)
-	for i, span := range spans {
+	lowerBound := 0
+	previousEnd := 0
+	changed := false
+	for _, span := range spans {
 		if !span.Changed {
 			continue
 		}
-		if span.RawStart < previousEnd || span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > len(body) {
+		if span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > len(body) || span.RawStart < previousEnd {
 			return nil, errInvalidSpan
 		}
-		replacement, err := json.Marshal(span.Text)
-		if err != nil {
-			return nil, err
-		}
-		if replacements == nil {
-			replacements = make([][]byte, len(spans))
-		}
-		replacements[i] = replacement
-		rawLen := span.RawEnd - span.RawStart
-		if rawLen > finalLen {
+		unchangedLen := span.RawStart - previousEnd
+		if lowerBound > maxInt-unchangedLen {
 			return nil, errInvalidSpan
 		}
-		finalLen -= rawLen
-		if len(replacement) > maxInt-finalLen {
+		lowerBound += unchangedLen
+		if lowerBound > maxInt-2 {
 			return nil, errInvalidSpan
 		}
-		finalLen += len(replacement)
+		lowerBound += 2
 		previousEnd = span.RawEnd
+		changed = true
 	}
-	if replacements == nil {
+	if !changed {
 		return nil, nil
 	}
+	tailLen := len(body) - previousEnd
+	if lowerBound > maxInt-tailLen {
+		return nil, errInvalidSpan
+	}
+	lowerBound += tailLen
 
-	out := make([]byte, finalLen)
-	source, destination := len(body), finalLen
-	for i := len(spans) - 1; i >= 0; i-- {
-		if !spans[i].Changed {
+	var out bytes.Buffer
+	out.Grow(lowerBound)
+	encoder := json.NewEncoder(&out)
+	previousEnd = 0
+	for i := range spans {
+		span := &spans[i]
+		if !span.Changed {
 			continue
 		}
-		span := spans[i]
-		tailLen := source - span.RawEnd
-		if tailLen < 0 || tailLen > destination {
-			return nil, errInvalidSpan
+		out.Write(body[previousEnd:span.RawStart])
+		if err := encoder.Encode(&span.Text); err != nil {
+			return nil, err
 		}
-		destination -= tailLen
-		copy(out[destination:destination+tailLen], body[span.RawEnd:source])
-		replacement := replacements[i]
-		if len(replacement) > destination {
-			return nil, errInvalidSpan
+		if out.Len() == 0 || out.Bytes()[out.Len()-1] != '\n' {
+			return nil, errors.New("JSON encoder output missing trailing newline")
 		}
-		destination -= len(replacement)
-		copy(out[destination:destination+len(replacement)], replacement)
-		source = span.RawStart
+		out.Truncate(out.Len() - 1)
+		previousEnd = span.RawEnd
 	}
-	if source > destination {
-		return nil, errInvalidSpan
-	}
-	destination -= source
-	copy(out[destination:destination+source], body[:source])
-	source = 0
-	if source != 0 || destination != 0 {
-		return nil, errInvalidSpan
-	}
-	return out, nil
+	out.Write(body[previousEnd:])
+	return out.Bytes(), nil
 }
