@@ -17,6 +17,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var benchmarkDynamicABIResponseSink pluginapi.RequestInterceptResponse
+
 func BenchmarkDynamicABIRequestInterceptors(b *testing.B) {
 	pluginDir := os.Getenv("CENSORSHIP_PLUGIN_DIR")
 	if pluginDir == "" {
@@ -44,30 +46,34 @@ func BenchmarkDynamicABIRequestInterceptors(b *testing.B) {
 		cases := []struct {
 			phase string
 			call  func() pluginapi.RequestInterceptResponse
-			check func(pluginapi.RequestInterceptResponse) bool
 		}{
 			{phase: "before", call: func() pluginapi.RequestInterceptResponse {
 				return host.InterceptRequestBeforeAuth(context.Background(), req)
-			}, check: func(resp pluginapi.RequestInterceptResponse) bool {
-				return !bytes.Contains(resp.Body, []byte("BLOCKME"))
 			}},
 			{phase: "after", call: func() pluginapi.RequestInterceptResponse {
 				return host.InterceptRequestAfterAuth(context.Background(), req)
-			}, check: func(resp pluginapi.RequestInterceptResponse) bool { return bytes.Equal(resp.Body, body) }},
+			}},
 		}
 		for _, tc := range cases {
+			tc := tc
 			name := fmt.Sprintf("GOOS=%s/loader=%s/phase=%s/calls=1/body=%d", runtime.GOOS, loader, tc.phase, size)
 			b.Run(name, func(b *testing.B) {
-				if resp := tc.call(); !tc.check(resp) {
-					b.Fatalf("%s oracle failed: body length %d", tc.phase, len(resp.Body))
+				resp := tc.call()
+				switch tc.phase {
+				case "before":
+					if bytes.Contains(resp.Body, []byte("BLOCKME")) {
+						b.Fatalf("%s oracle failed: body length %d", tc.phase, len(resp.Body))
+					}
+				case "after":
+					if !bytes.Equal(resp.Body, body) {
+						b.Fatalf("%s oracle failed: body length %d", tc.phase, len(resp.Body))
+					}
 				}
-				b.ReportAllocs()
+				b.ReportAllocs() // Host Go runtime allocations only.
 				b.SetBytes(int64(len(body)))
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					if resp := tc.call(); !tc.check(resp) {
-						b.Fatalf("%s oracle failed", tc.phase)
-					}
+					benchmarkDynamicABIResponseSink = tc.call()
 				}
 			})
 		}
