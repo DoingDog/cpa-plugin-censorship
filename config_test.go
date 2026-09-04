@@ -226,6 +226,40 @@ func TestCompileSnapshotBuildsOnlyActiveDerivedData(t *testing.T) {
 	}
 }
 
+func TestCompileSnapshotBuildsKMPOnlyForFoldedRewrite(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       mode
+		ignoreCase bool
+		term       string
+		want       []int
+	}{
+		{name: "exact block", mode: modeBlock, term: "ababaca"},
+		{name: "exact strip", mode: modeStrip, term: "ababaca"},
+		{name: "exact obfs", mode: modeObfs, term: "ababaca"},
+		{name: "folded block", mode: modeBlock, ignoreCase: true, term: "ababaca"},
+		{name: "folded strip short", mode: modeStrip, ignoreCase: true, term: "aba"},
+		{name: "folded strip", mode: modeStrip, ignoreCase: true, term: "ababaca", want: []int{0, 0, 1, 2, 3, 0, 1}},
+		{name: "folded obfs", mode: modeObfs, ignoreCase: true, term: "ababaca", want: []int{0, 0, 1, 2, 3, 0, 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &configSnapshot{
+				Mode:       test.mode,
+				IgnoreCase: test.ignoreCase,
+				Rules:      []compiledRule{{Term: test.term}},
+				ObfsChar:   "​",
+			}
+			if err := compileSnapshot(cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Rules[0].FoldFailure; !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("FoldFailure = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCompileSnapshotValidatesObfsByRuneCount(t *testing.T) {
 	if _, err := parseConfigYAML([]byte("mode: obfs\nwords: [é]\n")); err == nil {
 		t.Fatal("single multibyte scalar obfs word was accepted")

@@ -127,6 +127,75 @@ func TestFoldObfuscateRulePreservesSourceCasePerOccurrence(t *testing.T) {
 	}
 }
 
+func TestFoldKMPResetsAfterNonOverlappingMatch(t *testing.T) {
+	rule := forcedFoldedKMPRule("aa")
+	got, matched := rewriteFoldedKMP("aaa", rule, "", false)
+	if !matched || got != "a" {
+		t.Fatalf("rewriteFoldedKMP() = %q, %t; want %q, true", got, matched, "a")
+	}
+}
+
+func TestFoldKMPPreservesSourceByteSpans(t *testing.T) {
+	const char = "⁠"
+	invalidTerm := string([]byte{0xff, 'x'})
+	invalidText := "a" + string([]byte{0xfe, 'X'}) + "b"
+	tests := []struct {
+		name      string
+		text      string
+		term      string
+		obfuscate bool
+		want      string
+	}{
+		{name: "sigma strip", text: "xςΣσy", term: "ΣΣ", want: "xσy"},
+		{name: "kelvin obfs", text: "aKXb", term: "kx", obfuscate: true, want: "aK" + char + "Xb"},
+		{name: "source case obfs", text: "aÉxB", term: "éX", obfuscate: true, want: "aÉ" + char + "xB"},
+		{name: "invalid UTF-8 obfs", text: invalidText, term: invalidTerm, obfuscate: true, want: "a" + string([]byte{0xfe}) + char + "Xb"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rule := forcedFoldedKMPRule(test.term)
+			got, matched := rewriteFoldedKMP(test.text, rule, char, test.obfuscate)
+			if !matched || got != test.want {
+				t.Fatalf("rewriteFoldedKMP() bytes = % x, %t; want % x, true", got, matched, test.want)
+			}
+		})
+	}
+}
+
+func TestAdaptiveFoldKMPBoundary(t *testing.T) {
+	for _, test := range []struct {
+		textBytes, patternScalars int
+		want                      bool
+	}{
+		{textBytes: 1 << 20, patternScalars: 3},
+		{textBytes: (4 << 10) - 1, patternScalars: 4},
+		{textBytes: 4 << 10, patternScalars: 4, want: true},
+		{textBytes: 64 << 10, patternScalars: 16, want: true},
+	} {
+		if got := useFoldedKMP(test.textBytes, test.patternScalars); got != test.want {
+			t.Errorf("useFoldedKMP(%d, %d) = %t, want %t", test.textBytes, test.patternScalars, got, test.want)
+		}
+	}
+}
+
+func forcedFoldedKMPRule(term string) compiledRule {
+	rule := compiledRule{Term: term}
+	for _, r := range term {
+		rule.Runes = append(rule.Runes, foldClassRune(r))
+	}
+	rule.FoldFailure = make([]int, len(rule.Runes))
+	for i, prefix := 1, 0; i < len(rule.Runes); i++ {
+		for prefix > 0 && rule.Runes[i] != rule.Runes[prefix] {
+			prefix = rule.FoldFailure[prefix-1]
+		}
+		if rule.Runes[i] == rule.Runes[prefix] {
+			prefix++
+		}
+		rule.FoldFailure[i] = prefix
+	}
+	return rule
+}
+
 func TestContainsRuleCaseModes(t *testing.T) {
 	rule := compiledRule{Term: "Alpha", Runes: []rune("Alpha")}
 	if containsRule("alpha", rule, false) {

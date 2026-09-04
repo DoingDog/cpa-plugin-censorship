@@ -98,6 +98,48 @@ func FuzzRuleEngineAgainstOracle(f *testing.F) {
 	})
 }
 
+func FuzzFoldKMPAgainstOracle(f *testing.F) {
+	for _, seed := range []struct {
+		text string
+		term string
+		mode uint8
+	}{
+		{text: "aaaaa", term: "aaaa"},
+		{text: "ςΣσΣ", term: "ΣΣΣΣ"},
+		{text: "KxKX", term: "KXKX", mode: 1},
+		{text: string([]byte{0xfe, 'A', 'A', 'B'}), term: string([]byte{0xff, 'a', 'a', 'b'}), mode: 1},
+	} {
+		f.Add(seed.text, seed.term, seed.mode)
+	}
+	f.Fuzz(func(t *testing.T, text, term string, modeByte uint8) {
+		patternScalars := utf8.RuneCountInString(term)
+		if len(text) > 512 || len(term) > 128 || patternScalars < foldKMPMinPatternScalars || patternScalars > 32 {
+			t.Skip()
+		}
+		selected := modeStrip
+		if modeByte%2 == 1 {
+			selected = modeObfs
+		}
+		cfg := &configSnapshot{
+			Mode:       selected,
+			IgnoreCase: true,
+			Rules:      []compiledRule{{Term: term}},
+			ObfsChar:   "​",
+		}
+		if err := compileSnapshot(cfg); err != nil {
+			t.Fatal(err)
+		}
+		got, matched := rewriteFoldedKMP(text, cfg.Rules[0], cfg.ObfsChar, selected == modeObfs)
+		want := oracleStrip(text, term, true)
+		if selected == modeObfs {
+			want = oracleObfuscate(text, term, true, cfg.ObfsChar)
+		}
+		if got != want || matched != (want != text) {
+			t.Fatalf("rewriteFoldedKMP() bytes = % x, %t; oracle = % x, %t", got, matched, want, want != text)
+		}
+	})
+}
+
 func FuzzDuplicateWalkerAgainstOracle(f *testing.F) {
 	for _, body := range [][]byte{
 		[]byte(`{"x":0,"\u0078":1}`),
