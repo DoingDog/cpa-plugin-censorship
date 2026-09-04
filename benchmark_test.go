@@ -247,3 +247,43 @@ func benchmarkScenarioBody(text, lastText string, nodes int, excludedPosition st
 	}
 	return []byte(`{"messages":[` + strings.Join(messages, ",") + `]}`)
 }
+
+func BenchmarkDuplicateValidation(b *testing.B) {
+	runBenchmarkDuplicateValidation(b)
+}
+
+func BenchmarkTextPartScanning(b *testing.B) {
+	runBenchmarkTextPartScanning(b)
+}
+
+func BenchmarkDisabledRoleSelectors(b *testing.B) {
+	runBenchmarkDisabledRoleSelectors(b)
+}
+
+func BenchmarkRebuildChangedSpans(b *testing.B) {
+	runBenchmarkRebuildChangedSpans(b)
+}
+
+func BenchmarkSuccessEnvelope(b *testing.B) {
+	runBenchmarkSuccessEnvelope(b)
+}
+
+func BenchmarkExactRewriteStrategies(b *testing.B) {
+	runBenchmarkExactRewriteStrategies(b)
+}
+
+func BenchmarkFoldRootTransitions(b *testing.B) {
+	runBenchmarkFoldRootTransitions(b)
+}
+
+func BenchmarkRewritePreflightStrategies(b *testing.B) {
+	runBenchmarkRewritePreflightStrategies(b)
+}
+
+func BenchmarkExactBlockStrategies(b *testing.B) {
+	runBenchmarkExactBlockStrategies(b)
+}
+
+func BenchmarkFoldedRewriteStrategies(b *testing.B) {
+	runBenchmarkFoldedRewriteStrategies(b)
+}
