@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,8 +20,10 @@ const (
 )
 
 type compiledRule struct {
-	Term  string
-	Runes []rune
+	Term             string
+	Runes            []rune
+	ExactReplacement string
+	FoldFailure      []int
 }
 
 type scopeSet map[string]struct{}
@@ -132,7 +135,7 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 				if term == "" {
 					return nil, fmt.Errorf("word must not be empty")
 				}
-				cfg.Rules = append(cfg.Rules, compiledRule{Term: term, Runes: []rune(term)})
+				cfg.Rules = append(cfg.Rules, compiledRule{Term: term})
 			}
 		case "scope":
 			if err := validateMapping(value, "scope"); err != nil {
@@ -186,7 +189,7 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 
 	if cfg.Mode == modeObfs {
 		for _, rule := range cfg.Rules {
-			if len(rule.Runes) < 2 {
+			if utf8.RuneCountInString(rule.Term) < 2 {
 				return nil, fmt.Errorf("obfs word %q must contain at least two Unicode scalars", rule.Term)
 			}
 			if strings.Contains(rule.Term, cfg.ObfsChar) {
@@ -194,8 +197,48 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 			}
 		}
 	}
-	cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
+	if err := compileSnapshot(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func compileSnapshot(cfg *configSnapshot) error {
+	cfg.BlockMatcher = nil
+	for i := range cfg.Rules {
+		rule := &cfg.Rules[i]
+		rule.Runes = nil
+		rule.ExactReplacement = ""
+		rule.FoldFailure = nil
+	}
+
+	if cfg.IgnoreCase {
+		for i := range cfg.Rules {
+			rule := &cfg.Rules[i]
+			rule.Runes = make([]rune, 0, utf8.RuneCountInString(rule.Term))
+			for _, r := range rule.Term {
+				rule.Runes = append(rule.Runes, foldClassRune(r))
+			}
+		}
+		switch cfg.Mode {
+		case modeBlock:
+			cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
+		case modeStrip, modeObfs:
+			if len(cfg.Rules) >= 8 {
+				cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
+			}
+		}
+		return nil
+	}
+
+	if cfg.Mode == modeObfs {
+		for i := range cfg.Rules {
+			rule := &cfg.Rules[i]
+			_, firstSize := utf8.DecodeRuneInString(rule.Term)
+			rule.ExactReplacement = rule.Term[:firstSize] + cfg.ObfsChar + rule.Term[firstSize:]
+		}
+	}
+	return nil
 }
 
 func validateMapping(node *yaml.Node, name string) error {
