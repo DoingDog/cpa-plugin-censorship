@@ -171,12 +171,13 @@ func terminatedRequest(detail censorshipError) ([]byte, error) {
 	})
 }
 
+type successEnvelope struct {
+	OK     bool `json:"ok"`
+	Result any  `json:"result"`
+}
+
 func okEnvelope(value any) ([]byte, error) {
-	result, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(pluginabi.Envelope{OK: true, Result: result})
+	return json.Marshal(successEnvelope{OK: true, Result: value})
 }
 
 func errorEnvelope(code, message string) []byte {
