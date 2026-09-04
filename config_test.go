@@ -174,3 +174,86 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 		t.Fatal("no interception completed during reconfiguration")
 	}
 }
+
+func TestCompileSnapshotBuildsOnlyActiveDerivedData(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		wantRunes   bool
+		wantMatcher bool
+		wantExact   string
+	}{
+		{name: "exact block", raw: "mode: block\nwords: [K]\n"},
+		{name: "exact strip", raw: "mode: strip\nwords: [K]\n"},
+		{name: "exact obfs", raw: "mode: obfs\nwords: [éx]\n", wantExact: "é​x"},
+		{name: "folded block", raw: "mode: block\nignore_case: true\nwords: [K]\n", wantRunes: true, wantMatcher: true},
+		{name: "folded strip small", raw: "mode: strip\nignore_case: true\nwords: [K]\n", wantRunes: true},
+		{name: "folded strip preflight", raw: "mode: strip\nignore_case: true\nwords: [a, b, c, d, e, f, g, h]\n", wantRunes: true, wantMatcher: true},
+		{name: "folded obfs", raw: "mode: obfs\nignore_case: true\nwords: [éx]\n", wantRunes: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := mustConfig(t, test.raw)
+			if got := cfg.BlockMatcher != nil; got != test.wantMatcher {
+				t.Fatalf("BlockMatcher present = %t, want %t", got, test.wantMatcher)
+			}
+			for i, rule := range cfg.Rules {
+				if got := rule.Runes != nil; got != test.wantRunes {
+					t.Errorf("rule %d Runes present = %t, want %t", i, got, test.wantRunes)
+				}
+				if rule.FoldFailure != nil {
+					t.Errorf("rule %d FoldFailure = %v, want nil", i, rule.FoldFailure)
+				}
+				wantExact := ""
+				if i == 0 {
+					wantExact = test.wantExact
+				}
+				if rule.ExactReplacement != wantExact {
+					t.Errorf("rule %d ExactReplacement = %q, want %q", i, rule.ExactReplacement, wantExact)
+				}
+				if test.wantRunes {
+					want := make([]rune, 0, len([]rune(rule.Term)))
+					for _, r := range rule.Term {
+						want = append(want, foldClassRune(r))
+					}
+					if !reflect.DeepEqual(rule.Runes, want) {
+						t.Errorf("rule %d Runes = %U, want canonical %U", i, rule.Runes, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCompileSnapshotValidatesObfsByRuneCount(t *testing.T) {
+	if _, err := parseConfigYAML([]byte("mode: obfs\nwords: [é]\n")); err == nil {
+		t.Fatal("single multibyte scalar obfs word was accepted")
+	}
+	cfg := mustConfig(t, "mode: obfs\nwords: [éx]\n")
+	if cfg.Rules[0].Runes != nil {
+		t.Fatalf("exact obfs Runes = %U, want nil", cfg.Rules[0].Runes)
+	}
+}
+
+func TestSyntheticSnapshotsUseProductionCompiler(t *testing.T) {
+	fuzzFold := snapshotForFuzz([]string{"K"}, 0, true)
+	if fuzzFold == nil || fuzzFold.BlockMatcher == nil || !reflect.DeepEqual(fuzzFold.Rules[0].Runes, []rune{foldClassRune('K')}) {
+		t.Fatalf("folded fuzz snapshot = %#v", fuzzFold)
+	}
+
+	fuzzExact := snapshotForFuzz([]string{"éx"}, 2, false)
+	if fuzzExact == nil || fuzzExact.Rules[0].Runes != nil || fuzzExact.Rules[0].ExactReplacement != "é​x" {
+		t.Fatalf("exact fuzz snapshot = %#v", fuzzExact)
+	}
+
+	benchmarkFold := benchmarkSnapshot(modeStrip, true, benchmarkRules(8, "K"))
+	if benchmarkFold.BlockMatcher == nil || !reflect.DeepEqual(benchmarkFold.Rules[7].Runes, []rune{foldClassRune('K')}) {
+		t.Fatalf("folded benchmark snapshot = %#v", benchmarkFold)
+	}
+
+	_, benchmarkExact := benchmarkFixture(1<<10, 1, false)
+	if benchmarkExact.BlockMatcher != nil || benchmarkExact.Rules[0].Runes != nil {
+		t.Fatalf("exact benchmark snapshot = %#v", benchmarkExact)
+	}
+}

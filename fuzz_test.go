@@ -636,15 +636,18 @@ func snapshotForFuzz(terms []string, modeByte uint8, fold bool) *configSnapshot 
 	}
 	rules := make([]compiledRule, len(terms))
 	for i, term := range terms {
-		rules[i] = compiledRule{Term: term, Runes: []rune(term)}
+		rules[i] = compiledRule{Term: term}
 	}
-	return &configSnapshot{
-		Mode:         selected,
-		IgnoreCase:   fold,
-		Rules:        rules,
-		ObfsChar:     "​",
-		BlockMatcher: newFoldMatcher(rules),
+	cfg := &configSnapshot{
+		Mode:       selected,
+		IgnoreCase: fold,
+		Rules:      rules,
+		ObfsChar:   "​",
 	}
+	if err := compileSnapshot(cfg); err != nil {
+		return nil
+	}
+	return cfg
 }
 
 func TestSnapshotForFuzzPrecompilesFoldBlockMatcher(t *testing.T) {

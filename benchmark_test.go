@@ -198,17 +198,9 @@ func benchmarkFixture(size, wordCount int, fold bool) ([]byte, *configSnapshot) 
 	rules := make([]compiledRule, wordCount)
 	for i := range rules {
 		term := fmt.Sprintf("term-%04d", i)
-		rules[i] = compiledRule{Term: term, Runes: []rune(term)}
+		rules[i] = compiledRule{Term: term}
 	}
-	cfg := &configSnapshot{
-		Mode:         modeBlock,
-		IgnoreCase:   fold,
-		Rules:        rules,
-		Formats:      scopeSet{"openai": {}},
-		Roles:        scopeSet{"user": {}},
-		ObfsChar:     "​",
-		BlockMatcher: newFoldMatcher(rules),
-	}
+	cfg := benchmarkSnapshot(modeBlock, fold, rules)
 	const prefix = `{"messages":[{"role":"user","content":"`
 	const suffix = `"}]}`
 	if size < len(prefix)+len(suffix) {
@@ -437,7 +429,7 @@ func runBenchmarkFoldRootTransitions(b *testing.B) {
 	for _, tc := range cases {
 		tc := tc
 		b.Run(benchmarkBaselineName(modeBlock, tc.rules, tc.text, "fold-root", "none", tc.set), func(b *testing.B) {
-			matcher := newFoldMatcher(benchmarkFoldTransitionRules(tc.rules))
+			matcher := benchmarkSnapshot(modeBlock, true, benchmarkFoldTransitionRules(tc.rules)).BlockMatcher
 			text := strings.Repeat("az", tc.text/2)
 			if rule, matched := matcher.match(text); matched || rule != -1 {
 				b.Fatalf("matcher.match() = %d, %t; want no match", rule, matched)
@@ -554,10 +546,10 @@ func benchmarkRules(count int, target string) []compiledRule {
 	rules := make([]compiledRule, count)
 	for i := range rules {
 		term := fmt.Sprintf("term-%03d", i)
-		rules[i] = compiledRule{Term: term, Runes: []rune(term)}
+		rules[i] = compiledRule{Term: term}
 	}
 	if target != "" {
-		rules[len(rules)-1] = compiledRule{Term: target, Runes: []rune(target)}
+		rules[len(rules)-1] = compiledRule{Term: target}
 	}
 	return rules
 }
@@ -566,7 +558,7 @@ func benchmarkFoldTransitionRules(count int) []compiledRule {
 	rules := make([]compiledRule, count)
 	for i := range rules {
 		term := strings.Repeat("a", 4) + fmt.Sprintf("-%03d", i)
-		rules[i] = compiledRule{Term: term, Runes: []rune(term)}
+		rules[i] = compiledRule{Term: term}
 	}
 	return rules
 }
@@ -580,8 +572,8 @@ func benchmarkSnapshot(mode mode, ignoreCase bool, rules []compiledRule) *config
 		Roles:      scopeSet{"user": {}},
 		ObfsChar:   "​",
 	}
-	if mode == modeBlock && ignoreCase {
-		cfg.BlockMatcher = newFoldMatcher(rules)
+	if err := compileSnapshot(cfg); err != nil {
+		panic(err)
 	}
 	return cfg
 }
