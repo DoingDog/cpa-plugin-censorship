@@ -1206,6 +1206,10 @@ func FuzzRebuildBodyAgainstMarshalOracle(f *testing.F) {
 		{"first", "second", 3},
 		{"<>&\u2028\u2029", "newline\ntext", 1},
 		{"", "unchanged", 0},
+		{"negative", "second", 1 | 4},
+		{"out-of-order", "second", 3 | 8},
+		{"overlap", "second", 3 | 16},
+		{"past-body", "second", 2 | 32},
 	} {
 		f.Add(seed.first, seed.second, seed.mask)
 	}
@@ -1235,6 +1239,16 @@ func FuzzRebuildBodyAgainstMarshalOracle(f *testing.F) {
 		spans := []textSpan{
 			{RawStart: firstStart, RawEnd: firstEnd, Text: first, Changed: mask&1 != 0},
 			{RawStart: secondStart, RawEnd: secondEnd, Text: second, Changed: mask&2 != 0},
+		}
+		switch {
+		case mask&4 != 0:
+			spans[0].RawStart = -1
+		case mask&8 != 0:
+			spans[0], spans[1] = spans[1], spans[0]
+		case mask&16 != 0:
+			spans[1].RawStart = spans[0].RawEnd - 1
+		case mask&32 != 0:
+			spans[1].RawEnd = len(body) + 1
 		}
 
 		got, gotErr := rebuildBody(body, spans)
