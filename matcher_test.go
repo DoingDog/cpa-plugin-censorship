@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"unicode/utf8"
+)
 
 func TestFoldMatcherSelectsLowestRuleIndexAcrossOccurrences(t *testing.T) {
 	rules := []compiledRule{
@@ -146,5 +149,44 @@ func TestContainsRuleCaseModes(t *testing.T) {
 		if got := containsRule(tc.text, r, true); got != tc.want {
 			t.Errorf("containsRule(%q, %q) = %t, want %t", tc.text, tc.term, got, tc.want)
 		}
+	}
+}
+
+func TestFoldMatcherASCIITransitionsSurviveClearedRootMap(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode:       modeBlock,
+		IgnoreCase: true,
+		Rules:      []compiledRule{{Term: "ab"}},
+	}
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+	matcher := cfg.BlockMatcher
+	var root [utf8.RuneSelf]int = matcher.asciiRoot
+	if root['a'] == 0 {
+		t.Fatal("ASCII root table has no transition for a")
+	}
+	matcher.nodes[0].next = nil
+	if got, ok := matcher.match("xxAB"); !ok || got != 0 {
+		t.Fatalf("matcher.match() = %d, %t; want 0, true", got, ok)
+	}
+}
+
+func TestFoldMatcherFailureToRootUsesASCIITable(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode:       modeBlock,
+		IgnoreCase: true,
+		Rules: []compiledRule{
+			{Term: "acx"},
+			{Term: "b"},
+		},
+	}
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+	matcher := cfg.BlockMatcher
+	matcher.nodes[0].next = nil
+	if got, ok := matcher.match("acB"); !ok || got != 1 {
+		t.Fatalf("matcher.match() after failure to root = %d, %t; want 1, true", got, ok)
 	}
 }
