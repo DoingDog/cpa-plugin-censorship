@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -274,5 +275,89 @@ func TestRebuildBodyAllocationCeiling(t *testing.T) {
 	})
 	if allocations > allocationCeiling {
 		t.Fatalf("allocations = %.1f, ceiling = %d", allocations, allocationCeiling)
+	}
+}
+
+func TestUseFoldRewritePreflightBoundary(t *testing.T) {
+	tests := []struct {
+		rules, textBytes int
+		want             bool
+	}{
+		{rules: 7, textBytes: 4096},
+		{rules: 8, textBytes: 4095},
+		{rules: 8, textBytes: 4096, want: true},
+		{rules: 32, textBytes: 16384, want: true},
+	}
+	for _, test := range tests {
+		if got := useFoldRewritePreflight(test.rules, test.textBytes); got != test.want {
+			t.Errorf("useFoldRewritePreflight(%d, %d) = %t, want %t", test.rules, test.textBytes, got, test.want)
+		}
+	}
+}
+
+func TestFoldRewritePreflightMarksOnlyTotalMisses(t *testing.T) {
+	cfg := mustConfig(t, `mode: strip
+ignore_case: true
+words: [HIT, q0, q1, q2, q3, q4, q5, q6]
+`)
+	spans := []textSpan{
+		{Text: strings.Repeat("z", 4096), Role: "user"},
+		{Text: strings.Repeat("z", 4096) + "hit", Role: "assistant"},
+	}
+	blocked, changed := applyMode(spans, cfg)
+	if blocked != nil || !changed {
+		t.Fatalf("applyMode() = %#v, %t; want rewrite", blocked, changed)
+	}
+	if !spans[0].SkipFoldRewrite || spans[0].Changed {
+		t.Fatalf("total-miss span = %#v", spans[0])
+	}
+	if spans[1].SkipFoldRewrite || !spans[1].Changed || spans[1].Text != strings.Repeat("z", 4096) {
+		t.Fatalf("matching span = %#v", spans[1])
+	}
+
+	small := []textSpan{{Text: strings.Repeat("z", 4095)}}
+	applyMode(small, cfg)
+	if small[0].SkipFoldRewrite {
+		t.Fatalf("small folded span was preflighted: %#v", small[0])
+	}
+
+	exactCfg := mustConfig(t, `mode: strip
+words: [HIT, q0, q1, q2, q3, q4, q5, q6]
+`)
+	exact := []textSpan{{Text: strings.Repeat("z", 4096)}}
+	applyMode(exact, exactCfg)
+	if exact[0].SkipFoldRewrite {
+		t.Fatalf("exact span was preflighted: %#v", exact[0])
+	}
+}
+
+func TestFoldRewritePreflightPreservesRuleMajorCascade(t *testing.T) {
+	cfg := mustConfig(t, `mode: strip
+ignore_case: true
+words: [X, ab, q0, q1, q2, q3, q4, q5]
+`)
+	padding := strings.Repeat("z", 4093)
+	spans := []textSpan{{Text: "aXb" + padding, Role: "user"}}
+	blocked, changed := applyMode(spans, cfg)
+	if blocked != nil || !changed || spans[0].SkipFoldRewrite || spans[0].Text != padding {
+		t.Fatalf("applyMode() = %#v, %t, span %#v; want rule-major cascade", blocked, changed, spans[0])
+	}
+}
+
+func TestFoldRewritePreflightKeepsSpansIsolated(t *testing.T) {
+	cfg := mustConfig(t, `mode: strip
+ignore_case: true
+words: [ab, q0, q1, q2, q3, q4, q5, q6]
+`)
+	spans := []textSpan{
+		{Text: strings.Repeat("z", 4095) + "a", Role: "user"},
+		{Text: "b" + strings.Repeat("z", 4095), Role: "assistant"},
+	}
+	blocked, changed := applyMode(spans, cfg)
+	if blocked != nil || changed {
+		t.Fatalf("applyMode() = %#v, %t; want no cross-span match", blocked, changed)
+	}
+	if !spans[0].SkipFoldRewrite || !spans[1].SkipFoldRewrite {
+		t.Fatalf("isolated spans were not independently skipped: %#v", spans)
 	}
 }

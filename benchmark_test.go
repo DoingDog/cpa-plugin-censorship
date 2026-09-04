@@ -454,24 +454,47 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 		{rules: 32, text: 16 << 10, set: "calibration"},
 		{rules: 128, text: 64 << 10, set: "holdout"},
 	}
+	strategies := []struct {
+		name      string
+		preflight bool
+	}{
+		{name: "baseline"},
+		{name: "preflight", preflight: true},
+	}
 	for _, tc := range cases {
 		tc := tc
-		b.Run(benchmarkBaselineName(modeStrip, tc.rules, tc.text, "literal", "none", tc.set), func(b *testing.B) {
-			cfg := benchmarkSnapshot(modeStrip, false, benchmarkRules(tc.rules, ""))
-			body := benchmarkScenarioBody(benchmarkSizedText(tc.text, ""), "", 1, "")
-			got, err := transformRequest(body, "openai", cfg)
-			if err != nil || got.Invalid || got.Blocked != nil || got.Body != nil {
-				b.Fatalf("transformRequest() = %#v, %v; want unchanged request", got, err)
-			}
-
-			b.ReportAllocs()
-			b.SetBytes(int64(len(body)))
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
-			}
-		})
+		cfg := benchmarkSnapshot(modeStrip, true, benchmarkRules(tc.rules, ""))
+		text := benchmarkSizedText(tc.text, "")
+		for _, strategy := range strategies {
+			strategy := strategy
+			b.Run(benchmarkStrategyName(strategy.name, modeStrip, tc.rules, tc.text, "folded", "none", tc.set), func(b *testing.B) {
+				if benchmarkFoldRewriteStrategy(text, cfg, strategy.preflight) {
+					b.Fatal("total-miss strategy reported a match")
+				}
+				b.ReportAllocs()
+				b.SetBytes(int64(len(text)))
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					benchmarkBoolSink = benchmarkFoldRewriteStrategy(text, cfg, strategy.preflight)
+				}
+			})
+		}
 	}
+}
+
+func benchmarkFoldRewriteStrategy(text string, cfg *configSnapshot, preflight bool) bool {
+	if preflight {
+		if _, matched := cfg.BlockMatcher.match(text); !matched {
+			return false
+		}
+	}
+	changed := false
+	for _, rule := range cfg.Rules {
+		var matched bool
+		text, matched = stripRule(text, rule, true)
+		changed = changed || matched
+	}
+	return changed
 }
 
 func runBenchmarkExactBlockStrategies(b *testing.B) {
@@ -538,8 +561,12 @@ func runBenchmarkFoldedRewriteStrategies(b *testing.B) {
 	}
 }
 
+func benchmarkStrategyName(impl string, mode mode, rules, text int, pattern, match, set string) string {
+	return fmt.Sprintf("impl=%s/mode=%s/rules=%d/text=%d/pattern=%s/match=%s/set=%s", impl, mode, rules, text, pattern, match, set)
+}
+
 func benchmarkBaselineName(mode mode, rules, text int, pattern, match, set string) string {
-	return fmt.Sprintf("impl=baseline/mode=%s/rules=%d/text=%d/pattern=%s/match=%s/set=%s", mode, rules, text, pattern, match, set)
+	return benchmarkStrategyName("baseline", mode, rules, text, pattern, match, set)
 }
 
 func benchmarkRules(count int, target string) []compiledRule {
