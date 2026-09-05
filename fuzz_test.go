@@ -830,6 +830,23 @@ func oracleGeminiParts(container json.RawMessage, role string, spans *[]oraclePr
 	})
 }
 
+func TestOracleInteractionsExcludesMachineSystemText(t *testing.T) {
+	body := []byte(`{"system_instruction":{"type":"image","text":"SECRET"}}`)
+	var spans []oracleProtocolSpan
+	oracleInteractionsSpans(body, &spans)
+	if len(spans) != 0 {
+		t.Fatalf("oracle spans = %#v; want no machine system text span", spans)
+	}
+
+	rawSpans, ok := oracleRawProtocolSpans("interactions", body)
+	if !ok {
+		t.Fatal("oracleRawProtocolSpans rejected valid body")
+	}
+	if len(rawSpans) != 0 {
+		t.Fatalf("raw oracle spans = %#v; want no machine system text span", rawSpans)
+	}
+}
+
 func oracleInteractionsSpans(root []byte, spans *[]oracleProtocolSpan) {
 	system, ok := oracleFirstField(root, "system_instruction")
 	if !ok {
@@ -837,8 +854,10 @@ func oracleInteractionsSpans(root []byte, spans *[]oracleProtocolSpan) {
 	}
 	if ok {
 		oracleAppendString(spans, system, "system")
-		if text, ok := oracleFirstField(system, "text"); ok {
-			oracleAppendString(spans, text, "system")
+		if oracleInteractionPartAllowed(system) {
+			if text, ok := oracleFirstField(system, "text"); ok {
+				oracleAppendString(spans, text, "system")
+			}
 		}
 		oracleInteractionParts(system, "system", spans)
 	}
@@ -1131,8 +1150,10 @@ func oracleRawInteractionsSpans(root *oracleRawValue, spans *[]oracleRawStringTo
 	}
 	if ok {
 		oracleRawAppendString(spans, system, "system")
-		if text, ok := system.firstField("text"); ok {
-			oracleRawAppendString(spans, text, "system")
+		if oracleRawInteractionPartAllowed(system) {
+			if text, ok := system.firstField("text"); ok {
+				oracleRawAppendString(spans, text, "system")
+			}
 		}
 		oracleRawInteractionParts(system, "system", spans)
 	}
