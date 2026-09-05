@@ -412,7 +412,7 @@ func TestBuildWorkflowContract(t *testing.T) {
 			jobActionWith(job, "go-cross/cgo-actions@v1", "output") != tc.library ||
 			jobActionWith(job, "go-cross/cgo-actions@v1", "flags") != "-ldflags=-s -w" ||
 			jobActionWith(job, "go-cross/cgo-actions@v1", "x-flags") != "main.pluginVersion=${{ steps.release_metadata.outputs.version }}" ||
-				!jobRunContains(job, "-version \"${VERSION}\"") ||
+			!jobRunContains(job, "-version \"${VERSION}\"") ||
 			!jobRunContains(job, "go run ./.github/scripts/package-release.go") ||
 			!jobRunContains(job, "-library \""+libraryPath+"\"") ||
 			!jobRunContains(job, "-archive \"dist/"+tc.archive+"\"") ||
