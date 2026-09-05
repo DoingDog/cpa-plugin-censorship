@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -261,6 +260,14 @@ func benchmarkFixture(size, wordCount int, fold bool) ([]byte, *configSnapshot) 
 	return body, cfg
 }
 
+func benchmarkQuote(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
 func benchmarkScenarioBody(text, lastText string, nodes int, excludedPosition string) []byte {
 	if nodes < 1 {
 		nodes = 1
@@ -271,11 +278,11 @@ func benchmarkScenarioBody(text, lastText string, nodes int, excludedPosition st
 		if lastText != "" && i == nodes-1 {
 			nodeText = lastText
 		}
-		messages = append(messages, `{"role":"user","content":`+strconv.Quote(nodeText)+`}`)
+		messages = append(messages, `{"role":"user","content":`+benchmarkQuote(nodeText)+`}`)
 	}
 	if excludedPosition != "" {
 		payload := strings.Repeat("SECRET", (20<<20)/len("SECRET")+1)[:20<<20]
-		image := `{"role":"user","content":[{"type":"image_url","image_url":{"url":` + strconv.Quote(payload) + `}}]}`
+		image := `{"role":"user","content":[{"type":"image_url","image_url":{"url":` + benchmarkQuote(payload) + `}}]}`
 		switch excludedPosition {
 		case "before":
 			messages = append([]string{image}, messages...)
@@ -361,7 +368,7 @@ func runBenchmarkDuplicateValidation(b *testing.B) {
 
 func runBenchmarkTextPartScanning(b *testing.B) {
 	text := strings.Repeat("x", 1<<14)
-	body := []byte(`{"contents":[{"role":"user","parts":[{"text":` + strconv.Quote(text) + `},{"text":"ignored","functionCall":{"name":"noop"}},{"text":"tail"}]},{"role":"model","parts":[{"text":"assistant"}]}]}`)
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":` + benchmarkQuote(text) + `},{"text":"ignored","functionCall":{"name":"noop"}},{"text":"tail"}]},{"role":"model","parts":[{"text":"assistant"}]}]}`)
 	roles := scopeSet{"user": {}}
 	spans, err := selectTextSpans(body, "gemini", roles)
 	if err != nil || len(spans) != 2 || spans[0].Text != text || spans[1].Text != "tail" {
@@ -394,7 +401,7 @@ func runBenchmarkDisabledRoleSelectors(b *testing.B) {
 
 func runBenchmarkRebuildChangedSpans(b *testing.B) {
 	first := strings.Repeat("prefix ", 512) + "BLOCKME"
-	body := []byte(`{"messages":[{"role":"user","content":` + strconv.Quote(first) + `},{"role":"user","content":"BLOCKME"}]}`)
+	body := []byte(`{"messages":[{"role":"user","content":` + benchmarkQuote(first) + `},{"role":"user","content":"BLOCKME"}]}`)
 	spans, err := selectTextSpans(body, "openai", scopeSet{"user": {}})
 	if err != nil || len(spans) != 2 {
 		b.Fatalf("selectTextSpans() = %#v, %v; want two user spans", spans, err)
@@ -403,7 +410,7 @@ func runBenchmarkRebuildChangedSpans(b *testing.B) {
 	spans[0].Changed = true
 	spans[1].Text = ""
 	spans[1].Changed = true
-	want := []byte(`{"messages":[{"role":"user","content":` + strconv.Quote(spans[0].Text) + `},{"role":"user","content":""}]}`)
+	want := []byte(`{"messages":[{"role":"user","content":` + benchmarkQuote(spans[0].Text) + `},{"role":"user","content":""}]}`)
 	got, err := rebuildBody(body, spans)
 	if err != nil || !bytes.Equal(got, want) {
 		b.Fatalf("rebuildBody() = %q, %v; want %q", got, err, want)
