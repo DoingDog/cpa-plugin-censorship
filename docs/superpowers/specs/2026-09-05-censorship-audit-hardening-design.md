@@ -205,7 +205,7 @@ rest  = ASCII letter, digit, '.', '_', '+', or '-'
 
 ### 7.1 case-sensitive rewrite 全 miss preflight
 
-实验范围只包含 `ignore_case == false` 的 `strip` 和 `obfs`。复用现有 config snapshot 中已经构造的 `byteMatcher`；不为该实验增加第二套 matcher 或新 dependency。
+实验范围只包含 `ignore_case == false` 的 `strip` 和 `obfs`。对 rewrite snapshot 只构造一个预编译 `byteMatcher`，存入 `ExactRewriteMatcher`；`block` snapshot 继续使用已有 `ExactBlockMatcher`。不增加第二种 matcher 算法或新 dependency。
 
 对每个 span，在任何 rule 修改前执行一次 matcher：
 
