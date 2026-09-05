@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -57,7 +58,7 @@ func TestFoldMatcherMatchesRuleMajorOracle(t *testing.T) {
 			}
 			want := -1
 			for i, rule := range rules {
-				if containsRule(tc.text, rule, true) {
+				if independentFoldContains(tc.text, rule.Term) {
 					want = i
 					break
 				}
@@ -188,10 +189,67 @@ func TestAdaptiveFoldKMPBoundary(t *testing.T) {
 	}
 }
 
+func independentFoldContains(text, term string) bool {
+	termRunes := []rune(term)
+	if len(termRunes) == 0 {
+		return true
+	}
+	for start := range text {
+		window := make([]rune, 0, len(termRunes))
+		for _, r := range text[start:] {
+			if len(window) == len(termRunes) {
+				break
+			}
+			window = append(window, r)
+		}
+		if len(window) != len(termRunes) {
+			continue
+		}
+		matched := true
+		for i, r := range window {
+			if !independentFoldEqual(r, termRunes[i]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func independentFoldEqual(got, want rune) bool {
+	for candidate := got; ; candidate = unicode.SimpleFold(candidate) {
+		if candidate == want {
+			return true
+		}
+		if unicode.SimpleFold(candidate) == got {
+			return false
+		}
+	}
+}
+
+func independentFoldClassRune(r rune) rune {
+	if r < utf8.RuneSelf {
+		return unicode.ToLower(r)
+	}
+	class := r
+	for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
+		if folded >= 'a' && folded <= 'z' {
+			return folded
+		}
+		if folded < class {
+			class = folded
+		}
+	}
+	return class
+}
+
 func forcedFoldedKMPRule(term string) compiledRule {
 	rule := compiledRule{Term: term}
 	for _, r := range term {
-		rule.Runes = append(rule.Runes, foldClassRune(r))
+		rule.Runes = append(rule.Runes, independentFoldClassRune(r))
 	}
 	rule.FoldFailure = make([]int, len(rule.Runes))
 	for i, prefix := 1, 0; i < len(rule.Runes); i++ {
