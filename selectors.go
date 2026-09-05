@@ -16,6 +16,39 @@ var (
 	errInvalidSpan    = errors.New("selector returned an invalid span")
 )
 
+const maxJSONNestingDepth = 1024
+
+func jsonNestingWithin(body []byte, maxDepth int) bool {
+	depth := 0
+	inString := false
+	escaped := false
+	for _, b := range body {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > maxDepth {
+				return false
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+	return depth == 0 && !inString
+}
+
 func knownSourceFormat(sourceFormat string) bool {
 	switch sourceFormat {
 	case "openai", "openai-response", "claude", "gemini", "interactions":
@@ -45,7 +78,7 @@ func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSp
 		return nil, errInvalidRequest
 	}
 	root := gjson.ParseBytes(body)
-	if !root.IsObject() || hasDuplicateJSONMembers(root) {
+	if !root.IsObject() || !jsonNestingWithin(body, maxJSONNestingDepth) || hasDuplicateJSONMembers(root) {
 		return nil, errInvalidRequest
 	}
 	if len(roles) != 0 && !selectorHasEnabledRole(sourceFormat, roles) {

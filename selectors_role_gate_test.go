@@ -119,6 +119,31 @@ func TestSelectorRoleGateRunsAfterGlobalValidation(t *testing.T) {
 	}
 }
 
+func nestedObjectBody(depth int) []byte {
+	body := []byte(`0`)
+	for i := 0; i < depth; i++ {
+		body = append([]byte(`{"a":`), append(body, '}')...)
+	}
+	return body
+}
+
+func TestSelectorRejectsJSONBeyondConfiguredNestingDepth(t *testing.T) {
+	roles := scopeSet{"user": {}}
+	if _, err := selectTextSpans(nestedObjectBody(1024), "openai", roles); err != nil {
+		t.Fatalf("depth 1024 error = %v, want nil", err)
+	}
+	if _, err := selectTextSpans(nestedObjectBody(1025), "openai", roles); err != errInvalidRequest {
+		t.Fatalf("depth 1025 error = %v, want %v", err, errInvalidRequest)
+	}
+}
+
+func TestJSONNestingScanIgnoresBracketsInsideStrings(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"{ [ ] } \"quoted\""}]}`)
+	if _, err := selectTextSpans(body, "openai", scopeSet{"user": {}}); err != nil {
+		t.Fatalf("string brackets caused error = %v", err)
+	}
+}
+
 func TestDisabledSelectorRoleTraversalAllocationCeiling(t *testing.T) {
 	const itemCount = 128
 	escapedText := `"\u0053\u0045\u0043\u0052\u0045\u0054"`
