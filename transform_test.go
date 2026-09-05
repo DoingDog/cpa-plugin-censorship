@@ -364,3 +364,73 @@ words: [ab, q0, q1, q2, q3, q4, q5, q6]
 		t.Fatalf("isolated spans were not independently skipped: %#v", spans)
 	}
 }
+
+func TestExactBlockAcrossSpans(t *testing.T) {
+	const ruleCount = 256
+	var words strings.Builder
+	words.WriteString("mode: block\nwords:\n")
+	for i := 0; i < ruleCount; i++ {
+		fmt.Fprintf(&words, "  - rule-%03d\n", i)
+	}
+	cfg := mustConfig(t, words.String())
+
+	tests := []struct {
+		name  string
+		spans []textSpan
+	}{
+		{
+			name: "rule 0 wins by rule order",
+			spans: []textSpan{
+				{Text: "system sees rule-127 and rule-255", Role: "system"},
+				{Text: "user sees rule-000 and rule-127", Role: "user"},
+				{Text: "assistant sees rule-255", Role: "assistant"},
+			},
+		},
+		{
+			name: "rule 127 wins earliest document span",
+			spans: []textSpan{
+				{Text: "system sees rule-127", Role: "system"},
+				{Text: "user sees rule-127 and rule-255", Role: "user"},
+				{Text: "assistant sees rule-255", Role: "assistant"},
+			},
+		},
+		{
+			name: "rule 255 wins earliest document span",
+			spans: []textSpan{
+				{Text: "system sees no configured term", Role: "system"},
+				{Text: "user sees rule-255", Role: "user"},
+				{Text: "assistant sees rule-255", Role: "assistant"},
+			},
+		},
+		{
+			name: "no match",
+			spans: []textSpan{
+				{Text: "system sees no configured term", Role: "system"},
+				{Text: "user sees no configured term", Role: "user"},
+				{Text: "assistant sees no configured term", Role: "assistant"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wantRule, wantRole, wantMatched := -1, "", false
+			for ruleIndex, rule := range cfg.Rules {
+				for _, span := range tc.spans {
+					if strings.Contains(span.Text, rule.Term) {
+						wantRule, wantRole, wantMatched = ruleIndex, span.Role, true
+						break
+					}
+				}
+				if wantMatched {
+					break
+				}
+			}
+
+			gotRule, gotRole, gotMatched := matchExactBlock(tc.spans, cfg)
+			if gotRule != wantRule || gotRole != wantRole || gotMatched != wantMatched {
+				t.Fatalf("matchExactBlock() = (%d, %q, %t), want (%d, %q, %t)", gotRule, gotRole, gotMatched, wantRule, wantRole, wantMatched)
+			}
+		})
+	}
+}
