@@ -193,7 +193,7 @@ rest  = ASCII letter, digit, '.', '_', '+', or '-'
 0.0.0-dev
 ```
 
-空值、`.`、`..`、slash、backslash、空格、控制字符和 Windows 文件名非法字符必须在创建任何 output path 前失败。direct mode 和 dist aggregation mode 调用同一 validator。失败不得留下 archive、checksum 或新建的 version 子目录。
+空值、`.`、`..`、slash、backslash、空格、控制字符和 Windows 文件名非法字符必须在创建任何 output path 前失败。dist aggregation mode 验证由 flag、环境或 exact tag 解析出的 version；Makefile `package-platform` 和两个 cross workflow job 在 direct mode 额外传入同一 normalized version，使 packager 在读取或创建 archive path 前调用同一 validator。未提供 version 的通用 direct mode 保持可用，因为该模式的 archive path 由调用方完整指定。失败不得留下 archive、checksum 或新建的 version 子目录。
 
 本轮不引入 semver dependency，也不要求 release version 必须是完整 SemVer；文件名安全是该修复的边界。
 
@@ -326,6 +326,8 @@ benchmark_test.go
 .github/scripts/package-release_test.go
 integration/websocket_test.go
 README.md
+Makefile
+.github/workflows/build.yml
 ```
 
 预计新增：
@@ -335,7 +337,7 @@ docs/superpowers/plans/2026-09-05-censorship-audit-hardening.md
 docs/superpowers/tdd/2026-09-05-censorship-audit-hardening.tdd.md
 ```
 
-若现有 helper 已能承载测试，不新增额外 test-only 文件。`.github/workflows/build.yml`、Makefile、go.mod 和 go.sum 默认不改。
+若现有 helper 已能承载测试，不新增额外 test-only 文件。go.mod 和 go.sum 不改；Makefile 与 `.github/workflows/build.yml` 只增加 direct packager 的 version 参数，不改变 build matrix、触发条件或 job 结构。
 
 ## 10. 最终 verification
 
