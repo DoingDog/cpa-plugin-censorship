@@ -12,7 +12,10 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		case systemInstruction.Type == gjson.String:
 			appendStringSpan(spans, systemInstruction, "system", roles)
 		case systemInstruction.IsObject():
-			appendStringSpan(spans, systemInstruction.Get("text"), "system", roles)
+			text, allowed := scanTextPart(systemInstruction, true)
+			if allowed {
+				appendStringSpan(spans, text, "system", roles)
+			}
 			parts := systemInstruction.Get("parts")
 			if parts.IsArray() {
 				parts.ForEach(func(_, part gjson.Result) bool {

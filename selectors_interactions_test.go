@@ -191,3 +191,43 @@ func TestScanTextPartPreservesProtocolRules(t *testing.T) {
 		})
 	}
 }
+
+func TestInteractionsSystemInstructionObjectTextHonorsMachineExclusions(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system]\n")
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "unknown image type",
+			body: `{"system_instruction":{"type":"image","text":"SECRET"}}`,
+			want: `{"system_instruction":{"type":"image","text":"SECRET"}}`,
+		},
+		{
+			name: "text with inline data",
+			body: `{"system_instruction":{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}}`,
+			want: `{"system_instruction":{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}}`,
+		},
+		{
+			name: "plain text object remains eligible",
+			body: `{"system_instruction":{"type":"text","text":"SECRET"}}`,
+			want: `{"system_instruction":{"type":"text","text":""}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := interceptRPC(t, "interactions", []byte(tc.body))
+			if resp.Terminate {
+				t.Fatalf("response = %#v, want non-terminating response", resp)
+			}
+			got := resp.Body
+			if len(got) == 0 {
+				got = []byte(tc.body)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, tc.want)
+			}
+		})
+	}
+}
