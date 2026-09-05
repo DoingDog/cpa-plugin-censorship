@@ -64,6 +64,14 @@ func shouldCopyPluginRequest(method string) bool {
 	return method != pluginabi.MethodRequestInterceptAfter
 }
 
+func checkedCIntLength(length uint64) (int, bool) {
+	const max = uint64(^uint32(0) >> 1)
+	if length > max {
+		return 0, false
+	}
+	return int(length), true
+}
+
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
 	if host == nil || plugin == nil {
@@ -91,7 +99,11 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 		if response.ptr == nil || response.len == 0 {
 			return nil, nil
 		}
-		return C.GoBytes(response.ptr, C.int(response.len)), nil
+		responseLen, ok := checkedCIntLength(uint64(response.len))
+		if !ok {
+			return nil, fmt.Errorf("host callback response too large: %d", uint64(response.len))
+		}
+		return C.GoBytes(response.ptr, C.int(responseLen)), nil
 	})
 	C.cliproxy_set_plugin_api(plugin, C.uint32_t(pluginabi.ABIVersion))
 	return 0
@@ -99,20 +111,27 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 
 //export cliproxyPluginCall
 func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) C.int {
-	if method == nil || response == nil {
+	if response == nil {
+		return 1
+	}
+	response.ptr = nil
+	response.len = 0
+	if method == nil {
 		return 1
 	}
 	methodName := C.GoString(method)
 	var requestBytes []byte
 	if shouldCopyPluginRequest(methodName) && request != nil && requestLen > 0 {
-		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
+		requestLength, ok := checkedCIntLength(uint64(requestLen))
+		if !ok {
+			return 1
+		}
+		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLength))
 	}
 	payload, err := handleMethod(methodName, requestBytes)
 	if err != nil {
 		payload = errorEnvelope("plugin_error", err.Error())
 	}
-	response.ptr = nil
-	response.len = 0
 	if len(payload) == 0 {
 		return 0
 	}
@@ -120,7 +139,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	if ptr == nil {
 		return 1
 	}
-	copy((*[1 << 30]byte)(ptr)[:len(payload):len(payload)], payload)
+	copy(unsafe.Slice((*byte)(ptr), len(payload)), payload)
 	response.ptr = ptr
 	response.len = C.size_t(len(payload))
 	return 0
