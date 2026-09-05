@@ -298,6 +298,62 @@ func TestUseFoldRewritePreflightBoundary(t *testing.T) {
 	}
 }
 
+func TestExactRewritePreflightThreshold(t *testing.T) {
+	if !useExactRewritePreflight(128, 16<<10) {
+		t.Fatal("128 rules and 16 KiB did not enable exact rewrite preflight")
+	}
+	if useExactRewritePreflight(127, 16<<10) || useExactRewritePreflight(128, (16<<10)-1) {
+		t.Fatal("preflight enabled below configured thresholds")
+	}
+}
+
+func TestExactRewritePreflightKeepsOrderedCascade(t *testing.T) {
+	const ruleCount = 128
+	var words strings.Builder
+	words.WriteString("mode: strip\nwords:\n  - X\n  - ab\n")
+	for i := 2; i < ruleCount; i++ {
+		fmt.Fprintf(&words, "  - q%03d\n", i)
+	}
+	cfg := mustConfig(t, words.String())
+	if cfg.ExactRewriteMatcher == nil {
+		t.Fatal("exact rewrite matcher was not compiled at threshold")
+	}
+
+	padding := strings.Repeat("z", (16<<10)-len("aXb"))
+	spans := []textSpan{{Text: "aXb" + padding, Role: "user"}}
+	blocked, changed := applyMode(spans, cfg)
+	if blocked != nil || !changed || spans[0].SkipExactRewrite || spans[0].Text != padding {
+		t.Fatalf("applyMode() = %#v, %t, span %#v; want ordered cascade", blocked, changed, spans[0])
+	}
+
+	miss := []textSpan{{Text: strings.Repeat("z", 16<<10), Role: "user"}}
+	blocked, changed = applyMode(miss, cfg)
+	if blocked != nil || changed || !miss[0].SkipExactRewrite || miss[0].Changed {
+		t.Fatalf("exact all-miss applyMode() = %#v, %t, span %#v; want skipped rewrite", blocked, changed, miss[0])
+	}
+}
+
+func TestExactRewritePreflightKeepsSpansIsolated(t *testing.T) {
+	const ruleCount = 128
+	var words strings.Builder
+	words.WriteString("mode: strip\nwords:\n  - ab\n")
+	for i := 1; i < ruleCount; i++ {
+		fmt.Fprintf(&words, "  - q%03d\n", i)
+	}
+	cfg := mustConfig(t, words.String())
+	spans := []textSpan{
+		{Text: strings.Repeat("z", (16<<10)-1) + "a", Role: "user"},
+		{Text: "b" + strings.Repeat("z", (16<<10)-1), Role: "assistant"},
+	}
+	blocked, changed := applyMode(spans, cfg)
+	if blocked != nil || changed {
+		t.Fatalf("applyMode() = %#v, %t; want no cross-span match", blocked, changed)
+	}
+	if !spans[0].SkipExactRewrite || !spans[1].SkipExactRewrite {
+		t.Fatalf("isolated spans were not independently skipped: %#v", spans)
+	}
+}
+
 func TestFoldRewritePreflightMarksOnlyTotalMisses(t *testing.T) {
 	cfg := mustConfig(t, `mode: strip
 ignore_case: true
