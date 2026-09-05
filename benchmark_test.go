@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,32 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+func TestBeforeAuthBenchmarkFixtureResult(t *testing.T) {
+	old := loadedSnapshot()
+	t.Cleanup(func() { installSnapshot(old) })
+	installSnapshot(mustBenchmarkConfig(t, "mode: block\nwords: [NEVER-MATCH]\n"))
+	body := benchmarkScenarioBody("plain", "", 1000, "")
+	request, err := json.Marshal(pluginapi.RequestInterceptRequest{RequestID: "benchmark", SourceFormat: "openai", Body: body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := handleMethod(pluginabi.MethodRequestInterceptBefore, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope pluginabi.Envelope
+	if err := json.Unmarshal(got, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	wantResult, err := json.Marshal(pluginapi.RequestInterceptResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.OK || !bytes.Equal(envelope.Result, wantResult) {
+		t.Fatalf("before auth envelope = %q; want successful no-op response", got)
+	}
+}
 
 func BenchmarkTransformMatrix(b *testing.B) {
 	bodySizes := []int{1 << 10, 1 << 20, 20 << 20}
@@ -70,16 +97,18 @@ func BenchmarkTransformScenarios(b *testing.B) {
 		nodes            int
 		lastText         string
 		excludedPosition string
+		wantBlocked      *blockMatch
+		wantBody         []byte
 	}{
 		{name: "mode=block/match=none/nodes=1", yaml: "mode: block\nwords: [SECRET]\n", text: "plain", nodes: 1},
-		{name: "mode=block/match=sparse/nodes=1000", yaml: "mode: block\nwords: [SECRET]\n", text: "plain", nodes: 1000, lastText: "SECRET"},
-		{name: "mode=strip/match=dense", yaml: "mode: strip\nwords: [SECRET]\n", text: strings.Repeat("SECRET", 128), nodes: 1},
-		{name: "mode=strip/match=overlap", yaml: "mode: strip\nwords: [aa]\n", text: "aaa", nodes: 1},
-		{name: "mode=strip/match=cascade", yaml: "mode: strip\nwords: [AB, x]\n", text: "ABxABx", nodes: 1},
-		{name: "mode=obfs/match=sparse", yaml: "mode: obfs\nwords: [SECRET]\n", text: "SECRET", nodes: 1},
-		{name: "fold=ascii", yaml: "mode: strip\nignore_case: true\nwords: [Alpha]\n", text: "aLPHA", nodes: 1},
-		{name: "fold=sigma", yaml: "mode: strip\nignore_case: true\nwords: [Σ]\n", text: "ςΣσ", nodes: 1},
-		{name: "fold=kelvin", yaml: "mode: strip\nignore_case: true\nwords: [K]\n", text: "K", nodes: 1},
+		{name: "mode=block/match=sparse/nodes=1000", yaml: "mode: block\nwords: [SECRET]\n", text: "plain", nodes: 1000, lastText: "SECRET", wantBlocked: &blockMatch{Term: "SECRET", Role: "user"}},
+		{name: "mode=strip/match=dense", yaml: "mode: strip\nwords: [SECRET]\n", text: strings.Repeat("SECRET", 128), nodes: 1, wantBody: benchmarkScenarioBody("", "", 1, "")},
+		{name: "mode=strip/match=overlap", yaml: "mode: strip\nwords: [aa]\n", text: "aaa", nodes: 1, wantBody: benchmarkScenarioBody("a", "", 1, "")},
+		{name: "mode=strip/match=cascade", yaml: "mode: strip\nwords: [AB, x]\n", text: "ABxABx", nodes: 1, wantBody: benchmarkScenarioBody("", "", 1, "")},
+		{name: "mode=obfs/match=sparse", yaml: "mode: obfs\nwords: [SECRET]\n", text: "SECRET", nodes: 1, wantBody: benchmarkScenarioBody("S​ECRET", "", 1, "")},
+		{name: "fold=ascii", yaml: "mode: strip\nignore_case: true\nwords: [Alpha]\n", text: "aLPHA", nodes: 1, wantBody: benchmarkScenarioBody("", "", 1, "")},
+		{name: "fold=sigma", yaml: "mode: strip\nignore_case: true\nwords: [Σ]\n", text: "ςΣσ", nodes: 1, wantBody: benchmarkScenarioBody("", "", 1, "")},
+		{name: "fold=kelvin", yaml: "mode: strip\nignore_case: true\nwords: [K]\n", text: "K", nodes: 1, wantBody: benchmarkScenarioBody("", "", 1, "")},
 		{name: "fold=full-fold-miss", yaml: "mode: strip\nignore_case: true\nwords: [straße]\n", text: "STRASSE", nodes: 1},
 		{name: "excluded=20MiB/before", yaml: "mode: block\nwords: [SECRET]\n", text: "plain", nodes: 1, excludedPosition: "before"},
 		{name: "excluded=20MiB/middle", yaml: "mode: block\nwords: [SECRET]\n", text: "plain", nodes: 2, excludedPosition: "middle"},
@@ -89,19 +118,24 @@ func BenchmarkTransformScenarios(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			cfg := mustBenchmarkConfig(b, tc.yaml)
 			body := benchmarkScenarioBody(tc.text, tc.lastText, tc.nodes, tc.excludedPosition)
-			if tc.excludedPosition != "" {
-				got, err := transformRequest(body, "openai", cfg)
-				if err != nil || got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
-					b.Fatalf("excluded payload preflight = %#v, %v", got, err)
-				}
+			got, err := transformRequest(body, "openai", cfg)
+			if err != nil {
+				b.Fatalf("transformRequest() error = %v", err)
+			}
+			if got.Invalid {
+				b.Fatalf("transformRequest() Invalid = true; want false")
+			}
+			if (got.Blocked == nil) != (tc.wantBlocked == nil) || got.Blocked != nil && *got.Blocked != *tc.wantBlocked {
+				b.Fatalf("transformRequest() Blocked = %#v; want %#v", got.Blocked, tc.wantBlocked)
+			}
+			if !bytes.Equal(got.Body, tc.wantBody) {
+				b.Fatalf("transformRequest() Body = %q; want %q", got.Body, tc.wantBody)
 			}
 			b.ReportAllocs()
 			b.SetBytes(int64(len(body)))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := transformRequest(body, "openai", cfg); err != nil {
-					b.Fatal(err)
-				}
+				benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
 			}
 		})
 	}
@@ -149,10 +183,14 @@ func BenchmarkConcurrentSnapshotSwap(b *testing.B) {
 	b.SetBytes(int64(len(body)))
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
+		var result transformResult
 		for pb.Next() {
-			if _, err := transformRequest(body, "openai", loadedSnapshot()); err != nil {
+			var err error
+			result, err = transformRequest(body, "openai", loadedSnapshot())
+			if err != nil {
 				b.Error(err)
 			}
+			runtime.KeepAlive(result)
 		}
 	})
 	b.StopTimer()
@@ -174,13 +212,26 @@ func BenchmarkBeforeAuthRPCEnvelope(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.Run("before_calls=1/after_calls=0", func(b *testing.B) {
+		fixture, err := handleMethod(pluginabi.MethodRequestInterceptBefore, request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		var envelope pluginabi.Envelope
+		if err := json.Unmarshal(fixture, &envelope); err != nil {
+			b.Fatal(err)
+		}
+		wantResult, err := json.Marshal(pluginapi.RequestInterceptResponse{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if !envelope.OK || !bytes.Equal(envelope.Result, wantResult) {
+			b.Fatalf("before auth envelope = %q; want successful no-op response", fixture)
+		}
 		b.ReportAllocs()
 		b.SetBytes(int64(len(request)))
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if _, err := handleMethod(pluginabi.MethodRequestInterceptBefore, request); err != nil {
-				b.Fatal(err)
-			}
+			benchmarkEnvelopeSink, benchmarkErrorSink = handleMethod(pluginabi.MethodRequestInterceptBefore, request)
 		}
 	})
 }
