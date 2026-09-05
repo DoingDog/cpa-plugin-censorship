@@ -165,6 +165,9 @@ make package VERSION=v0.1.0 GOOS=windows GOARCH=amd64
 9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost. The host still encodes and carries the full body on every AfterAuth call, but after recognizing the fixed no-op method, the plugin does not perform a C-to-Go input copy.
 10. Home mode does not watch local YAML. Use a configuration path that CPA watches or another host-supported reconfiguration mechanism.
 11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA.
+12. Known SourceFormat JSON objects accept at most 1024 simultaneously open object or array levels, including the top-level object. Deeper requests return `censorship_invalid_request`.
+13. The C ABI rejects request lengths that exceed `C.int` with a non-zero ABI return code and rejects oversized host callback responses with a plugin error. Neither path truncates the length before conversion.
+14. The Responses WebSocket integration test fails after 20 seconds without `response.completed`; it does not wait indefinitely.
 
 ## Release artifacts
 
@@ -175,6 +178,6 @@ censorship_<version>_<goos>_<goarch>.zip
 censorship_<version>_<goos>_<goarch>.zip.sha256
 ```
 
-One lowercase ASCII `v` is removed from a tag, `VERSION`, or packager `-version` input. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. This repository does not add a license file.
+One lowercase ASCII `v` is removed from a tag, `VERSION`, or packager `-version` input. The normalized version must be a safe ASCII filename component; direct cross-packaging commands pass the same version through the validator before creating output paths. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. This repository does not add a license file.
 
 Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates the seven per-platform checksum lines.
