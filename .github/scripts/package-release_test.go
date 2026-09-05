@@ -40,6 +40,21 @@ func TestNormalizeReleaseVersionRemovesOneASCIILeadingV(t *testing.T) {
 	}
 }
 
+func TestValidateReleaseVersion(t *testing.T) {
+	valid := []string{"1.2.3", "0.1.0-rc.1+build", "0.0.0-dev", "v1"}
+	for _, version := range valid {
+		if err := validateReleaseVersion(normalizeReleaseVersion(version)); err != nil {
+			t.Errorf("validateReleaseVersion(%q) = %v", version, err)
+		}
+	}
+	invalid := []string{"", ".", "..", "foo/bar", `foo\bar`, "foo bar", "foo\x00bar", "foo:bar", "foo*bar", "foo?bar", "foo<bar", "foo>bar", "foo|bar"}
+	for _, version := range invalid {
+		if err := validateReleaseVersion(normalizeReleaseVersion(version)); err == nil {
+			t.Errorf("validateReleaseVersion(%q) = nil", version)
+		}
+	}
+}
+
 func TestPackageLibraryAndChecksumContract(t *testing.T) {
 	tmp := t.TempDir()
 	old, err := os.Getwd()
@@ -184,6 +199,54 @@ func TestPackagerCLIVersionSourcesProduceSameBasename(t *testing.T) {
 	}
 }
 
+func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
+	script, err := filepath.Abs("package-release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	dist := filepath.Join(tmp, "dist")
+	library := filepath.Join(dist, "linux_amd64", "censorship.so")
+	if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(library, []byte("fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	aggregateOut := filepath.Join(tmp, "aggregate")
+	runPackager := func(args ...string) error {
+		cmd := exec.Command("go", append([]string{"run", script}, args...)...)
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Errorf("packager unexpectedly succeeded:\n%s", output)
+		}
+		return err
+	}
+	if err := runPackager("-version", "foo/bar", "-dist", dist, "-out", aggregateOut); err == nil {
+		t.Fatal("aggregate packaging accepted unsafe version")
+	}
+	if entries, err := os.ReadDir(aggregateOut); err == nil && len(entries) != 0 {
+		t.Fatalf("aggregate output = %#v, want absent or empty", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("inspect aggregate output: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(aggregateOut, "censorship_foo")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe nested output exists: %v", err)
+	}
+
+	directArchive := filepath.Join(tmp, "direct", "censorship.zip")
+	directChecksum := directArchive + ".sha256"
+	if err := runPackager("-version", "foo/bar", "-library", library, "-archive", directArchive, "-checksum", directChecksum); err == nil {
+		t.Fatal("direct packaging accepted unsafe version")
+	}
+	for _, path := range []string{directArchive, directChecksum} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("unsafe direct output %s exists: %v", path, err)
+		}
+	}
+}
+
 func withEnvironment(base []string, key, value string) []string {
 	out := make([]string, 0, len(base)+1)
 	for _, entry := range base {
@@ -214,6 +277,16 @@ func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
 	want := `build-platform GOOS="` + runtime.GOOS + `" GOARCH="` + runtime.GOARCH + `"`
 	if !strings.Contains(string(output), want) {
 		t.Fatalf("make build did not select host tuple %s/%s:\n%s", runtime.GOOS, runtime.GOARCH, output)
+	}
+
+	cmd = exec.Command("make", "-n", "package-platform", "GOOS=linux", "GOARCH=amd64", "VERSION=v1.2.3")
+	cmd.Dir = filepath.Join("..", "..")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n package-platform: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), `-version "1.2.3" -library`) {
+		t.Fatalf("make package-platform did not pass normalized version:\n%s", output)
 	}
 }
 
@@ -339,6 +412,7 @@ func TestBuildWorkflowContract(t *testing.T) {
 			jobActionWith(job, "go-cross/cgo-actions@v1", "output") != tc.library ||
 			jobActionWith(job, "go-cross/cgo-actions@v1", "flags") != "-ldflags=-s -w" ||
 			jobActionWith(job, "go-cross/cgo-actions@v1", "x-flags") != "main.pluginVersion=${{ steps.release_metadata.outputs.version }}" ||
+				!jobRunContains(job, "-version \"${VERSION}\"") ||
 			!jobRunContains(job, "go run ./.github/scripts/package-release.go") ||
 			!jobRunContains(job, "-library \""+libraryPath+"\"") ||
 			!jobRunContains(job, "-archive \"dist/"+tc.archive+"\"") ||

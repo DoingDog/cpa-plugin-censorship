@@ -40,6 +40,12 @@ func run() error {
 		if *libraryPath == "" || *archivePath == "" || *checksumPath == "" {
 			return fmt.Errorf("library, archive, and checksum are required together")
 		}
+		if *versionFlag != "" {
+			version := normalizeReleaseVersion(*versionFlag)
+			if err := validateReleaseVersion(version); err != nil {
+				return err
+			}
+		}
 		if err := packageLibrary(*libraryPath, *archivePath); err != nil {
 			return err
 		}
@@ -111,18 +117,28 @@ func libraryExtension(osName string) string {
 }
 
 func resolveVersion(versionFlag string) (string, error) {
-	if version := normalizeReleaseVersion(versionFlag); version != "" {
+	if versionFlag != "" {
+		version := normalizeReleaseVersion(versionFlag)
+		if err := validateReleaseVersion(version); err != nil {
+			return "", err
+		}
 		return version, nil
 	}
-	if version := normalizeReleaseVersion(os.Getenv("VERSION")); version != "" {
+	if rawVersion := os.Getenv("VERSION"); rawVersion != "" {
+		version := normalizeReleaseVersion(rawVersion)
+		if err := validateReleaseVersion(version); err != nil {
+			return "", err
+		}
 		return version, nil
 	}
 	cmd := exec.Command("git", "describe", "--tags", "--exact-match")
 	output, err := cmd.Output()
 	if err == nil {
-		if version := normalizeReleaseVersion(string(output)); version != "" {
-			return version, nil
+		version := normalizeReleaseVersion(string(output))
+		if err := validateReleaseVersion(version); err != nil {
+			return "", err
 		}
+		return version, nil
 	}
 	return "", fmt.Errorf("version is required: use -version, set VERSION, or run from an exact git tag")
 }
@@ -130,6 +146,33 @@ func resolveVersion(versionFlag string) (string, error) {
 func normalizeReleaseVersion(version string) string {
 	version = strings.TrimSpace(version)
 	return strings.TrimPrefix(version, "v")
+}
+
+func validateReleaseVersion(version string) error {
+	if version == "" {
+		return fmt.Errorf("release version is empty")
+	}
+	for i := 0; i < len(version); i++ {
+		c := version[i]
+		if i == 0 {
+			if !isASCIIAlpha(c) && !isASCIIDigit(c) {
+				return fmt.Errorf("release version %q is not a safe filename component", version)
+			}
+			continue
+		}
+		if !isASCIIAlpha(c) && !isASCIIDigit(c) && c != '.' && c != '_' && c != '+' && c != '-' {
+			return fmt.Errorf("release version %q is not a safe filename component", version)
+		}
+	}
+	return nil
+}
+
+func isASCIIAlpha(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+func isASCIIDigit(c byte) bool {
+	return c >= '0' && c <= '9'
 }
 
 func packageLibrary(libraryPath, archivePath string) error {

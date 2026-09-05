@@ -40,7 +40,7 @@ build:
 	$(MAKE) build-platform GOOS="$(shell $(GO) env GOHOSTOS)" GOARCH="$(shell $(GO) env GOHOSTARCH)" VERSION="$(VERSION)" BUILD_CC="$(BUILD_CC)"
 
 package-platform: build-platform
-	$(GO) run ./.github/scripts/package-release.go -library "$(LIBRARY)" -archive "$(ARCHIVE)" -checksum "$(CHECKSUM)"
+	$(GO) run ./.github/scripts/package-release.go -version "$(NORMALIZED_VERSION)" -library "$(LIBRARY)" -archive "$(ARCHIVE)" -checksum "$(CHECKSUM)"
 
 ifeq ($(strip $(GOOS)),)
 ifeq ($(strip $(GOARCH)),)
