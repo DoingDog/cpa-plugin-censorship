@@ -4,7 +4,12 @@ package censorshipintegration
 
 import (
 	"bytes"
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,9 +37,39 @@ func TestResponsesWebSocketModelTurnUsesResponsesSelector(t *testing.T) {
 	}
 }
 
+const websocketCompletionReadTimeout = 20 * time.Second
+
 type wsMessage struct {
 	Opcode  int
 	Payload []byte
+}
+
+func TestReadUntilCompletedReturnsOnDeadline(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	start := time.Now()
+	_, err = readUntilCompletedWithTimeout(conn, 10*time.Millisecond)
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("error = %v, want read timeout", err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("timeout helper took %v", time.Since(start))
+	}
 }
 
 func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
@@ -116,16 +151,27 @@ func responsesWSExchange(t *testing.T, cpa *cpaInstance, payload []byte) []wsMes
 
 func readUntilCompleted(t *testing.T, conn *websocket.Conn) []wsMessage {
 	t.Helper()
+	messages, err := readUntilCompletedWithTimeout(conn, websocketCompletionReadTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return messages
+}
 
+func readUntilCompletedWithTimeout(conn *websocket.Conn, timeout time.Duration) ([]wsMessage, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	defer conn.SetReadDeadline(time.Time{})
 	var messages []wsMessage
 	for {
 		opcode, payload, err := conn.ReadMessage()
 		if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		messages = append(messages, wsMessage{Opcode: opcode, Payload: bytes.Clone(payload)})
 		if gjson.GetBytes(payload, "type").String() == "response.completed" {
-			return messages
+			return messages, nil
 		}
 	}
 }
