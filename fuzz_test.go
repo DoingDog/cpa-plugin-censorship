@@ -69,6 +69,24 @@ func TestProtocolOracleRejectsWrongResults(t *testing.T) {
 	}
 }
 
+func TestProtocolOracleRequiresEarliestBlockRole(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"SECRET"},{"role":"developer","content":"SECRET"}]}`)
+	got := transformResult{Blocked: &blockMatch{Term: "SECRET", Role: "developer"}}
+	if err := checkProtocolResult("openai", body, modeBlock, false, got); err == nil {
+		t.Fatal("oracle accepted later eligible role")
+	}
+}
+
+func TestProtocolOracleRejectsOutsideSpanByteMutation(t *testing.T) {
+	body := []byte(" \n{\"messages\":[{\"role\":\"user\",\"content\":\"SECRET\"}],\"n\":1e+03,\"unknown\":\"KEEP\"} \n")
+	want := bytes.Replace(body, []byte(`"SECRET"`), []byte(`""`), 1)
+	mutated := bytes.Replace(want, []byte("1e+03"), []byte("1000"), 1)
+	got := transformResult{Body: mutated}
+	if err := checkProtocolResult("openai", body, modeStrip, false, got); err == nil {
+		t.Fatal("oracle accepted a number spelling mutation outside the eligible span")
+	}
+}
+
 func FuzzRuleEngineAgainstOracle(f *testing.F) {
 	for _, seed := range []struct {
 		text, terms string
@@ -247,13 +265,24 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 	if !ok {
 		return fmt.Errorf("oracle could not parse valid %s object", format)
 	}
-	matchingRoles := make(map[string]struct{})
-	for _, span := range before {
-		if oracleContains(span.Text, "SECRET", fold) {
-			matchingRoles[span.Role] = struct{}{}
+	beforeRaw, rawOK := oracleRawProtocolSpans(format, body)
+	if !rawOK || len(beforeRaw) != len(before) {
+		return fmt.Errorf("oracle raw spans disagreed with protocol spans: raw=%#v spans=%#v", beforeRaw, before)
+	}
+	for i := range before {
+		if beforeRaw[i].Role != before[i].Role || beforeRaw[i].Text != before[i].Text {
+			return fmt.Errorf("oracle raw span %d = %#v, want %#v", i, beforeRaw[i], before[i])
 		}
 	}
-	matched := len(matchingRoles) != 0
+	wantRole := ""
+	wantStart := len(body) + 1
+	for _, span := range beforeRaw {
+		if oracleContains(span.Text, "SECRET", fold) && span.Start < wantStart {
+			wantRole = span.Role
+			wantStart = span.Start
+		}
+	}
+	matched := wantRole != ""
 
 	switch selected {
 	case modeBlock:
@@ -269,8 +298,8 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		if got.Blocked == nil || got.Blocked.Term != "SECRET" {
 			return fmt.Errorf("eligible match was not blocked with YAML term: %#v", got.Blocked)
 		}
-		if _, ok := matchingRoles[got.Blocked.Role]; !ok {
-			return fmt.Errorf("blocked role %q has no eligible match", got.Blocked.Role)
+		if got.Blocked.Role != wantRole {
+			return fmt.Errorf("blocked role %q, want earliest role %q", got.Blocked.Role, wantRole)
 		}
 		return nil
 	case modeStrip, modeObfs:
@@ -297,6 +326,11 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 	if !ok || len(after) != len(before) {
 		return fmt.Errorf("eligible spans changed shape: before=%#v after=%#v", before, after)
 	}
+	afterRaw, rawOK := oracleRawProtocolSpans(format, got.Body)
+	if !rawOK || len(afterRaw) != len(beforeRaw) {
+		return fmt.Errorf("eligible raw spans changed shape: before=%#v after=%#v", beforeRaw, afterRaw)
+	}
+	selectedRawIndexes := make([]int, 0, len(beforeRaw))
 	for i := range before {
 		want := oracleStrip(before[i].Text, "SECRET", fold)
 		if selected == modeObfs {
@@ -305,10 +339,44 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		if after[i].Role != before[i].Role || after[i].Text != want {
 			return fmt.Errorf("eligible span %d = %#v, want role %q text %q", i, after[i], before[i].Role, want)
 		}
+		if afterRaw[i].Role != after[i].Role || afterRaw[i].Text != after[i].Text {
+			return fmt.Errorf("oracle raw span %d = %#v, want %#v", i, afterRaw[i], after[i])
+		}
+		if oracleContains(beforeRaw[i].Text, "SECRET", fold) {
+			selectedRawIndexes = append(selectedRawIndexes, i)
+		}
+	}
+	if err := oracleRequireUnchangedOutsideRawRanges(body, got.Body, beforeRaw, afterRaw, selectedRawIndexes); err != nil {
+		return err
 	}
 	beforeExcluded := oracleExcludedTokens(format, body)
 	if afterExcluded := oracleExcludedTokens(format, got.Body); !reflect.DeepEqual(afterExcluded, beforeExcluded) {
 		return fmt.Errorf("excluded raw tokens changed: before=%q after=%q", beforeExcluded, afterExcluded)
+	}
+	return nil
+}
+
+func oracleRequireUnchangedOutsideRawRanges(before, after []byte, beforeSpans, afterSpans []oracleRawStringToken, selected []int) error {
+	ordered := append([]int(nil), selected...)
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && beforeSpans[ordered[j]].Start < beforeSpans[ordered[j-1]].Start; j-- {
+			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
+		}
+	}
+	beforePos, afterPos := 0, 0
+	for _, index := range ordered {
+		beforeSpan, afterSpan := beforeSpans[index], afterSpans[index]
+		if beforeSpan.Start < beforePos || beforeSpan.End < beforeSpan.Start || beforeSpan.End > len(before) ||
+			afterSpan.Start < afterPos || afterSpan.End < afterSpan.Start || afterSpan.End > len(after) {
+			return fmt.Errorf("oracle raw span %d has invalid range: before=%#v after=%#v", index, beforeSpan, afterSpan)
+		}
+		if !bytes.Equal(before[beforePos:beforeSpan.Start], after[afterPos:afterSpan.Start]) {
+			return fmt.Errorf("bytes outside selected raw string tokens changed before token %d", index)
+		}
+		beforePos, afterPos = beforeSpan.End, afterSpan.End
+	}
+	if !bytes.Equal(before[beforePos:], after[afterPos:]) {
+		return fmt.Errorf("bytes outside selected raw string tokens changed after token %d", len(selected))
 	}
 	return nil
 }
@@ -333,6 +401,220 @@ func oracleProtocolSpans(format string, body []byte) ([]oracleProtocolSpan, bool
 		return nil, false
 	}
 	return spans, true
+}
+
+type oracleRawStringToken struct {
+	Text  string
+	Role  string
+	Start int
+	End   int
+}
+
+type oracleRawValue struct {
+	kind   byte
+	start  int
+	end    int
+	text   string
+	object []oracleRawMember
+	array  []*oracleRawValue
+}
+
+type oracleRawMember struct {
+	key   string
+	value *oracleRawValue
+}
+
+type oracleRawParser struct {
+	body []byte
+}
+
+func oracleRawProtocolSpans(format string, body []byte) ([]oracleRawStringToken, bool) {
+	if !validJSONObject(body) || !boundedJSONNesting(body, maxFuzzJSONDepth) {
+		return nil, false
+	}
+	parser := oracleRawParser{body: body}
+	root, next, err := parser.parseValue(0)
+	if err != nil || root.kind != 'o' || oracleRawSkipSpace(body, next) != len(body) {
+		return nil, false
+	}
+	var spans []oracleRawStringToken
+	switch format {
+	case "openai":
+		oracleRawOpenAISpans(root, &spans)
+	case "openai-response":
+		oracleRawOpenAIResponseSpans(root, &spans)
+	case "claude":
+		oracleRawClaudeSpans(root, &spans)
+	case "gemini":
+		oracleRawGeminiSpans(root, &spans)
+	case "interactions":
+		oracleRawInteractionsSpans(root, &spans)
+	default:
+		return nil, false
+	}
+	return spans, true
+}
+
+func oracleRawSkipSpace(body []byte, pos int) int {
+	for pos < len(body) {
+		switch body[pos] {
+		case ' ', '\t', '\r', '\n':
+			pos++
+		default:
+			return pos
+		}
+	}
+	return pos
+}
+
+func oracleRawStringEnd(body []byte, start int) (int, error) {
+	for pos := start + 1; pos < len(body); pos++ {
+		switch body[pos] {
+		case '\\':
+			pos++
+		case '"':
+			return pos + 1, nil
+		}
+	}
+	return 0, errors.New("unterminated JSON string")
+}
+
+func (p oracleRawParser) parseValue(pos int) (*oracleRawValue, int, error) {
+	pos = oracleRawSkipSpace(p.body, pos)
+	if pos >= len(p.body) {
+		return nil, pos, errors.New("missing JSON value")
+	}
+	start := pos
+	switch p.body[pos] {
+	case '"':
+		end, err := oracleRawStringEnd(p.body, pos)
+		if err != nil {
+			return nil, pos, err
+		}
+		var text string
+		if err := json.Unmarshal(p.body[start:end], &text); err != nil {
+			return nil, pos, err
+		}
+		return &oracleRawValue{kind: 's', start: start, end: end, text: text}, end, nil
+	case '{':
+		value := &oracleRawValue{kind: 'o', start: start}
+		pos++
+		for {
+			pos = oracleRawSkipSpace(p.body, pos)
+			if pos >= len(p.body) {
+				return nil, pos, errors.New("unterminated JSON object")
+			}
+			if p.body[pos] == '}' {
+				value.end = pos + 1
+				return value, pos + 1, nil
+			}
+			if p.body[pos] != '"' {
+				return nil, pos, errors.New("invalid JSON object key")
+			}
+			keyEnd, err := oracleRawStringEnd(p.body, pos)
+			if err != nil {
+				return nil, pos, err
+			}
+			var key string
+			if err := json.Unmarshal(p.body[pos:keyEnd], &key); err != nil {
+				return nil, pos, err
+			}
+			pos = oracleRawSkipSpace(p.body, keyEnd)
+			if pos >= len(p.body) || p.body[pos] != ':' {
+				return nil, pos, errors.New("missing JSON object colon")
+			}
+			child, next, err := p.parseValue(pos + 1)
+			if err != nil {
+				return nil, pos, err
+			}
+			value.object = append(value.object, oracleRawMember{key: key, value: child})
+			pos = oracleRawSkipSpace(p.body, next)
+			if pos >= len(p.body) {
+				return nil, pos, errors.New("unterminated JSON object")
+			}
+			switch p.body[pos] {
+			case ',':
+				pos++
+			case '}':
+				value.end = pos + 1
+				return value, pos + 1, nil
+			default:
+				return nil, pos, errors.New("invalid JSON object separator")
+			}
+		}
+	case '[':
+		value := &oracleRawValue{kind: 'a', start: start}
+		pos++
+		for {
+			pos = oracleRawSkipSpace(p.body, pos)
+			if pos >= len(p.body) {
+				return nil, pos, errors.New("unterminated JSON array")
+			}
+			if p.body[pos] == ']' {
+				value.end = pos + 1
+				return value, pos + 1, nil
+			}
+			child, next, err := p.parseValue(pos)
+			if err != nil {
+				return nil, pos, err
+			}
+			value.array = append(value.array, child)
+			pos = oracleRawSkipSpace(p.body, next)
+			if pos >= len(p.body) {
+				return nil, pos, errors.New("unterminated JSON array")
+			}
+			switch p.body[pos] {
+			case ',':
+				pos++
+			case ']':
+				value.end = pos + 1
+				return value, pos + 1, nil
+			default:
+				return nil, pos, errors.New("invalid JSON array separator")
+			}
+		}
+	default:
+		for pos < len(p.body) {
+			switch p.body[pos] {
+			case ' ', '\t', '\r', '\n', ',', ']', '}':
+				goto primitiveEnd
+			default:
+				pos++
+			}
+		}
+	primitiveEnd:
+		if pos == start {
+			return nil, pos, errors.New("empty JSON value")
+		}
+		return &oracleRawValue{kind: 'p', start: start, end: pos, text: string(p.body[start:pos])}, pos, nil
+	}
+}
+
+func (v *oracleRawValue) firstField(field string) (*oracleRawValue, bool) {
+	if v == nil || v.kind != 'o' {
+		return nil, false
+	}
+	for _, member := range v.object {
+		if member.key == field {
+			return member.value, true
+		}
+	}
+	return nil, false
+}
+
+func oracleRawStringField(object *oracleRawValue, field string) (string, bool) {
+	value, ok := object.firstField(field)
+	if !ok || value.kind != 's' {
+		return "", false
+	}
+	return value.text, true
+}
+
+func oracleRawAppendString(spans *[]oracleRawStringToken, raw *oracleRawValue, role string) {
+	if raw == nil || raw.kind != 's' || !oracleRoleEnabled(role) {
+		return
+	}
+	*spans = append(*spans, oracleRawStringToken{Text: raw.text, Role: role, Start: raw.start, End: raw.end})
 }
 
 func oracleRoleEnabled(role string) bool {
@@ -659,6 +941,344 @@ func oracleInteractionPartAllowed(part json.RawMessage) bool {
 		}
 	}
 	return !oracleGeminiPartExcluded(part)
+}
+
+func oracleRawOpenAISpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	messages, ok := root.firstField("messages")
+	if !ok || messages.kind != 'a' {
+		return
+	}
+	for _, message := range messages.array {
+		role, ok := oracleRawStringField(message, "role")
+		if !ok || !oracleRoleEnabled(role) {
+			continue
+		}
+		content, ok := message.firstField("content")
+		if !ok {
+			continue
+		}
+		oracleRawAppendString(spans, content, role)
+		if content.kind != 'a' {
+			continue
+		}
+		for _, part := range content.array {
+			if partType, ok := oracleRawStringField(part, "type"); ok && partType == "text" {
+				if text, ok := part.firstField("text"); ok {
+					oracleRawAppendString(spans, text, role)
+				}
+			}
+		}
+	}
+}
+
+func oracleRawOpenAIResponseSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	if instructions, ok := root.firstField("instructions"); ok {
+		oracleRawAppendString(spans, instructions, "system")
+	}
+	input, ok := root.firstField("input")
+	if !ok {
+		return
+	}
+	oracleRawAppendString(spans, input, "user")
+	if input.kind != 'a' {
+		return
+	}
+	for _, item := range input.array {
+		if rawType, exists := item.firstField("type"); exists {
+			if rawType.kind != 's' || rawType.text != "" && rawType.text != "message" {
+				continue
+			}
+		}
+		role, ok := oracleRawStringField(item, "role")
+		if !ok || !oracleRoleEnabled(role) {
+			continue
+		}
+		content, ok := item.firstField("content")
+		if !ok {
+			continue
+		}
+		oracleRawAppendString(spans, content, role)
+		if content.kind != 'a' {
+			continue
+		}
+		for _, part := range content.array {
+			partRole := role
+			partType := ""
+			if rawType, exists := part.firstField("type"); exists {
+				if rawType.kind != 's' {
+					continue
+				}
+				partType = rawType.text
+			}
+			switch partType {
+			case "output_text", "refusal":
+				partRole = "assistant"
+			}
+			switch partType {
+			case "refusal":
+				if refusal, ok := part.firstField("refusal"); ok {
+					oracleRawAppendString(spans, refusal, partRole)
+				}
+			case "", "input_text", "output_text":
+				if text, ok := part.firstField("text"); ok {
+					oracleRawAppendString(spans, text, partRole)
+				}
+			}
+		}
+	}
+}
+
+func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	if system, ok := root.firstField("system"); ok {
+		oracleRawAppendString(spans, system, "system")
+		if system.kind == 'a' {
+			for _, block := range system.array {
+				if blockType, ok := oracleRawStringField(block, "type"); ok && blockType == "text" {
+					if text, ok := block.firstField("text"); ok {
+						oracleRawAppendString(spans, text, "system")
+					}
+				}
+			}
+		}
+	}
+	messages, ok := root.firstField("messages")
+	if !ok || messages.kind != 'a' {
+		return
+	}
+	for _, message := range messages.array {
+		role, ok := oracleRawStringField(message, "role")
+		if !ok || role != "system" && role != "user" {
+			continue
+		}
+		content, ok := message.firstField("content")
+		if !ok {
+			continue
+		}
+		oracleRawAppendString(spans, content, role)
+		if content.kind != 'a' {
+			continue
+		}
+		for _, block := range content.array {
+			if blockType, ok := oracleRawStringField(block, "type"); ok && blockType == "text" {
+				if text, ok := block.firstField("text"); ok {
+					oracleRawAppendString(spans, text, role)
+				}
+			}
+		}
+	}
+}
+
+func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	for _, name := range []string{"systemInstruction", "system_instruction"} {
+		if instruction, ok := root.firstField(name); ok {
+			oracleRawGeminiParts(instruction, "system", spans)
+		}
+	}
+	contents, ok := root.firstField("contents")
+	if !ok || contents.kind != 'a' {
+		return
+	}
+	previousRole := ""
+	for _, content := range contents.array {
+		role := ""
+		if rawRole, exists := content.firstField("role"); exists {
+			if rawRole.kind != 's' {
+				previousRole = oracleNextGeminiRole(previousRole)
+				continue
+			}
+			switch rawRole.text {
+			case "user":
+				role = "user"
+				previousRole = rawRole.text
+			case "model":
+				role = "assistant"
+				previousRole = rawRole.text
+			default:
+				previousRole = oracleNextGeminiRole(previousRole)
+				continue
+			}
+		} else {
+			previousRole = oracleNextGeminiRole(previousRole)
+			if previousRole == "user" {
+				role = "user"
+			} else {
+				role = "assistant"
+			}
+		}
+		oracleRawGeminiParts(content, role, spans)
+	}
+}
+
+func oracleRawGeminiParts(container *oracleRawValue, role string, spans *[]oracleRawStringToken) {
+	parts, ok := container.firstField("parts")
+	if !ok || parts.kind != 'a' {
+		return
+	}
+	for _, part := range parts.array {
+		if oracleRawGeminiPartExcluded(part) {
+			continue
+		}
+		if text, ok := part.firstField("text"); ok {
+			oracleRawAppendString(spans, text, role)
+		}
+	}
+}
+
+func oracleRawInteractionsSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	system, ok := root.firstField("system_instruction")
+	if !ok {
+		system, ok = root.firstField("systemInstruction")
+	}
+	if ok {
+		oracleRawAppendString(spans, system, "system")
+		if text, ok := system.firstField("text"); ok {
+			oracleRawAppendString(spans, text, "system")
+		}
+		oracleRawInteractionParts(system, "system", spans)
+	}
+	input, ok := root.firstField("input")
+	if !ok {
+		return
+	}
+	oracleRawAppendString(spans, input, "user")
+	if input.kind == 'o' {
+		oracleRawInteractionItem(input, "user", spans, 0)
+		return
+	}
+	if input.kind != 'a' {
+		return
+	}
+	for _, item := range input.array {
+		oracleRawAppendString(spans, item, "user")
+		if item.kind == 'o' {
+			oracleRawInteractionItem(item, "user", spans, 0)
+		}
+	}
+}
+
+func oracleRawInteractionItem(item *oracleRawValue, inheritedRole string, spans *[]oracleRawStringToken, depth int) {
+	if depth > maxFuzzJSONDepth || item == nil || item.kind != 'o' {
+		return
+	}
+	role := inheritedRole
+	if rawRole, exists := item.firstField("role"); exists {
+		if rawRole.kind != 's' {
+			return
+		}
+		switch rawRole.text {
+		case "user":
+			role = "user"
+		case "model", "assistant":
+			role = "assistant"
+		default:
+			return
+		}
+	}
+	if rawType, exists := item.firstField("type"); exists {
+		if rawType.kind != 's' {
+			return
+		}
+		switch rawType.text {
+		case "", "user_input":
+		case "model_output":
+			role = "assistant"
+		default:
+			return
+		}
+	}
+	if content, ok := item.firstField("content"); ok {
+		oracleRawAppendString(spans, content, role)
+		if content.kind == 'o' {
+			oracleRawInteractionPart(content, role, spans)
+		} else if content.kind == 'a' {
+			for _, part := range content.array {
+				oracleRawInteractionPart(part, role, spans)
+			}
+		}
+	}
+	oracleRawInteractionParts(item, role, spans)
+	if steps, ok := item.firstField("steps"); ok && steps.kind == 'a' {
+		for _, step := range steps.array {
+			if step.kind == 'o' {
+				oracleRawInteractionItem(step, role, spans, depth+1)
+			}
+		}
+	}
+}
+
+func oracleRawInteractionParts(container *oracleRawValue, role string, spans *[]oracleRawStringToken) {
+	parts, ok := container.firstField("parts")
+	if !ok || parts.kind != 'a' {
+		return
+	}
+	for _, part := range parts.array {
+		oracleRawInteractionPart(part, role, spans)
+	}
+}
+
+func oracleRawInteractionPart(part *oracleRawValue, role string, spans *[]oracleRawStringToken) {
+	if !oracleRawInteractionPartAllowed(part) {
+		return
+	}
+	if text, ok := part.firstField("text"); ok {
+		oracleRawAppendString(spans, text, role)
+	}
+}
+
+func oracleRawInteractionPartAllowed(part *oracleRawValue) bool {
+	if part == nil || part.kind != 'o' {
+		return false
+	}
+	if partType, exists := part.firstField("type"); exists {
+		if partType.kind != 's' || partType.text != "" && partType.text != "text" {
+			return false
+		}
+	}
+	return !oracleRawGeminiPartExcluded(part)
+}
+
+func oracleRawGeminiPartExcluded(part *oracleRawValue) bool {
+	if part == nil || part.kind != 'o' {
+		return false
+	}
+	seen := make(map[string]struct{})
+	for _, member := range part.object {
+		if _, ok := seen[member.key]; ok {
+			continue
+		}
+		seen[member.key] = struct{}{}
+		switch member.key {
+		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
+			return true
+		case "thought":
+			if member.value.kind == 'p' && member.value.text == "true" {
+				return true
+			}
+		}
+	}
+	for _, path := range [][]string{
+		{"functionCall", "thoughtSignature"},
+		{"functionCall", "thought_signature"},
+		{"functionResponse", "thoughtSignature"},
+		{"functionResponse", "thought_signature"},
+		{"extra_content", "google", "thought_signature"},
+	} {
+		if oracleRawJSONFieldPathExists(part, path...) {
+			return true
+		}
+	}
+	return false
+}
+
+func oracleRawJSONFieldPathExists(raw *oracleRawValue, path ...string) bool {
+	if len(path) == 0 {
+		return true
+	}
+	value, ok := raw.firstField(path[0])
+	if !ok {
+		return false
+	}
+	return len(path) == 1 || oracleRawJSONFieldPathExists(value, path[1:]...)
 }
 
 func boundedTerms(packed string, maxTerms, maxScalars int) []string {
