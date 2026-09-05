@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -48,13 +49,15 @@ func BenchmarkTransformMatrix(b *testing.B) {
 				name := fmt.Sprintf("body=%d/words=%d/fold=%t", size, words, fold)
 				b.Run(name, func(b *testing.B) {
 					body, cfg := benchmarkFixture(size, words, fold)
+					got, err := transformRequest(body, "openai", cfg)
+					if err != nil || got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
+						b.Fatalf("transformRequest() = %#v, %v; want unchanged no-op result", got, err)
+					}
 					b.ReportAllocs()
 					b.SetBytes(int64(len(body)))
 					b.ResetTimer()
 					for i := 0; i < b.N; i++ {
-						if _, err := transformRequest(body, "openai", cfg); err != nil {
-							b.Fatal(err)
-						}
+						benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
 					}
 				})
 			}
@@ -445,28 +448,66 @@ func runBenchmarkSuccessEnvelope(b *testing.B) {
 }
 
 func runBenchmarkExactRewriteStrategies(b *testing.B) {
-	cases := []struct {
-		rules, text int
-		set         string
-	}{
-		{rules: 8, text: 4 << 10, set: "calibration"},
-		{rules: 32, text: 16 << 10, set: "calibration"},
-		{rules: 128, text: 64 << 10, set: "holdout"},
+	type benchmarkCase struct {
+		mode      mode
+		rules     int
+		textBytes int
+		match     string
+		set       string
 	}
-	const term = "BLOCKME"
+	var cases []benchmarkCase
+	for _, selectedMode := range []mode{modeStrip, modeObfs} {
+		for _, ruleCount := range []int{32, 128, 256, 1024} {
+			for _, textBytes := range []int{4 << 10, 64 << 10, 1 << 20} {
+				for _, match := range []string{"none", "first", "middle", "last", "sparse", "dense", "cascade"} {
+					set := "holdout"
+					if ruleCount == 32 || textBytes == 4<<10 {
+						set = "calibration"
+					}
+					cases = append(cases, benchmarkCase{
+						mode: selectedMode, rules: ruleCount, textBytes: textBytes,
+						match: match, set: set,
+					})
+				}
+			}
+		}
+	}
+
+	const target = "BLOCKME"
 	for _, tc := range cases {
 		tc := tc
-		b.Run(benchmarkBaselineName(modeStrip, tc.rules, tc.text, "literal", "last", tc.set), func(b *testing.B) {
-			rules := benchmarkRules(tc.rules, term)
-			cfg := benchmarkSnapshot(modeStrip, false, rules)
-			text := benchmarkSizedText(tc.text, term)
-			body := benchmarkScenarioBody(text, "", 1, "")
-			want := benchmarkScenarioBody(strings.TrimSuffix(text, term), "", 1, "")
+		rules := benchmarkRules(tc.rules, target)
+		text := ""
+		if tc.match == "cascade" {
+			rules[0] = compiledRule{Term: "AB"}
+			rules[1] = compiledRule{Term: "x"}
+			text = strings.Repeat("ABx", (tc.textBytes/3)+1)[:tc.textBytes]
+		} else if tc.match == "none" {
+			text = strings.Repeat("x", tc.textBytes)
+		} else if tc.match == "dense" {
+			text = strings.Repeat(target, (tc.textBytes/len(target))+1)[:tc.textBytes]
+		} else if tc.match == "sparse" {
+			text = benchmarkSizedText(tc.textBytes, target)
+		} else {
+			text = benchmarkPositionedText(tc.textBytes, target, tc.match)
+		}
+		cfg := benchmarkSnapshot(tc.mode, false, rules)
+		wantText := benchmarkRewriteExpected(text, rules, tc.mode, cfg.ObfsChar)
+		body := benchmarkScenarioBody(text, "", 1, "")
+		want := benchmarkScenarioBody(wantText, "", 1, "")
+		name := benchmarkBaselineName(tc.mode, tc.rules, tc.textBytes, "literal", tc.match, tc.set)
+		b.Run(name, func(b *testing.B) {
 			got, err := transformRequest(body, "openai", cfg)
-			if err != nil || got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
-				b.Fatalf("transformRequest() = %#v, %v; want stripped body", got, err)
+			if err != nil || got.Invalid || got.Blocked != nil {
+				b.Fatalf("transformRequest() = %#v, %v; want rewrite result", got, err)
 			}
-
+			if tc.match == "none" {
+				if len(got.Body) != 0 {
+					b.Fatalf("all-miss body length = %d; want 0", len(got.Body))
+				}
+			} else if !bytes.Equal(got.Body, want) {
+				b.Fatalf("transformRequest() body = %q; want %q", got.Body, want)
+			}
 			b.ReportAllocs()
 			b.SetBytes(int64(len(body)))
 			b.ResetTimer()
@@ -475,6 +516,25 @@ func runBenchmarkExactRewriteStrategies(b *testing.B) {
 			}
 		})
 	}
+}
+
+func benchmarkRewriteExpected(text string, rules []compiledRule, selectedMode mode, obfsChar string) string {
+	for _, rule := range rules {
+		replacement := ""
+		if selectedMode == modeObfs {
+			firstRune, firstWidth := utf8.DecodeRuneInString(rule.Term)
+			if firstRune == utf8.RuneError && firstWidth == 0 {
+				panic("benchmark rule must not be empty")
+			}
+			replacement = rule.Term[:firstWidth] + obfsChar + rule.Term[firstWidth:]
+		}
+		if selectedMode == modeStrip {
+			text = strings.ReplaceAll(text, rule.Term, "")
+		} else {
+			text = strings.ReplaceAll(text, rule.Term, replacement)
+		}
+	}
+	return text
 }
 
 func runBenchmarkFoldRootTransitions(b *testing.B) {
