@@ -344,7 +344,7 @@ func BenchmarkFoldedRewriteStrategies(b *testing.B) {
 }
 
 func BenchmarkMixedTransformScenario(b *testing.B) {
-	rules := []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "x"}}
+	rules := []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "xy"}}
 	cfg := benchmarkSnapshot(modeBlock, false, rules)
 	cfg.BlockEnd = 1
 	cfg.StripEnd = 2
@@ -352,8 +352,8 @@ func BenchmarkMixedTransformScenario(b *testing.B) {
 	if err := compileSnapshot(cfg); err != nil {
 		b.Fatal(err)
 	}
-	body := benchmarkScenarioBody("ABx", "", 1, "")
-	want := benchmarkScenarioBody("x​", "", 1, "")
+	body := benchmarkScenarioBody("ABxy", "", 1, "")
+	want := benchmarkScenarioBody("x​y", "", 1, "")
 	got, err := transformRequest(body, "openai", cfg)
 	if err != nil || got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
 		b.Fatalf("transformRequest() = %#v, %v; want mixed cascade body %q", got, err, want)

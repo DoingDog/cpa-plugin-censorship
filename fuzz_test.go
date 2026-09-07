@@ -90,7 +90,7 @@ func TestProtocolOracleRejectsOutsideSpanByteMutation(t *testing.T) {
 func TestOracleApplyMixedRules(t *testing.T) {
 	cfg := &configSnapshot{
 		Mode:      modeBlock,
-		Rules:     []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "x"}},
+		Rules:     []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "xy"}},
 		BlockEnd:  1,
 		StripEnd:  2,
 		rangesSet: true,
@@ -100,8 +100,8 @@ func TestOracleApplyMixedRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := applyRulesToTextsForTest([]string{"ABx"}, cfg)
-	want := oracleApply([]string{"ABx"}, cfg)
+	got := applyRulesToTextsForTest([]string{"ABxy"}, cfg)
+	want := oracleApply([]string{"ABxy"}, cfg)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
