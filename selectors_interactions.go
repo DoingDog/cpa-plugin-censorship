@@ -37,13 +37,27 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	case input.Type == gjson.String:
 		appendStringSpan(spans, input, "user", roles)
 	case input.IsObject():
-		collectInteractionItem(input, "user", roles, spans)
+		if input.Get("type").String() == "text" {
+			text, allowed := scanTextPart(input, true)
+			if allowed {
+				appendStringSpan(spans, text, "user", roles)
+			}
+		} else {
+			collectInteractionItem(input, "user", roles, spans)
+		}
 	case input.IsArray():
 		input.ForEach(func(_, item gjson.Result) bool {
 			if item.Type == gjson.String {
 				appendStringSpan(spans, item, "user", roles)
 			} else if item.IsObject() {
-				collectInteractionItem(item, "user", roles, spans)
+				if item.Get("type").String() == "text" {
+					text, allowed := scanTextPart(item, true)
+					if allowed {
+						appendStringSpan(spans, text, "user", roles)
+					}
+				} else {
+					collectInteractionItem(item, "user", roles, spans)
+				}
 			}
 			return true
 		})
