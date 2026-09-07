@@ -148,3 +148,44 @@ The implementing agents stalled before returning their terminal records. The fin
 - `git diff --check`
   - exit code: `0`
   - decisive output: no whitespace errors; only LF/CRLF conversion warnings.
+
+## Task 5: Harden Shared JSON and Span Selection, 2026-09-08
+
+### RED
+
+The implementing agent committed before returning its terminal record. Current tests were paired with `selectors.go` from `d4d2a40` in an isolated temporary checkout for literal RED evidence.
+
+- `go test . -run '^(TestSelectorRejectsDeepJSONBeforeGJSONValidation|TestSelectorRejectsInvalidUTF8|TestSelectorSkipsEmptyStringSpans|TestScanTextPartIgnoresNullMachineDiscriminators|TestSelectorHasEnabledRoleByFormat)$' -count=1`
+  - exit code: `1`
+  - decisive output: `openai-response` rejected `tool`; invalid UTF-8 returned nil error; 2048 decoded empty strings produced 2048 spans; and `functionCall:null` returned `allowed=false`.
+
+### GREEN
+
+- `go test . -run '^(TestSelectorRejectsDeepJSONBeforeGJSONValidation|TestSelectorRejectsInvalidUTF8|TestSelectorSkipsEmptyStringSpans|TestScanTextPartIgnoresNullMachineDiscriminators|TestSelectorHasEnabledRoleByFormat)$' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.129s`.
+- `go test -race . -run '^(TestSelectorRejectsDeepJSONBeforeGJSONValidation|TestSelectorSkipsEmptyStringSpans)$' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 2.181s`.
+- `go test . -run '^$' -bench 'Empty|DisabledRoleSelectors|TextPartScanning' -benchmem -count=3`
+  - exit code: `0`
+  - decisive output: PASS; `BenchmarkEmptyStringSpans` measured about `615-686 µs/op`, one allocation, and zero selected spans for 1000 empty contents.
+- `go test . -run '^TestSelectorSkipsEmptyStringSpans$' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.080s`.
+- `go test . -count=1`
+  - exit code: `1`
+  - decisive output: the known Task 15 documentation fixture and five provider-owned stale null-discriminator expectations failed; Tasks 8 and 9 explicitly own those test reversals. No other test failed.
+
+### REFACTOR
+
+- Removed the unused `bytes` import and reused the existing nesting, span, role, and benchmark helpers.
+- `gofmt -w selectors.go selectors_role_gate_test.go benchmark_test.go`
+  - exit code: `0`
+  - decisive output: no output.
+- `go vet ./...`
+  - exit code: `0`
+  - decisive output: no output.
+- `git diff --check`
+  - exit code: `0`
+  - decisive output: no whitespace errors; only LF/CRLF conversion warnings.
