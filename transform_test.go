@@ -53,6 +53,79 @@ func assertBlockedRole(t *testing.T, sourceFormat, body, wantRole string) {
 	}
 }
 
+func TestMixedRulesBlockOriginalTextBeforeRewrites(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode: modeStrip,
+		Rules: []compiledRule{
+			{Term: "BLOCK"},
+			{Term: "strip"},
+			{Term: "obfs", ExactReplacement: "o* bfs"},
+		},
+		BlockEnd:  1,
+		StripEnd:  2,
+		rangesSet: true,
+	}
+	spans := []textSpan{{Text: "BLOCK strip obfs", Role: "user"}}
+
+	blocked, changed := applyMode(spans, cfg)
+	if changed || blocked == nil || blocked.Term != "BLOCK" || blocked.Role != "user" || spans[0].Text != "BLOCK strip obfs" {
+		t.Fatalf("applyMode() = %#v, %t, %#v; want original-text block", blocked, changed, spans[0])
+	}
+}
+
+func TestMixedRulesRewriteRangesKeepPhaseAndRuleOrder(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode:       modeBlock,
+		IgnoreCase: true,
+		Rules: []compiledRule{
+			{Term: "BLOCK", Runes: []rune("BLOCK")},
+			{Term: "x", Runes: []rune("x")},
+			{Term: "ab", Runes: []rune("ab")},
+			{Term: "c", Runes: []rune("c")},
+			{Term: "c", Runes: []rune("c")},
+		},
+		BlockEnd:       1,
+		StripEnd:       3,
+		rangesSet:      true,
+		ObfsChar:       "*",
+		BlockMatcher:   newFoldMatcher([]compiledRule{{Term: "BLOCK", Runes: []rune("BLOCK")}}),
+		RewriteMatcher: newFoldMatcher([]compiledRule{{Term: "x", Runes: []rune("x")}, {Term: "ab", Runes: []rune("ab")}, {Term: "c", Runes: []rune("c")}, {Term: "c", Runes: []rune("c")}}),
+	}
+	spans := []textSpan{{Text: "aXbC", Role: "user"}}
+
+	blocked, changed := applyMode(spans, cfg)
+	if blocked != nil || !changed || spans[0].Text != "C**" {
+		t.Fatalf("applyMode() = %#v, %t, %#v; want strip cascade then duplicate obfuscation", blocked, changed, spans[0])
+	}
+}
+
+func TestMixedRulesFoldedRangesMatchSigmaAndKelvin(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode:       modeObfs,
+		IgnoreCase: true,
+		Rules: []compiledRule{
+			{Term: "Σ", Runes: []rune("Σ")},
+			{Term: "K", Runes: []rune("K")},
+		},
+		BlockEnd:       1,
+		StripEnd:       2,
+		rangesSet:      true,
+		BlockMatcher:   newFoldMatcher([]compiledRule{{Term: "Σ", Runes: []rune("Σ")}}),
+		RewriteMatcher: newFoldMatcher([]compiledRule{{Term: "K", Runes: []rune("K")}}),
+	}
+
+	blocked, changed := applyMode([]textSpan{{Text: "ςK", Role: "developer"}}, cfg)
+	if changed || blocked == nil || blocked.Term != "Σ" || blocked.Role != "developer" {
+		t.Fatalf("applyMode() = %#v, %t; want Sigma block", blocked, changed)
+	}
+
+	spans := []textSpan{{Text: "K", Role: "user"}}
+	blocked, changed = applyMode(spans, cfg)
+	if blocked != nil || !changed || spans[0].Text != "" {
+		t.Fatalf("applyMode() = %#v, %t, %#v; want Kelvin strip", blocked, changed, spans[0])
+	}
+}
+
 func TestStripRemovesAllOccurrencesAcrossAllNodes(t *testing.T) {
 	cfg := mustConfig(t, "mode: strip\nwords: [bad]\n")
 	body := []byte(`{"messages":[{"role":"user","content":"bad bad"},{"role":"user","content":"xbadx"},{"role":"user","content":"bad/bad"}]}`)
