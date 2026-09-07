@@ -98,3 +98,53 @@ The original Task 3A RED output was lost when its first agent process crashed. A
 - `git diff --check`
   - exit code: `0`
   - decisive output: no whitespace errors; Git printed only LF/CRLF conversion warnings during the config-file check.
+
+## Task 4: Execute Mixed Rules with Existing Matchers, 2026-09-08
+
+### RED
+
+The implementing agents stalled before returning their terminal records. The final tests were therefore paired with pre-task production/oracle code in isolated temporary checkouts to obtain literal RED evidence.
+
+- `go test . -run '^(Test.*Mixed|Test.*Block.*Boundary|Test.*CrossPhase|Test.*Legacy|Test.*Matcher)' -count=1` with current core tests and production code from `ee64e13`
+  - exit code: `1`
+  - decisive output: `matcher_test.go:27:42: too many arguments in call to newFoldMatcher; have ([]compiledRule, number), want ([]compiledRule)`; package build failed.
+- `go test . -run '^TestOracleApplyMixedRules$' -count=1` with the new mixed test and oracle from `247083f`
+  - exit code: `1`
+  - decisive output: production returned rewritten `"x​y"` with no block, while the old oracle kept `"ABxy"` unchanged and reported a block.
+
+### GREEN
+
+- `go test . -run '^(Test.*Mixed|Test.*Block|Test.*Rewrite|Test.*Legacy|Test.*Matcher)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.090s`.
+- `go test -race . -run '^(Test.*Mixed|Test.*Block|Test.*Rewrite|Test.*Legacy|Test.*Matcher|TestConcurrentReconfigure)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 5.633s`.
+- `go test . -count=1`
+  - exit code: `1`
+  - decisive output: only the known `TestDocumentationListsConfigAndLimits` legacy documentation fixture failed; all code tests passed.
+- `go test . -run '^TestOracleApplyMixedRules$' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.074s`.
+- `go test . -run '^$' -fuzz '^FuzzRuleEngineAgainstOracle$' -fuzztime=30s`
+  - exit code: `0`
+  - decisive output: 2,401,467 executions from 522 baseline cases with no failure; `ok` in `30.440s`.
+- `go test . -run '^$' -bench 'Mixed|FoldedRewriteStrategies|ExactBlock' -benchmem -count=3`
+  - exit code: `0`
+  - decisive output: PASS; `BenchmarkMixedTransformScenario` used `264 B/op` and `7 allocs/op`; complete run finished in `307.843s`.
+- `go test . -run '^TestOracleApplyMixedRules$' -count=1 && go test . -run '^$' -bench '^BenchmarkMixedTransformScenario$' -benchtime=1x -benchmem`
+  - exit code: `0`
+  - decisive output: valid two-rune obfs follow-up passed; benchmark retained `264 B/op` and `7 allocs/op`.
+
+### REFACTOR
+
+- Kept rule-major rewrite loops, the existing matcher nodes/KMP algorithms, and one flat rule slice. `RewriteMatcher` is boolean-only and block matchers are bounded to the block prefix.
+- `gofmt -d matcher.go matcher_test.go transform.go transform_test.go`
+  - exit code: `0`
+  - decisive output: no output.
+- `go vet ./...`
+  - exit code: `0`
+  - decisive output: no output.
+- `git diff --check`
+  - exit code: `0`
+  - decisive output: no whitespace errors; only LF/CRLF conversion warnings.
