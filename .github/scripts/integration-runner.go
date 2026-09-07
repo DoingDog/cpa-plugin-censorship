@@ -35,6 +35,13 @@ func main() {
 }
 
 func run() error {
+	bench, err := parseBenchmarkMode(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	if os.Getenv("BENCH") == "1" {
+		bench = true
+	}
 	root, err := repositoryRoot()
 	if err != nil {
 		return err
@@ -56,7 +63,18 @@ func run() error {
 	if err := copyIntegrationFiles(paths); err != nil {
 		return err
 	}
-	return runIntegrationTests(paths, pluginDir, os.Getenv("BENCH") == "1")
+	return runIntegrationTests(paths, pluginDir, bench)
+}
+
+func parseBenchmarkMode(args []string) (bool, error) {
+	switch {
+	case len(args) == 0:
+		return false, nil
+	case len(args) == 1 && args[0] == "-bench-abi":
+		return true, nil
+	default:
+		return false, fmt.Errorf("usage: integration-runner [-bench-abi]")
+	}
 }
 
 func repositoryRoot() (string, error) {
@@ -223,6 +241,7 @@ func copyIntegrationFiles(paths runnerPaths) error {
 	if len(sources) == 0 {
 		return fmt.Errorf("no integration Go files found")
 	}
+	sources = append(sources, filepath.Join(paths.repositoryRoot, ".github", "scripts", "testdata", "abi_benchmark_test.go"))
 	destination := filepath.Join(paths.checkout, "integration", "censorshipplugin")
 	if err := removeContained(paths.integrationRoot, destination); err != nil {
 		return err
@@ -243,16 +262,20 @@ func copyIntegrationFiles(paths runnerPaths) error {
 	return nil
 }
 
-func runIntegrationTests(paths runnerPaths, pluginDir string, bench bool) error {
+func integrationTestArgs(bench bool) []string {
 	args := []string{"test", "-tags=integration", "-count=1", "-v", "./integration/censorshipplugin"}
 	if bench {
-		args = append(args, "-run", "^$", "-bench", ".", "-benchmem")
+		args = append(args, "-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem")
 	}
+	return args
+}
+
+func runIntegrationTests(paths runnerPaths, pluginDir string, bench bool) error {
 	env := []string{
 		"CPA_INTEGRATION_BIN=" + paths.bin,
 		"CENSORSHIP_PLUGIN_DIR=" + pluginDir,
 	}
-	return runCommand(paths.checkout, env, "go", args...)
+	return runCommand(paths.checkout, env, "go", integrationTestArgs(bench)...)
 }
 
 func runCommand(dir string, extraEnv []string, name string, args ...string) error {

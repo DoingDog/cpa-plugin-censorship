@@ -340,3 +340,46 @@ The implementing agents were interrupted repeatedly by API EOF failures, so the 
 - `go test -race . -run '^(TestOpenAI|TestClaude|TestGemini|TestInteractions)' -count=1`
   - exit code: `0`
   - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 15.970s`.
+
+## Task 11: Tagged Integration and ABI Benchmark Seam, 2026-09-08
+
+### Raw request ownership call graph
+
+- `cliproxyPluginCall` receives a host-owned `(request, requestLen)` pair and calls `handleMethod` synchronously. Before the Task 11 change, every method except after-auth reaches `handleMethod` through `C.GoBytes`; after-auth already passes a nil slice.
+- `plugin_register` routes through `handlePluginRegister` -> `parseLifecycleSnapshot` -> `json.Unmarshal`. The decoded `ConfigYAML` and the compiled snapshot are separate Go-owned values; neither stores the raw ABI slice.
+- `plugin_reconfigure` follows the same parsing path. Its failure log contains only `err.Error()`; it does not retain raw input.
+- `request_intercept_before_auth` routes through `interceptBeforeAuth` -> `json.Unmarshal` -> `transformRequest`. `RequestInterceptRequest.Body` is decoded from the envelope into a separate value, and result bytes are JSON-encoded into a new response before `cliproxyPluginCall` copies them to plugin-owned `malloc` memory.
+- `request_intercept_after_auth` ignores its raw request and returns an empty response envelope.
+- Unknown methods ignore their raw request and construct an error envelope from the method string only.
+
+No branch stores the raw slice, aliases it into a surviving string, closes over it, starts asynchronous work with it, or returns it as output. The host may therefore retain ownership only until this synchronous ABI call returns.
+
+### Tagged-build and runner seam GREEN
+
+- `go test -mod=readonly -tags=integration ./integration -run '^TestReadUntilCompletedReturnsOnDeadline$' -count=1` passed: `ok github.com/DoingDog/cpa-plugin-censorship/integration 0.163s`.
+- `go test .github/scripts/integration-runner.go .github/scripts/integration-runner_test.go -run 'BenchmarkPlacement|CopyIntegration' -count=1` passed: `ok command-line-arguments 0.164s`.
+- The runner copies `abi_benchmark_test.go` into CPA's `integration/censorshipplugin` package and invokes only `BenchmarkDynamicABIRequestInterceptors` with `-benchmem`.
+
+### Borrowing safety checks
+
+- `go test . -run '^(TestBorrowedRequest|TestChecked.*Length|Test.*ABI|TestHandleMethod.*Ownership)' -count=1` passed: `ok github.com/DoingDog/cpa-plugin-censorship 0.118s`.
+- `go test -race . -run '^(TestBorrowedRequest|Test.*ABI)' -count=1` passed: `ok github.com/DoingDog/cpa-plugin-censorship 1.199s`.
+- The tests cover zero length, one byte, nil pointer with nonzero length, Go-`int` overflow, matching and nonmatching before-auth responses, and post-return poisoning. The ownership assertion compares the complete success envelope byte-for-byte and rejects output containing the `0xa5` poison byte.
+
+### Benchmark gate and fallback
+
+- Baseline copied-input `go run ./.github/scripts/integration-runner.go -bench-abi` results, `ns/op; B/op; allocs/op`:
+  - before-auth, 1 KiB: `182346; 11163; 31`; after-auth, 1 KiB: `64738; 6293; 29`.
+  - before-auth, 1 MiB: `59886155; 10223071; 38`; after-auth, 1 MiB: `3580756; 4225242; 32`.
+  - before-auth, 20 MiB: `1278921100; 223730848; 43`; after-auth, 20 MiB: `50177007; 100989973; 35`.
+- Borrowed-input candidate results:
+  - before-auth, 1 KiB: `149485; 11150; 31`; after-auth, 1 KiB: `66118; 6290; 29`.
+  - before-auth, 1 MiB: `59098655; 10082715; 38`; after-auth, 1 MiB: `3351113; 4315911; 32`.
+  - before-auth, 20 MiB: `1116459600; 223730864; 43`; after-auth, 20 MiB: `39955114; 88055905; 33`.
+- The candidate did not remove an input-sized allocation: before-auth allocation counts were unchanged, and 20 MiB before-auth bytes rose by 16. The benchmark gate failed, so `cliproxyPluginCall` retains its input-side `C.GoBytes` path; after-auth still performs no input read. The borrowing helper and coverage remain for the documented boundary contract, but no no-copy performance claim is made.
+
+### Final verification
+
+- The restored-copy benchmark passed. Its 20 MiB before-auth result was `1202176600 ns/op; 223730848 B/op; 43 allocs/op`, consistent with retaining the copy.
+- `go vet ./...` passed.
+- `go test ./...` and `go test -race ./...` both stopped at the pre-existing `TestDocumentationListsConfigAndLimits` contract failure: unchanged `README.md` and `RELEASE_NOTES.md` lack the expected `plugins.configs.censorship` block. Task 11 changes do not modify either file.

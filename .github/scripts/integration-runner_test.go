@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -80,6 +81,70 @@ func TestVerifyCheckoutRejectsDirtyWorktree(t *testing.T) {
 	}
 	if err := verifyCheckout(dir, head); err == nil {
 		t.Fatal("untracked file accepted")
+	}
+}
+
+func TestCopyIntegrationFilesCopiesBenchmarkFixture(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths.repositoryRoot = root
+
+	integrationDir := filepath.Join(root, "integration")
+	if err := os.MkdirAll(integrationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(integrationDir, "doc.go"), []byte("package censorshipintegration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(root, ".github", "scripts", "testdata", "abi_benchmark_test.go")
+	if err := os.MkdirAll(filepath.Dir(fixture), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const want = "package censorshipintegration\n\nfunc BenchmarkDynamicABIRequestInterceptors() {}\n"
+	if err := os.WriteFile(fixture, []byte(want), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyIntegrationFiles(paths); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(paths.checkout, "integration", "censorshipplugin", "abi_benchmark_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("copied fixture = %q, want %q", got, want)
+	}
+}
+
+func TestBenchmarkPlacementRunsOnlyFixtureInCPAIntegrationPackage(t *testing.T) {
+	got := integrationTestArgs(true)
+	want := []string{
+		"test", "-tags=integration", "-count=1", "-v", "./integration/censorshipplugin",
+		"-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("benchmark arguments = %q, want %q", got, want)
+	}
+}
+
+func TestParseBenchmarkMode(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+		err  bool
+	}{
+		{args: nil, want: false},
+		{args: []string{"-bench-abi"}, want: true},
+		{args: []string{"-unexpected"}, err: true},
+	} {
+		got, err := parseBenchmarkMode(tc.args)
+		if (err != nil) != tc.err || got != tc.want {
+			t.Errorf("parseBenchmarkMode(%q) = %t, %v; want %t, error %t", tc.args, got, err, tc.want, tc.err)
+		}
 	}
 }
 

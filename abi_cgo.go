@@ -72,6 +72,20 @@ func checkedCIntLength(length uint64) (int, bool) {
 	return int(length), true
 }
 
+// borrowedRequest returns host-owned input valid only during the synchronous ABI callback.
+func borrowedRequest(ptr unsafe.Pointer, length uint64) ([]byte, error) {
+	if length == 0 {
+		return nil, nil
+	}
+	if length > uint64(^uint(0)>>1) {
+		return nil, fmt.Errorf("request too large: %d", length)
+	}
+	if ptr == nil {
+		return nil, fmt.Errorf("request pointer is nil with length %d", length)
+	}
+	return unsafe.Slice((*byte)(ptr), int(length)), nil
+}
+
 //export cliproxy_plugin_init
 func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
 	if host == nil || plugin == nil {
