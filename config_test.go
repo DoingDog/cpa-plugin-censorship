@@ -63,6 +63,116 @@ func TestParseConfigYAMLDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestParseConfigYAMLWordsObject(t *testing.T) {
+	tests := []struct {
+		name         string
+		raw          string
+		wantTerms    []string
+		wantBlockEnd int
+		wantStripEnd int
+	}{
+		{name: "empty object", raw: "words: {}\n"},
+		{name: "all empty buckets", raw: "words: {block: [], strip: [], obfs: []}\n"},
+		{name: "block only", raw: "words: {block: [alpha]}\n", wantTerms: []string{"alpha"}, wantBlockEnd: 1, wantStripEnd: 1},
+		{name: "strip only", raw: "words: {strip: [beta]}\n", wantTerms: []string{"beta"}, wantStripEnd: 1},
+		{name: "obfs only", raw: "words: {obfs: [gamma]}\n", wantTerms: []string{"gamma"}},
+		{name: "block and strip", raw: "words: {block: [alpha], strip: [beta]}\n", wantTerms: []string{"alpha", "beta"}, wantBlockEnd: 1, wantStripEnd: 2},
+		{name: "block and obfs", raw: "words: {block: [alpha], obfs: [gamma]}\n", wantTerms: []string{"alpha", "gamma"}, wantBlockEnd: 1, wantStripEnd: 1},
+		{name: "strip and obfs", raw: "words: {strip: [beta], obfs: [gamma]}\n", wantTerms: []string{"beta", "gamma"}, wantStripEnd: 1},
+		{name: "all buckets", raw: "words: {block: [alpha], strip: [beta], obfs: [gamma]}\n", wantTerms: []string{"alpha", "beta", "gamma"}, wantBlockEnd: 1, wantStripEnd: 2},
+		{name: "empty block", raw: "words: {block: [], strip: [beta]}\n", wantTerms: []string{"beta"}, wantStripEnd: 1},
+		{name: "empty strip", raw: "words: {block: [alpha], strip: [], obfs: [gamma]}\n", wantTerms: []string{"alpha", "gamma"}, wantBlockEnd: 1, wantStripEnd: 1},
+		{name: "empty obfs", raw: "words: {block: [alpha], obfs: []}\n", wantTerms: []string{"alpha"}, wantBlockEnd: 1, wantStripEnd: 1},
+		{name: "preserves whitespace and duplicates", raw: "words: {block: [' ', alpha, alpha], strip: [alpha], obfs: [gamma, gamma]}\n", wantTerms: []string{" ", "alpha", "alpha", "alpha", "gamma", "gamma"}, wantBlockEnd: 3, wantStripEnd: 4},
+		{name: "valid mode is ignored", raw: "mode: strip\nwords: {block: [alpha], strip: [beta], obfs: [gamma]}\n", wantTerms: []string{"alpha", "beta", "gamma"}, wantBlockEnd: 1, wantStripEnd: 2},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := mustConfig(t, test.raw)
+			if got := ruleTerms(cfg.Rules); !reflect.DeepEqual(got, test.wantTerms) {
+				t.Fatalf("rules = %#v, want %#v", got, test.wantTerms)
+			}
+			if cfg.BlockEnd != test.wantBlockEnd || cfg.StripEnd != test.wantStripEnd {
+				t.Fatalf("cut points = (%d, %d), want (%d, %d)", cfg.BlockEnd, cfg.StripEnd, test.wantBlockEnd, test.wantStripEnd)
+			}
+		})
+	}
+}
+
+func TestParseConfigYAMLWordsObjectIgnoresMappingOrder(t *testing.T) {
+	for _, raw := range []string{
+		"words: {block: [alpha], strip: [beta], obfs: [gamma]}\n",
+		"words: {block: [alpha], obfs: [gamma], strip: [beta]}\n",
+		"words: {strip: [beta], block: [alpha], obfs: [gamma]}\n",
+		"words: {strip: [beta], obfs: [gamma], block: [alpha]}\n",
+		"words: {obfs: [gamma], block: [alpha], strip: [beta]}\n",
+		"words: {obfs: [gamma], strip: [beta], block: [alpha]}\n",
+	} {
+		cfg := mustConfig(t, raw)
+		if got, want := ruleTerms(cfg.Rules), []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("rules = %#v, want %#v", got, want)
+		}
+		if cfg.BlockEnd != 1 || cfg.StripEnd != 2 {
+			t.Fatalf("cut points = (%d, %d), want (1, 2)", cfg.BlockEnd, cfg.StripEnd)
+		}
+	}
+}
+
+func TestParseConfigYAMLRejectsInvalidWordsObject(t *testing.T) {
+	for _, raw := range []string{
+		"words: null\n",
+		"words: scalar\n",
+		"words: {unknown: [x]}\n",
+		"words:\n  block: [x]\n  block: [y]\n",
+		"words: {block: null}\n",
+		"words: {strip: [1]}\n",
+		"words: {obfs: ['']}\n",
+		"words: {block: scalar}\n",
+		"words: {block: {nested: [x]}}\n",
+		"words: {1: [x]}\n",
+		"mode: nope\nwords: [alpha]\n",
+		"mode: nope\nwords: {block: [alpha]}\n",
+	} {
+		if _, err := parseConfigYAML([]byte(raw)); err == nil {
+			t.Errorf("parseConfigYAML(%q) error = nil", raw)
+		}
+	}
+}
+
+func TestParseConfigYAMLLegacyWordsUseFinalMode(t *testing.T) {
+	strip := mustConfig(t, "words: [alpha]\nmode: strip\n")
+	if got, want := ruleTerms(strip.Rules), []string{"alpha"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy strip rules = %#v, want %#v", got, want)
+	}
+	if strip.BlockEnd != 0 || strip.StripEnd != 1 {
+		t.Fatalf("legacy strip cut points = (%d, %d), want (0, 1)", strip.BlockEnd, strip.StripEnd)
+	}
+
+	obfs := mustConfig(t, "words: [alpha]\nmode: obfs\n")
+	if got, want := ruleTerms(obfs.Rules), []string{"alpha"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy obfs rules = %#v, want %#v", got, want)
+	}
+	if obfs.BlockEnd != 0 || obfs.StripEnd != 0 {
+		t.Fatalf("legacy obfs cut points = (%d, %d), want (0, 0)", obfs.BlockEnd, obfs.StripEnd)
+	}
+}
+
+func TestParseConfigYAMLValidatesOnlyEffectiveObfsTerms(t *testing.T) {
+	if _, err := parseConfigYAML([]byte("words: {block: [x], strip: ['a​b'], obfs: [alpha]}\n")); err != nil {
+		t.Fatalf("non-obfs terms rejected: %v", err)
+	}
+	for _, raw := range []string{
+		"words: {block: [alpha], obfs: [x]}\n",
+		"words: {block: [alpha], obfs: ['a​b']}\n",
+		"words: [x]\nmode: obfs\n",
+	} {
+		if _, err := parseConfigYAML([]byte(raw)); err == nil {
+			t.Errorf("parseConfigYAML(%q) error = nil", raw)
+		}
+	}
+}
+
 func TestParseConfigPreservesRuleOrderWhitespaceAndDuplicates(t *testing.T) {
 	cfg := mustConfig(t, "ignore_case: true\nwords: [' b ', a, a]\nscope:\n  formats: []\n  roles: []\n")
 	got := []string{cfg.Rules[0].Term, cfg.Rules[1].Term, cfg.Rules[2].Term}
@@ -86,6 +196,17 @@ func sortedKeys(set scopeSet) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func ruleTerms(rules []compiledRule) []string {
+	if rules == nil {
+		return nil
+	}
+	terms := make([]string, len(rules))
+	for i, rule := range rules {
+		terms[i] = rule.Term
+	}
+	return terms
 }
 
 func mustConfig(t *testing.T, raw string) *configSnapshot {
@@ -177,26 +298,30 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 
 func TestCompileSnapshotBuildsOnlyActiveDerivedData(t *testing.T) {
 	tests := []struct {
-		name        string
-		raw         string
-		wantRunes   bool
-		wantMatcher bool
-		wantExact   string
+		name               string
+		raw                string
+		wantRunes          bool
+		wantBlockMatcher   bool
+		wantRewriteMatcher bool
+		wantExact          string
 	}{
 		{name: "exact block", raw: "mode: block\nwords: [K]\n"},
 		{name: "exact strip", raw: "mode: strip\nwords: [K]\n"},
 		{name: "exact obfs", raw: "mode: obfs\nwords: [éx]\n", wantExact: "é​x"},
-		{name: "folded block", raw: "mode: block\nignore_case: true\nwords: [K]\n", wantRunes: true, wantMatcher: true},
+		{name: "folded block", raw: "mode: block\nignore_case: true\nwords: [K]\n", wantRunes: true, wantBlockMatcher: true},
 		{name: "folded strip small", raw: "mode: strip\nignore_case: true\nwords: [K]\n", wantRunes: true},
-		{name: "folded strip preflight", raw: "mode: strip\nignore_case: true\nwords: [a, b, c, d, e, f, g, h]\n", wantRunes: true, wantMatcher: true},
+		{name: "folded strip preflight", raw: "mode: strip\nignore_case: true\nwords: [a, b, c, d, e, f, g, h]\n", wantRunes: true, wantRewriteMatcher: true},
 		{name: "folded obfs", raw: "mode: obfs\nignore_case: true\nwords: [éx]\n", wantRunes: true},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := mustConfig(t, test.raw)
-			if got := cfg.BlockMatcher != nil; got != test.wantMatcher {
-				t.Fatalf("BlockMatcher present = %t, want %t", got, test.wantMatcher)
+			if got := cfg.BlockMatcher != nil; got != test.wantBlockMatcher {
+				t.Fatalf("BlockMatcher present = %t, want %t", got, test.wantBlockMatcher)
+			}
+			if got := cfg.RewriteMatcher != nil; got != test.wantRewriteMatcher {
+				t.Fatalf("RewriteMatcher present = %t, want %t", got, test.wantRewriteMatcher)
 			}
 			for i, rule := range cfg.Rules {
 				if got := rule.Runes != nil; got != test.wantRunes {
@@ -282,7 +407,7 @@ func TestSyntheticSnapshotsUseProductionCompiler(t *testing.T) {
 	}
 
 	benchmarkFold := benchmarkSnapshot(modeStrip, true, benchmarkRules(8, "K"))
-	if benchmarkFold.BlockMatcher == nil || !reflect.DeepEqual(benchmarkFold.Rules[7].Runes, []rune{foldClassRune('K')}) {
+	if benchmarkFold.RewriteMatcher == nil || !reflect.DeepEqual(benchmarkFold.Rules[7].Runes, []rune{foldClassRune('K')}) {
 		t.Fatalf("folded benchmark snapshot = %#v", benchmarkFold)
 	}
 
