@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -61,6 +62,42 @@ func TestGeminiMissingRolesAlternateCanonicalRoles(t *testing.T) {
 	}
 }
 
+func TestGeminiOmittedRoleFormsAlternateCanonicalRoles(t *testing.T) {
+	forms := []struct {
+		name, field string
+	}{
+		{name: "missing", field: ""},
+		{name: "null", field: `"role":null,`},
+		{name: "empty", field: `"role":"",`},
+	}
+	for _, form := range forms {
+		t.Run(form.name+" first only", func(t *testing.T) {
+			registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+			body := []byte(`{"contents":[{` + form.field + `"parts":[{"text":"SECRET"}]}]}`)
+			resp := interceptRPC(t, "gemini", body)
+			if resp.Terminate {
+				t.Fatalf("response = %#v", resp)
+			}
+			want := bytes.Replace(body, []byte(`"SECRET"`), []byte(`""`), 1)
+			if !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body = %s, want %s", resp.Body, want)
+			}
+		})
+		t.Run(form.name+" after explicit user", func(t *testing.T) {
+			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"prior"}]},{` + form.field + `"parts":[{"text":"SECRET assistant"}]},{"parts":[{"text":"SECRET user"}]}]}`)
+			resp := interceptRPC(t, "gemini", body)
+			if resp.Terminate {
+				t.Fatalf("response = %#v", resp)
+			}
+			want := bytes.Replace(body, []byte(`"SECRET assistant"`), []byte(`" assistant"`), 1)
+			if !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body = %s, want %s", resp.Body, want)
+			}
+		})
+	}
+}
+
 func TestGeminiInvalidRolesAdvanceCanonicalAlternation(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
 	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"prior"}]},{"role":"assistant","parts":[{"text":"ignored"}]},{"parts":[{"text":"SECRET user"}]}]}`)
@@ -92,6 +129,39 @@ func TestGeminiSelectorExcludesSnakeCaseMachineParts(t *testing.T) {
 	}
 }
 
+func TestGeminiDisabledRolesSkipContents(t *testing.T) {
+	const content = `{"role":"user","parts":[{"text":"user"}]}`
+	contents := strings.TrimSuffix(strings.Repeat(content+",", 1<<14), ",")
+	body := []byte(`{"systemInstruction":{"parts":[{"text":"system"}]},"contents":[` + contents + `]}`)
+	cases := []struct {
+		name  string
+		roles scopeSet
+		text  string
+		role  string
+	}{
+		{name: "empty", roles: scopeSet{}},
+		{name: "system only", roles: scopeSet{"system": {}}, text: "system", role: "system"},
+		{name: "tool only", roles: scopeSet{"tool": {}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spans, err := selectTextSpans(body, "gemini", tc.roles)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.text == "" {
+				if len(spans) != 0 {
+					t.Fatalf("spans = %#v, want none", spans)
+				}
+				return
+			}
+			if len(spans) != 1 || spans[0].Text != tc.text || spans[0].Role != tc.role {
+				t.Fatalf("spans = %#v, want one %s %s span", spans, tc.role, tc.text)
+			}
+		})
+	}
+}
+
 func TestGeminiSelectorCanonicalRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string
@@ -107,39 +177,26 @@ func TestGeminiSelectorCanonicalRoles(t *testing.T) {
 	}
 }
 
-func TestScanTextPartPreservesResultIndex(t *testing.T) {
+func TestGeminiNullMachineDiscriminatorsRemainSelectable(t *testing.T) {
 	cases := []struct {
-		name, part      string
-		requireTextType bool
-		allowed         bool
+		name, part string
 	}{
-		{name: "text before exclusion", part: `{"text":"before\nvalue","functionCall":null}`, allowed: false},
-		{name: "text after exclusion", part: `{"functionCall":null,"text":"after \u2603"}`, allowed: false},
-		{name: "allowed text", part: `{"text":"ordinary"}`, allowed: true},
+		{name: "camel text before", part: `{"text":"before\nvalue","functionCall":null}`},
+		{name: "camel text after", part: `{"functionCall":null,"text":"after \u2603"}`},
+		{name: "snake text before", part: `{"text":"before\nvalue","function_call":null}`},
+		{name: "snake text after", part: `{"function_call":null,"text":"after \u2603"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			part := gjson.Parse(tc.part)
 			wantText := part.Get("text")
-			gotText, gotAllowed := scanTextPart(part, tc.requireTextType)
-			if gotAllowed != tc.allowed {
-				t.Fatalf("allowed = %t, want %t", gotAllowed, tc.allowed)
+			gotText, allowed := scanTextPart(part, false)
+			if !allowed {
+				t.Fatal("allowed = false, want true")
 			}
 			if gotText.Raw != wantText.Raw || gotText.Str != wantText.Str || gotText.Index != wantText.Index {
 				t.Fatalf("text = {Raw:%q Str:%q Index:%d}, want {Raw:%q Str:%q Index:%d}", gotText.Raw, gotText.Str, gotText.Index, wantText.Raw, wantText.Str, wantText.Index)
 			}
 		})
-	}
-}
-
-func TestScanTextPartTraversesWholeObjectBeforeDecision(t *testing.T) {
-	part := gjson.Parse(`{"functionCall":null,"text":"after exclusion"}`)
-	wantText := part.Get("text")
-	gotText, allowed := scanTextPart(part, false)
-	if allowed {
-		t.Fatal("allowed = true, want false")
-	}
-	if gotText.Raw != wantText.Raw || gotText.Str != wantText.Str || gotText.Index != wantText.Index {
-		t.Fatalf("text = {Raw:%q Str:%q Index:%d}, want {Raw:%q Str:%q Index:%d}", gotText.Raw, gotText.Str, gotText.Index, wantText.Raw, wantText.Str, wantText.Index)
 	}
 }

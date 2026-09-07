@@ -315,6 +315,24 @@ func BenchmarkDisabledRoleSelectors(b *testing.B) {
 	runBenchmarkDisabledRoleSelectors(b)
 }
 
+func BenchmarkGeminiSystemOnly(b *testing.B) {
+	const content = `{"role":"user","parts":[{"text":"hidden"}]}`
+	contents := strings.TrimSuffix(strings.Repeat(content+",", 1<<14), ",")
+	body := []byte(`{"systemInstruction":{"parts":[{"text":"system"}]},"contents":[` + contents + `]}`)
+	roles := scopeSet{"system": {}}
+	spans, err := selectTextSpans(body, "gemini", roles)
+	if err != nil || len(spans) != 1 || spans[0].Text != "system" || spans[0].Role != "system" {
+		b.Fatalf("selectTextSpans() = %#v, %v; want one system span", spans, err)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkSpansSink, benchmarkErrorSink = selectTextSpans(body, "gemini", roles)
+	}
+}
+
 func BenchmarkEmptyStringSpans(b *testing.B) {
 	body := benchmarkScenarioBody("", "", 1000, "")
 	roles := scopeSet{"user": {}}
