@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -99,7 +98,7 @@ func TestRegistrationDeclaresOnlyRequestInterceptor(t *testing.T) {
 	if got.SchemaVersion != pluginabi.SchemaVersion || got.Metadata.Name != "censorship" || got.Metadata.Version != pluginVersion {
 		t.Fatalf("registration = %#v", got)
 	}
-	if got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" || got.Metadata.ConfigFields == nil {
+	if got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" || got.Metadata.Logo != "https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png" || got.Metadata.ConfigFields == nil {
 		t.Fatalf("metadata = %#v", got.Metadata)
 	}
 	if !got.Capabilities["request_interceptor"] {
@@ -115,23 +114,39 @@ func TestRegistrationDeclaresOnlyRequestInterceptor(t *testing.T) {
 func TestRegistrationExposesEditableConfigFields(t *testing.T) {
 	fields := pluginRegistration().Metadata.ConfigFields
 	want := []struct {
-		name       string
-		typeName   pluginapi.ConfigFieldType
-		enumValues []string
+		name        string
+		typeName    pluginapi.ConfigFieldType
+		description string
 	}{
-		{name: "mode", typeName: pluginapi.ConfigFieldTypeEnum, enumValues: []string{"block", "strip", "obfs"}},
-		{name: "ignore_case", typeName: pluginapi.ConfigFieldTypeBoolean},
-		{name: "words", typeName: pluginapi.ConfigFieldTypeArray},
-		{name: "scope", typeName: pluginapi.ConfigFieldTypeObject},
-		{name: "obfs", typeName: pluginapi.ConfigFieldTypeObject},
+		{name: "ignore_case", typeName: pluginapi.ConfigFieldTypeBoolean, description: "Match terms with Go unicode.SimpleFold equivalence (default false)."},
+		{name: "words", typeName: pluginapi.ConfigFieldTypeObject, description: "Optional block, strip, and obfs arrays; an empty object has no rules."},
+		{name: "scope", typeName: pluginapi.ConfigFieldTypeObject, description: "Optional object with formats and roles arrays; defaults to all supported formats and system, developer, and user roles."},
+		{name: "obfs", typeName: pluginapi.ConfigFieldTypeObject, description: "Obfuscation object whose char is U+200B or U+2060; used by obfs rules (default U+200B)."},
 	}
 	if len(fields) != len(want) {
 		t.Fatalf("config field count = %d, want %d: %#v", len(fields), len(want), fields)
 	}
 	for i, field := range fields {
-		if field.Name != want[i].name || field.Type != want[i].typeName || !reflect.DeepEqual(field.EnumValues, want[i].enumValues) || field.Description == "" {
-			t.Errorf("config field %d = %#v, want name=%q type=%q enum=%v and a description", i, field, want[i].name, want[i].typeName, want[i].enumValues)
+		if field.Name != want[i].name || field.Type != want[i].typeName || field.Description != want[i].description || field.EnumValues != nil {
+			t.Errorf("config field %d = %#v, want name=%q type=%q description=%q and no enum values", i, field, want[i].name, want[i].typeName, want[i].description)
 		}
+	}
+}
+
+func TestRegistrationUsesBuildVersion(t *testing.T) {
+	if got, want := pluginVersion, "0.0.0-dev"; got != want {
+		t.Fatalf("source pluginVersion = %q, want %q", got, want)
+	}
+
+	original := pluginVersion
+	t.Cleanup(func() { pluginVersion = original })
+	pluginVersion = "v0.2.0"
+
+	var env pluginabi.Envelope
+	decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, "")), &env)
+	got := decodeResult[registration](t, env)
+	if got.Metadata.Version != pluginVersion {
+		t.Fatalf("registration version = %q, want %q", got.Metadata.Version, pluginVersion)
 	}
 }
 
