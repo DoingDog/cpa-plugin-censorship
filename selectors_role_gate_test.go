@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tidwall/gjson"
 )
@@ -14,7 +18,7 @@ func TestSelectorHasEnabledRoleByFormat(t *testing.T) {
 		enabled scopeSet
 	}{
 		{name: "openai", enabled: scopeSet{"system": struct{}{}, "developer": struct{}{}, "user": struct{}{}, "assistant": struct{}{}, "tool": struct{}{}}},
-		{name: "openai-response", enabled: scopeSet{"system": struct{}{}, "developer": struct{}{}, "user": struct{}{}, "assistant": struct{}{}}},
+		{name: "openai-response", enabled: scopeSet{"system": struct{}{}, "developer": struct{}{}, "user": struct{}{}, "assistant": struct{}{}, "tool": struct{}{}}},
 		{name: "claude", enabled: scopeSet{"system": struct{}{}, "user": struct{}{}, "assistant": struct{}{}, "tool": struct{}{}}},
 		{name: "gemini", enabled: scopeSet{"system": struct{}{}, "user": struct{}{}, "assistant": struct{}{}}},
 		{name: "interactions", enabled: scopeSet{"system": struct{}{}, "user": struct{}{}, "assistant": struct{}{}}},
@@ -181,5 +185,98 @@ func TestDisabledSelectorRoleTraversalAllocationCeiling(t *testing.T) {
 				t.Fatalf("allocations = %.1f, want at most 32", allocations)
 			}
 		})
+	}
+}
+
+func TestSelectorRejectsDeepJSONBeforeGJSONValidation(t *testing.T) {
+	const childEnv = "SELECTORS_DEEP_JSON_CHILD"
+	if os.Getenv(childEnv) == "1" {
+		const depth = maxJSONNestingDepth * 1024
+		body := []byte(strings.Repeat(`{"a":`, depth) + `0` + strings.Repeat(`}`, depth))
+		if _, err := selectTextSpans(body, "openai", scopeSet{"user": {}}); err != errInvalidRequest {
+			t.Fatalf("depth %d error = %v, want %v", depth, err, errInvalidRequest)
+		}
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSelectorRejectsDeepJSONBeforeGJSONValidation$")
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("deep JSON subprocess did not finish promptly: %s", output)
+	}
+	if err != nil {
+		t.Fatalf("deep JSON subprocess failed: %v\n%s", err, output)
+	}
+}
+
+func TestSelectorRejectsInvalidUTF8(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "key", body: []byte("{\"\xff\":\"safe\"}")},
+		{name: "selected value", body: []byte("{\"messages\":[{\"role\":\"user\",\"content\":\"\xff\"}]}")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spans, err := selectTextSpans(tc.body, "openai", scopeSet{"user": {}})
+			if err != errInvalidRequest {
+				t.Fatalf("error = %v, want %v", err, errInvalidRequest)
+			}
+			if spans != nil {
+				t.Fatalf("spans = %#v, want nil", spans)
+			}
+		})
+	}
+}
+
+func TestSelectorSkipsEmptyStringSpans(t *testing.T) {
+	const itemCount = 2048
+	emptyMessage := `{"role":"user","content":""}`
+	body := []byte(`{"messages":[` + strings.TrimSuffix(strings.Repeat(emptyMessage+",", itemCount), ",") + `]}`)
+
+	spans, err := selectTextSpans(body, "openai", scopeSet{"user": {}})
+	if err != nil {
+		t.Fatalf("empty strings error = %v", err)
+	}
+	if len(spans) != 0 {
+		t.Fatalf("empty strings produced %d spans, want 0", len(spans))
+	}
+
+	escapedBody := `{"messages":[{"role":"user","content":"` + string([]byte{92}) + `u0058"}]}`
+	spans, err = selectTextSpans([]byte(escapedBody), "openai", scopeSet{"user": {}})
+	if err != nil {
+		t.Fatalf("escaped string error = %v", err)
+	}
+	if len(spans) != 1 || spans[0].Text != "X" {
+		t.Fatalf("escaped string spans = %#v, want one X span", spans)
+	}
+}
+
+func TestScanTextPartIgnoresNullMachineDiscriminators(t *testing.T) {
+	for _, body := range []string{
+		`{"functionCall":null,"text":"allowed"}`,
+		`{"text":"allowed","functionCall":null}`,
+		`{"function_call":null,"text":"allowed"}`,
+		`{"text":"allowed","function_call":null}`,
+	} {
+		text, allowed := scanTextPart(gjson.Parse(body), false)
+		if !allowed || text.Str != "allowed" {
+			t.Fatalf("scanTextPart(%s) = (%q, %t), want (allowed, true)", body, text.Str, allowed)
+		}
+	}
+
+	for _, body := range []string{
+		`{"functionCall":{},"text":"excluded"}`,
+		`{"function_call":false,"text":"excluded"}`,
+		`{"thought":true,"text":"excluded"}`,
+	} {
+		if _, allowed := scanTextPart(gjson.Parse(body), false); allowed {
+			t.Fatalf("scanTextPart(%s) allowed = true, want false", body)
+		}
 	}
 }
