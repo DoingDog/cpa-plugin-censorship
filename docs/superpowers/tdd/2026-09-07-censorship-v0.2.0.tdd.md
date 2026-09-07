@@ -189,3 +189,154 @@ The implementing agent committed before returning its terminal record. Current t
 - `git diff --check`
   - exit code: `0`
   - decisive output: no whitespace errors; only LF/CRLF conversion warnings.
+
+## Task 6: Cover OpenAI Tool, Refusal, Function, and Result Text, 2026-09-08
+
+### RED
+
+The implementing agents were interrupted repeatedly by API EOF failures, so the final tests were paired with `selectors_openai.go` from `c20b99a` in a temporary detached worktree for literal RED evidence.
+
+- `go test . -run '^(TestOpenAI.*Tool|TestOpenAI.*Refusal|TestOpenAI.*Function|TestOpenAIResponses.*Output|TestOpenAIRoleGate)' -count=1`
+  - exit code: `1`
+  - decisive output: `TestOpenAIChatToolTextArrayRoleGate/tool_enabled`, `TestOpenAIChatRefusalRoleGate/assistant_enabled`, and `TestOpenAIChatFunctionRoleGate/tool_enabled` returned an empty body; all seven `TestOpenAIResponsesOutputRoleGate/*/tool_enabled` rows returned an empty body; `TestOpenAIRoleGateUsesCanonicalToolRole/function_message_enabled` and `/function_output_enabled` returned zero spans instead of one.
+
+### GREEN
+
+- `go test . -run '^(TestOpenAI.*Tool|TestOpenAI.*Refusal|TestOpenAI.*Function|TestOpenAIResponses.*Output|TestOpenAIRoleGate)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.115s`.
+- `go test . -run '^(TestOpenAI|TestSelector.*OpenAI)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 1.530s`.
+- `go test -race . -run '^(TestOpenAI|TestSelector.*OpenAI)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 15.604s`.
+- Role-off integration cases assert an empty response `Body`, which is the existing interceptor representation for zero selected spans; enabled cases compare the complete rebuilt body and keep IDs, names, calls, arguments, URLs, media, files, status, and unknown output types byte-identical.
+
+### REFACTOR
+
+- Kept explicit Chat roles and exact Responses result-type switches; no default recursion or new shared helper was added.
+- `gofmt -w selectors_openai.go selectors_openai_test.go selectors_role_gate_test.go`
+  - exit code: `0`
+  - decisive output: no output.
+- `go vet .`
+  - exit code: `0`
+  - decisive output: no output.
+- `git diff --check HEAD^ HEAD`
+  - exit code: `0`
+  - decisive output: no whitespace errors.
+
+## Task 7: Cover Claude Result Text, 2026-09-08
+
+### RED
+
+- `go test . -run '^TestClaude' -count=1`
+  - exit code: `1`
+  - decisive output: `TestClaudeResultText/string_tool_result`, `/direct_user_search_result`, `/nested_tool_search_result`, `/direct_user_text_document`, and `/nested_tool_text_document` returned an empty body; `TestClaudeResultTextPreservesMachineFields` reported `body differs outside selected Claude result text`.
+
+### GREEN
+
+- `gofmt -w selectors_claude.go selectors_claude_test.go && go test . -run '^TestClaude' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.074s`.
+- `go test -race . -run '^TestClaude' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 1.133s`.
+
+### REFACTOR
+
+- Direct search/document blocks use canonical `user`; nested `tool_result` content uses canonical `tool`; arbitrary string recursion remains excluded.
+- `gofmt -d selectors_claude.go selectors_claude_test.go`
+  - exit code: `0`
+  - decisive output: no output.
+- `go vet .`
+  - exit code: `0`
+  - decisive output: no output.
+- `git diff --check`
+  - exit code: `0`
+  - decisive output: no whitespace errors; only LF/CRLF conversion warnings.
+
+## Task 8: Handle Omitted Gemini Roles, 2026-09-08
+
+### RED
+
+- `go test . -run '^(TestGemini.*Role|TestGemini.*Null|TestGemini.*Disabled)' -count=1`
+  - exit code: `1`
+  - decisive output: `TestGeminiOmittedRoleFormsAlternateCanonicalRoles/null_first_only`, `/null_after_explicit_user`, `/empty_first_only`, and `/empty_after_explicit_user` returned an empty body.
+- `go test . -run '^$' -bench '^BenchmarkGeminiSystemOnly' -benchmem -count=3`
+  - exit code: `0`
+  - decisive output: `17786572 ns/op`, `15789600 ns/op`, and `21565395 ns/op`; approximately `729176-729267 B/op` and `3 allocs/op`.
+
+### GREEN
+
+- `gofmt -w selectors_gemini.go selectors_gemini_test.go benchmark_test.go && go test . -run '^(TestGemini|TestScanTextPart)' -count=1`
+  - exit code: `1`
+  - decisive output: three provider-owned Task 9 fixtures in `TestScanTextPartPreservesProtocolRules` still expected null `functionCall` and `function_call` fields to be present; the focused Gemini tests below passed.
+- `go test . -run '^TestGemini' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.128s`.
+- `go test -race . -run '^TestGemini' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 1.375s`.
+- `go test . -run '^$' -bench '^BenchmarkGeminiSystemOnly' -benchmem -count=5`
+  - exit code: `0`
+  - decisive output: `10164182`, `10884959`, `10903388`, `10188495`, and `9933489 ns/op`; approximately `729177-729236 B/op` and `3 allocs/op`.
+
+### REFACTOR
+
+- Missing, null, and empty Gemini roles share the existing omitted-role alternation; system-only and tool-only scopes return before traversing `contents`.
+- `gofmt -w selectors_gemini.go selectors_gemini_test.go benchmark_test.go && go vet . && git diff --check`
+  - exit code: `0`
+  - decisive output: no vet or whitespace errors; only LF/CRLF conversion warnings.
+
+## Task 9: Select Direct Interactions Text, 2026-09-08
+
+### RED
+
+- `go test . -run '^TestInteractions' -count=1`
+  - exit code: `1`
+  - decisive output: `TestInteractionsDirectTextContent/direct_object` and `/direct_array_element` returned an empty body; `TestInteractionsDirectTextContentKeepsProtocolExclusions` also returned an empty body.
+
+### GREEN
+
+- `go test . -run '^TestInteractions' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.088s`.
+- `go test -race . -run '^TestInteractions' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 1.146s`.
+
+### REFACTOR
+
+- Direct Interactions objects and array items select only exact `type:"text"` text; media, tool, thought, control fields, and unknown nesting remain excluded.
+- `gofmt -d selectors_interactions.go selectors_interactions_test.go`
+  - exit code: `0`
+  - decisive output: no output.
+- `go vet .`
+  - exit code: `0`
+  - decisive output: no output.
+- `git diff --check`
+  - exit code: `0`
+  - decisive output: no whitespace errors; only LF/CRLF conversion warnings.
+
+## Task 10: Integrate Provider Selectors, 2026-09-08
+
+### Integration gate
+
+- Cherry-picked Task 6 `49687d9` as `afb4181`, Task 7 `a5b6f0d` as `dfc6187`, Task 8 `0a7a502` as `0fd7b96`, and Task 9 `08ab48d` as `9bdc857`, in numeric order and without conflicts.
+- First `go test . -run '^(TestSelector|TestOpenAI|TestClaude|TestGemini|TestInteractions|TestScanTextPart|TestInvalidUTF8|TestEmptyString)' -count=1`
+  - exit code: `1`
+  - decisive output: only `TestScanTextPartPreservesProtocolRules/escaped_machine_key` failed with `allowed = true, want false`.
+- First `go test -race . -run '^(TestOpenAI|TestClaude|TestGemini|TestInteractions)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 16.419s`.
+- The escaped key decodes to `functionCall`; its null value must follow the same null-as-absent contract as the unescaped key. Commit `409f3e9` changes only that stale expectation.
+
+### Final GREEN
+
+- `go test . -run '^(TestSelector|TestOpenAI|TestClaude|TestGemini|TestInteractions|TestScanTextPart|TestInvalidUTF8|TestEmptyString)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 1.475s`.
+- `go test -race . -run '^(TestOpenAI|TestClaude|TestGemini|TestInteractions)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 15.970s`.
