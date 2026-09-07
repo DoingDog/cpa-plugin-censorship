@@ -16,6 +16,12 @@ import (
 
 var okEnvelopeByteSink []byte
 
+func TestSupportedPluginSchema(t *testing.T) {
+	if got, want := pluginabi.SchemaVersion, uint32(5); got != want {
+		t.Fatalf("plugin schema = %d, want %d", got, want)
+	}
+}
+
 func TestOKEnvelopeExactBytesAndAllocationCeiling(t *testing.T) {
 	type result struct {
 		Value string `json:"value"`

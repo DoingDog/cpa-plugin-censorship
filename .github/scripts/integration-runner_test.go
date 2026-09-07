@@ -38,6 +38,13 @@ func TestPluginExtension(t *testing.T) {
 	}
 }
 
+func TestPinnedCPARevision(t *testing.T) {
+	const want = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
+	if cpaSHA != want {
+		t.Fatalf("cpaSHA = %q, want %q", cpaSHA, want)
+	}
+}
+
 func TestVerifyCheckoutRejectsWrongHEAD(t *testing.T) {
 	dir := t.TempDir()
 	runGitTest(t, dir, "init")

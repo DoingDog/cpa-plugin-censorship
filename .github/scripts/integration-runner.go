@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	cpaSHA    = "81e1b5374f99c212f196f34956eeed964a46b8fa"
+	cpaSHA    = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
 	cpaRemote = "https://github.com/router-for-me/CLIProxyAPI"
 )
 

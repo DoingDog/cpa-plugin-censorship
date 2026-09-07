@@ -140,7 +140,7 @@ make vet
 make integration
 ```
 
-`make integration` builds the plugin and fixed CPA commit `81e1b5374f99c212f196f34956eeed964a46b8fa`, then runs HTTP, SSE, watcher, Responses WebSocket, and ABI checks.
+`make integration` builds the plugin and fixed CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`, then runs HTTP, SSE, watcher, Responses WebSocket, and ABI checks.
 
 Build the current host or a selected host-supported target:
 
