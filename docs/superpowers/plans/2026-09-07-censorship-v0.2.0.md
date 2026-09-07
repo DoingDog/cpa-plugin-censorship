@@ -717,6 +717,7 @@ Return the commit hash and literal evidence. Do not edit the shared TDD record.
 **Files:**
 - Modify: `selectors_gemini.go`
 - Modify: `selectors_gemini_test.go`
+- Modify: `benchmark_test.go`
 
 **Interfaces:**
 - Consumes: Task 5's ProtoJSON-null-safe `scanTextPart`.
@@ -1330,7 +1331,7 @@ Follow the skill before making any completion statement or release commit.
 - [ ] **Step 2: Run formatting and generated-state checks**
 
 ```powershell
-gofmt -w *.go integration/*.go .github/scripts/*.go .github/scripts/testdata/*.go
+gofmt -w (git ls-files '*.go')
 git diff --check
 git status --short
 ```
