@@ -343,6 +343,30 @@ func BenchmarkFoldedRewriteStrategies(b *testing.B) {
 	runBenchmarkFoldedRewriteStrategies(b)
 }
 
+func BenchmarkMixedTransformScenario(b *testing.B) {
+	rules := []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "x"}}
+	cfg := benchmarkSnapshot(modeBlock, false, rules)
+	cfg.BlockEnd = 1
+	cfg.StripEnd = 2
+	cfg.rangesSet = true
+	if err := compileSnapshot(cfg); err != nil {
+		b.Fatal(err)
+	}
+	body := benchmarkScenarioBody("ABx", "", 1, "")
+	want := benchmarkScenarioBody("x​", "", 1, "")
+	got, err := transformRequest(body, "openai", cfg)
+	if err != nil || got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
+		b.Fatalf("transformRequest() = %#v, %v; want mixed cascade body %q", got, err, want)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
+	}
+}
+
 var (
 	benchmarkBoolSink      bool
 	benchmarkBytesSink     []byte
@@ -568,9 +592,11 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 	cases := []struct {
 		rules, text int
 		set         string
+		mixed       bool
 	}{
 		{rules: 8, text: 4 << 10, set: "calibration"},
 		{rules: 32, text: 16 << 10, set: "calibration"},
+		{rules: 32, text: 16 << 10, set: "mixed-holdout", mixed: true},
 		{rules: 128, text: 64 << 10, set: "holdout"},
 	}
 	strategies := []struct {
@@ -582,11 +608,27 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 	}
 	for _, tc := range cases {
 		tc := tc
-		cfg := benchmarkSnapshot(modeStrip, true, benchmarkRules(tc.rules, ""))
+		rules := benchmarkRules(tc.rules, "")
+		selectedMode := modeStrip
+		pattern := "folded"
+		if tc.mixed {
+			rules = append([]compiledRule{{Term: "BLOCKME"}}, rules...)
+			selectedMode = modeBlock
+			pattern = "mixed-folded"
+		}
+		cfg := benchmarkSnapshot(selectedMode, true, rules)
+		if tc.mixed {
+			cfg.BlockEnd = 1
+			cfg.StripEnd = len(cfg.Rules)
+			cfg.rangesSet = true
+			if err := compileSnapshot(cfg); err != nil {
+				b.Fatal(err)
+			}
+		}
 		text := benchmarkSizedText(tc.text, "")
 		for _, strategy := range strategies {
 			strategy := strategy
-			b.Run(benchmarkStrategyName(strategy.name, modeStrip, tc.rules, tc.text, "folded", "none", tc.set), func(b *testing.B) {
+			b.Run(benchmarkStrategyName(strategy.name, selectedMode, len(rules), tc.text, pattern, "none", tc.set), func(b *testing.B) {
 				if benchmarkFoldRewriteStrategy(text, cfg, strategy.preflight) {
 					b.Fatal("total-miss strategy reported a match")
 				}
