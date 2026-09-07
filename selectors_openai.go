@@ -15,25 +15,36 @@ func collectOpenAI(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		if role.Type != gjson.String {
 			return true
 		}
-		switch role.Str {
+		roleName := role.Str
+		if roleName == "function" {
+			roleName = "tool"
+		}
+		switch roleName {
 		case "system", "developer", "user", "assistant", "tool":
 		default:
 			return true
 		}
-		if !roles.has(role.Str) {
+		if !roles.has(roleName) {
 			return true
 		}
 		content := message.Get("content")
-		if role.Str == "tool" {
-			appendStringSpan(spans, content, role.Str, roles)
-			return true
+		appendStringSpan(spans, content, roleName, roles)
+		if roleName == "assistant" {
+			appendStringSpan(spans, message.Get("refusal"), roleName, roles)
 		}
-		appendStringSpan(spans, content, role.Str, roles)
 		if content.IsArray() {
 			content.ForEach(func(_, part gjson.Result) bool {
 				partType := part.Get("type")
-				if partType.Type == gjson.String && partType.Str == "text" {
-					appendStringSpan(spans, part.Get("text"), role.Str, roles)
+				if partType.Type != gjson.String {
+					return true
+				}
+				switch partType.Str {
+				case "text":
+					appendStringSpan(spans, part.Get("text"), roleName, roles)
+				case "refusal":
+					if roleName == "assistant" {
+						appendStringSpan(spans, part.Get("refusal"), roleName, roles)
+					}
 				}
 				return true
 			})
@@ -60,6 +71,65 @@ func openAIResponsesRole(item gjson.Result) (string, bool) {
 	}
 }
 
+func appendOpenAIResponsesInputTextOutput(output gjson.Result, roles scopeSet, spans *[]textSpan) {
+	appendStringSpan(spans, output, "tool", roles)
+	if !output.IsArray() {
+		return
+	}
+	output.ForEach(func(_, part gjson.Result) bool {
+		partType := part.Get("type")
+		if partType.Type == gjson.String && partType.Str == "input_text" {
+			appendStringSpan(spans, part.Get("text"), "tool", roles)
+		}
+		return true
+	})
+}
+
+func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *[]textSpan) bool {
+	itemType := item.Get("type")
+	if itemType.Type != gjson.String {
+		return false
+	}
+
+	switch itemType.Str {
+	case "function_call_output", "custom_tool_call_output":
+		if roles.has("tool") {
+			appendOpenAIResponsesInputTextOutput(item.Get("output"), roles, spans)
+		}
+		return true
+	case "local_shell_call_output", "apply_patch_call_output":
+		if roles.has("tool") {
+			appendStringSpan(spans, item.Get("output"), "tool", roles)
+		}
+		return true
+	case "shell_call_output":
+		if roles.has("tool") {
+			output := item.Get("output")
+			if output.IsArray() {
+				output.ForEach(func(_, result gjson.Result) bool {
+					appendStringSpan(spans, result.Get("stdout"), "tool", roles)
+					appendStringSpan(spans, result.Get("stderr"), "tool", roles)
+					return true
+				})
+			}
+		}
+		return true
+	case "mcp_call":
+		if roles.has("tool") {
+			appendStringSpan(spans, item.Get("output"), "tool", roles)
+			appendStringSpan(spans, item.Get("error"), "tool", roles)
+		}
+		return true
+	case "program_result":
+		if roles.has("tool") {
+			appendStringSpan(spans, item.Get("result"), "tool", roles)
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	if roles.has("system") {
 		appendStringSpan(spans, root.Get("instructions"), "system", roles)
@@ -72,7 +142,10 @@ func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan
 		return
 	}
 	input.ForEach(func(_, item gjson.Result) bool {
-		if !item.IsObject() || !openAIResponsesMessageType(item) {
+		if !item.IsObject() {
+			return true
+		}
+		if collectOpenAIResponsesToolOutput(item, roles, spans) || !openAIResponsesMessageType(item) {
 			return true
 		}
 		role, ok := openAIResponsesRole(item)

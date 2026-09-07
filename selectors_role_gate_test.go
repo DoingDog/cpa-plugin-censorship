@@ -39,6 +39,54 @@ func TestSelectorHasEnabledRoleByFormat(t *testing.T) {
 	}
 }
 
+func TestOpenAIRoleGateUsesCanonicalToolRole(t *testing.T) {
+	cases := []struct {
+		name         string
+		body         string
+		sourceFormat string
+		roles        scopeSet
+		want         []struct{ text, role string }
+	}{
+		{
+			name:         "function message enabled",
+			body:         `{"messages":[{"role":"function","content":"function content"}]}`,
+			sourceFormat: "openai",
+			roles:        scopeSet{"tool": {}},
+			want:         []struct{ text, role string }{{text: "function content", role: "tool"}},
+		},
+		{
+			name:         "function message disabled",
+			body:         `{"messages":[{"role":"function","content":"function content"}]}`,
+			sourceFormat: "openai",
+			roles:        scopeSet{"user": {}},
+		},
+		{
+			name:         "function output enabled",
+			body:         `{"input":[{"type":"function_call_output","role":"user","output":"function output"}]}`,
+			sourceFormat: "openai-response",
+			roles:        scopeSet{"tool": {}},
+			want:         []struct{ text, role string }{{text: "function output", role: "tool"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spans, err := selectTextSpans([]byte(tc.body), tc.sourceFormat, tc.roles)
+			if err != nil {
+				t.Fatalf("selectTextSpans(%q) error = %v", tc.sourceFormat, err)
+			}
+			if len(spans) != len(tc.want) {
+				t.Fatalf("selectTextSpans(%q) spans = %#v, want %d spans", tc.sourceFormat, spans, len(tc.want))
+			}
+			for i, want := range tc.want {
+				if spans[i].Text != want.text || spans[i].Role != want.role {
+					t.Fatalf("span[%d] = {Text:%q Role:%q}, want {Text:%q Role:%q}", i, spans[i].Text, spans[i].Role, want.text, want.role)
+				}
+			}
+		})
+	}
+}
+
 func TestSelectorRoleGatesPreserveCanonicalOverrides(t *testing.T) {
 	assertSpans := func(body, sourceFormat string, roles scopeSet, want []struct{ text, role string }) {
 		t.Helper()
