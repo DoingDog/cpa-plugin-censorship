@@ -315,6 +315,22 @@ func BenchmarkDisabledRoleSelectors(b *testing.B) {
 	runBenchmarkDisabledRoleSelectors(b)
 }
 
+func BenchmarkEmptyStringSpans(b *testing.B) {
+	body := benchmarkScenarioBody("", "", 1000, "")
+	roles := scopeSet{"user": {}}
+	spans, err := selectTextSpans(body, "openai", roles)
+	if err != nil || len(spans) != 0 {
+		b.Fatalf("selectTextSpans() = %#v, %v; want no empty string spans", spans, err)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkSpansSink, benchmarkErrorSink = selectTextSpans(body, "openai", roles)
+	}
+}
+
 func BenchmarkRebuildChangedSpans(b *testing.B) {
 	runBenchmarkRebuildChangedSpans(b)
 }
