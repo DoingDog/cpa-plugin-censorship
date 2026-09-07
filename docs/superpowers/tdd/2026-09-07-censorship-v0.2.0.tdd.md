@@ -57,3 +57,44 @@ Every task below records its literal RED, GREEN, and REFACTOR command, exit code
 - `git diff --check`
   - exit code: `0`
   - decisive output: no whitespace errors; Git printed only CRLF conversion warnings.
+
+## Task 3: Compile Per-Action Rules and Publish Object-Only Metadata, 2026-09-07
+
+### RED
+
+The original Task 3A RED output was lost when its first agent process crashed. After recovery, the current tests were run against the old production files in isolated temporary checkouts; these are real reconstructed RED runs, not inferred output.
+
+- `go test . -run '^(TestParseConfigYAMLWordsObject|TestParseConfigYAMLWordsObjectIgnoresMappingOrder|TestParseConfigYAMLRejectsInvalidWordsObject|TestParseConfigYAMLLegacyWordsUseFinalMode|TestParseConfigYAMLValidatesOnlyEffectiveObfsTerms)$' -count=1` with `config.go` restored from `7eeab1b`
+  - exit code: `1`
+  - decisive output: build failed because the old `configSnapshot` had no `BlockEnd` or `StripEnd` fields referenced by the new tests.
+- `go test . -run '^(TestRegistrationDeclaresOnlyRequestInterceptor|TestRegistrationExposesEditableConfigFields|TestRegistrationUsesBuildVersion)$' -count=1` with `main.go` restored from `b069d08`
+  - exit code: `1`
+  - decisive output: registration still had `Logo:""`, five fields including global `mode`, and `words` type `array`; `config field count = 5, want 4`.
+
+### GREEN
+
+- `go test . -run '^(TestParseConfig|TestCompileSnapshot|TestSyntheticSnapshots|TestConcurrentReconfigure)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 0.640s`.
+- `go test -race . -run '^TestConcurrentReconfigureObservesOnlyWholeSnapshot$' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 4.564s`.
+- `go test . -run '^(TestRegistration|TestHandlePlugin|TestConcurrentReconfigure)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 1.041s`.
+- `go test -race . -run '^(TestRegistration|TestHandlePlugin|TestConcurrentReconfigure)' -count=1`
+  - exit code: `0`
+  - decisive output: `ok github.com/DoingDog/cpa-plugin-censorship 5.403s`.
+- `go vet ./...`
+  - exit code: `0`
+  - decisive output: no output.
+
+### REFACTOR
+
+- Kept one flat `Rules` slice with `BlockEnd` and `StripEnd`; retained only the temporary `Mode` compatibility bridge needed until Task 4.
+- `gofmt -w config.go config_test.go main.go main_test.go`
+  - exit code: `0`
+  - decisive output: no output.
+- `git diff --check`
+  - exit code: `0`
+  - decisive output: no whitespace errors; Git printed only LF/CRLF conversion warnings during the config-file check.
