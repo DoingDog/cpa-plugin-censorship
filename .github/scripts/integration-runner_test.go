@@ -39,6 +39,22 @@ func TestPluginExtension(t *testing.T) {
 	}
 }
 
+func TestGoCommandUsesGOOverride(t *testing.T) {
+	t.Setenv("GO", "go-wrapper")
+
+	if got := goCommand(); got != "go-wrapper" {
+		t.Fatalf("go command = %q, want %q", got, "go-wrapper")
+	}
+}
+
+func TestGoCommandDefaultsToGoWhenGOIsEmpty(t *testing.T) {
+	t.Setenv("GO", "")
+
+	if got := goCommand(); got != "go" {
+		t.Fatalf("go command = %q, want %q", got, "go")
+	}
+}
+
 func TestPinnedCPARevision(t *testing.T) {
 	const want = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
 	if cpaSHA != want {
@@ -81,6 +97,35 @@ func TestVerifyCheckoutRejectsDirtyWorktree(t *testing.T) {
 	}
 	if err := verifyCheckout(dir, head); err == nil {
 		t.Fatal("untracked file accepted")
+	}
+}
+
+func TestPrepareCheckoutReusesCheckoutAfterRemovingGeneratedTests(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, paths.checkout, "init")
+	runGitTest(t, paths.checkout, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
+	head := strings.TrimSpace(runGitOutput(t, paths.checkout, "rev-parse", "HEAD"))
+
+	generated := filepath.Join(paths.checkout, "integration", "censorshipplugin")
+	if err := os.MkdirAll(generated, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "generated_test.go"), []byte("package censorshipplugin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareCheckout(paths, head); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(generated); !os.IsNotExist(err) {
+		t.Fatalf("generated integration tests remain after checkout preparation: %v", err)
 	}
 }
 

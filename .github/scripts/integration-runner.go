@@ -50,7 +50,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := prepareCheckout(paths); err != nil {
+	if err := prepareCheckout(paths, cpaSHA); err != nil {
 		return err
 	}
 	if err := buildCPA(paths); err != nil {
@@ -175,8 +175,12 @@ func verifyCheckout(path, wantSHA string) error {
 	return nil
 }
 
-func prepareCheckout(paths runnerPaths) error {
-	if err := verifyCheckout(paths.checkout, cpaSHA); err == nil {
+func prepareCheckout(paths runnerPaths, wantSHA string) error {
+	generatedTests := filepath.Join(paths.checkout, "integration", "censorshipplugin")
+	if err := removeContained(paths.integrationRoot, generatedTests); err != nil {
+		return err
+	}
+	if err := verifyCheckout(paths.checkout, wantSHA); err == nil {
 		return nil
 	}
 	if err := removeContained(paths.integrationRoot, paths.checkout); err != nil {
@@ -188,7 +192,7 @@ func prepareCheckout(paths runnerPaths) error {
 	commands := [][]string{
 		{"git", "init"},
 		{"git", "remote", "add", "origin", cpaRemote},
-		{"git", "fetch", "--depth=1", "origin", cpaSHA},
+		{"git", "fetch", "--depth=1", "origin", wantSHA},
 		{"git", "checkout", "--detach", "FETCH_HEAD"},
 	}
 	for _, command := range commands {
@@ -196,7 +200,7 @@ func prepareCheckout(paths runnerPaths) error {
 			return err
 		}
 	}
-	return verifyCheckout(paths.checkout, cpaSHA)
+	return verifyCheckout(paths.checkout, wantSHA)
 }
 
 func buildCPA(paths runnerPaths) error {
@@ -206,7 +210,7 @@ func buildCPA(paths runnerPaths) error {
 	if err := os.MkdirAll(filepath.Dir(paths.bin), 0o755); err != nil {
 		return fmt.Errorf("create CPA binary directory: %w", err)
 	}
-	return runCommand(paths.checkout, nil, "go", "build", "-trimpath", "-o", paths.bin, "./cmd/server")
+	return runCommand(paths.checkout, nil, goCommand(), "build", "-trimpath", "-o", paths.bin, "./cmd/server")
 }
 
 func buildPlugin(paths runnerPaths) (string, error) {
@@ -223,7 +227,7 @@ func buildPlugin(paths runnerPaths) (string, error) {
 		return "", fmt.Errorf("create plugin directory: %w", err)
 	}
 	library := filepath.Join(platformDir, "censorship"+extension)
-	if err := runCommand(paths.repositoryRoot, []string{"CGO_ENABLED=1"}, "go", "build", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
+	if err := runCommand(paths.repositoryRoot, []string{"CGO_ENABLED=1"}, goCommand(), "build", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
 		return "", err
 	}
 	header := strings.TrimSuffix(library, extension) + ".h"
@@ -275,7 +279,14 @@ func runIntegrationTests(paths runnerPaths, pluginDir string, bench bool) error 
 		"CPA_INTEGRATION_BIN=" + paths.bin,
 		"CENSORSHIP_PLUGIN_DIR=" + pluginDir,
 	}
-	return runCommand(paths.checkout, env, "go", integrationTestArgs(bench)...)
+	return runCommand(paths.checkout, env, goCommand(), integrationTestArgs(bench)...)
+}
+
+func goCommand() string {
+	if command := os.Getenv("GO"); command != "" {
+		return command
+	}
+	return "go"
 }
 
 func runCommand(dir string, extraEnv []string, name string, args ...string) error {
