@@ -1,7 +1,7 @@
 # Censorship v0.2.0 Architectural Design
 
-**Date:** 2026-09-07  
-**Status:** Approved for implementation  
+**Date:** 2026-09-07
+**Status:** Approved for implementation
 **Evidence basis:** The supplied partition reports only. This design does not depend on a new repository scan.
 
 ## 1. Decision summary
