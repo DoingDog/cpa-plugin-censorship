@@ -71,13 +71,43 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	return transformResult{Body: out}, err
 }
 
+func rulePhaseEnds(cfg *configSnapshot) (int, int) {
+	if !cfg.rangesSet {
+		switch cfg.Mode {
+		case modeBlock:
+			return len(cfg.Rules), len(cfg.Rules)
+		case modeStrip:
+			return 0, len(cfg.Rules)
+		case modeObfs:
+			return 0, 0
+		default:
+			return 0, 0
+		}
+	}
+
+	blockEnd := cfg.BlockEnd
+	if blockEnd < 0 {
+		blockEnd = 0
+	} else if blockEnd > len(cfg.Rules) {
+		blockEnd = len(cfg.Rules)
+	}
+	stripEnd := cfg.StripEnd
+	if stripEnd < blockEnd {
+		stripEnd = blockEnd
+	} else if stripEnd > len(cfg.Rules) {
+		stripEnd = len(cfg.Rules)
+	}
+	return blockEnd, stripEnd
+}
+
 func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) {
+	blockEnd, _ := rulePhaseEnds(cfg)
 	matcher := cfg.ExactBlockMatcher
 	prefixCount := 0
 	if matcher != nil {
 		prefixCount = exactByteMatcherPrefixRules
-		if prefixCount > len(cfg.Rules) {
-			prefixCount = len(cfg.Rules)
+		if prefixCount > blockEnd {
+			prefixCount = blockEnd
 		}
 		if len(spans) == 1 {
 			span := spans[0]
@@ -104,10 +134,10 @@ func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) 
 				totalTextBytes += len(span.Text)
 			}
 		}
-		if useExactByteMatcher(len(cfg.Rules), totalTextBytes) {
+		if useExactByteMatcher(blockEnd, totalTextBytes) {
 			if len(spans) == 1 {
 				ruleIndex, matched := matcher.match(spans[0].Text)
-				if matched {
+				if matched && ruleIndex >= 0 && ruleIndex < blockEnd {
 					return ruleIndex, spans[0].Role, true
 				}
 				return -1, "", false
@@ -117,7 +147,7 @@ func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) 
 			bestRole := ""
 			for _, span := range spans {
 				ruleIndex, matched := matcher.match(span.Text)
-				if matched && (bestRule < 0 || ruleIndex < bestRule) {
+				if matched && ruleIndex >= 0 && ruleIndex < blockEnd && (bestRule < 0 || ruleIndex < bestRule) {
 					bestRule = ruleIndex
 					bestRole = span.Role
 					if bestRule == prefixCount {
@@ -131,7 +161,7 @@ func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) 
 
 	if len(spans) == 1 {
 		span := spans[0]
-		for ruleIndex := prefixCount; ruleIndex < len(cfg.Rules); ruleIndex++ {
+		for ruleIndex := prefixCount; ruleIndex < blockEnd; ruleIndex++ {
 			if strings.Contains(span.Text, cfg.Rules[ruleIndex].Term) {
 				return ruleIndex, span.Role, true
 			}
@@ -139,7 +169,7 @@ func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) 
 		return -1, "", false
 	}
 
-	for ruleIndex := prefixCount; ruleIndex < len(cfg.Rules); ruleIndex++ {
+	for ruleIndex := prefixCount; ruleIndex < blockEnd; ruleIndex++ {
 		for _, span := range spans {
 			if strings.Contains(span.Text, cfg.Rules[ruleIndex].Term) {
 				return ruleIndex, span.Role, true
@@ -150,78 +180,77 @@ func matchExactBlock(spans []textSpan, cfg *configSnapshot) (int, string, bool) 
 }
 
 func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
-	if cfg.IgnoreCase && cfg.BlockMatcher != nil && (cfg.Mode == modeStrip || cfg.Mode == modeObfs) {
-		for i := range spans {
-			spans[i].SkipFoldRewrite = false
-			if useFoldRewritePreflight(len(cfg.Rules), len(spans[i].Text)) {
-				_, matched := cfg.BlockMatcher.match(spans[i].Text)
-				spans[i].SkipFoldRewrite = !matched
-			}
-		}
-	}
-
-	switch cfg.Mode {
-	case modeBlock:
+	blockEnd, stripEnd := rulePhaseEnds(cfg)
+	if blockEnd > 0 {
 		if !cfg.IgnoreCase {
 			ruleIndex, role, matched := matchExactBlock(spans, cfg)
 			if matched {
 				return &blockMatch{Term: cfg.Rules[ruleIndex].Term, Role: role}, false
 			}
-			break
-		}
-		matcher := cfg.BlockMatcher
-		if matcher == nil {
-			matcher = newFoldMatcher(cfg.Rules)
-		}
-		bestRule := -1
-		bestRole := ""
-		for _, span := range spans {
-			ruleIndex, ok := matcher.match(span.Text)
-			if ok && (bestRule < 0 || ruleIndex < bestRule) {
-				bestRule = ruleIndex
-				bestRole = span.Role
-				if bestRule == 0 {
-					break
+		} else {
+			matcher := cfg.BlockMatcher
+			if matcher == nil {
+				matcher = newFoldMatcher(cfg.Rules[:blockEnd])
+			}
+			bestRule := -1
+			bestRole := ""
+			for _, span := range spans {
+				ruleIndex, matched := matcher.match(span.Text)
+				if matched && ruleIndex >= 0 && ruleIndex < blockEnd && (bestRule < 0 || ruleIndex < bestRule) {
+					bestRule = ruleIndex
+					bestRole = span.Role
+					if bestRule == 0 {
+						break
+					}
 				}
 			}
-		}
-		if bestRule >= 0 {
-			return &blockMatch{Term: cfg.Rules[bestRule].Term, Role: bestRole}, false
-		}
-	case modeStrip:
-		changed := false
-		for _, rule := range cfg.Rules {
-			for i := range spans {
-				if cfg.IgnoreCase && spans[i].SkipFoldRewrite {
-					continue
-				}
-				text, matched := stripRule(spans[i].Text, rule, cfg.IgnoreCase)
-				if matched {
-					spans[i].Text = text
-					spans[i].Changed = true
-					changed = true
-				}
+			if bestRule >= 0 {
+				return &blockMatch{Term: cfg.Rules[bestRule].Term, Role: bestRole}, false
 			}
 		}
-		return nil, changed
-	case modeObfs:
-		changed := false
-		for _, rule := range cfg.Rules {
-			for i := range spans {
-				if cfg.IgnoreCase && spans[i].SkipFoldRewrite {
-					continue
-				}
-				text, matched := obfuscateRule(spans[i].Text, rule, cfg.IgnoreCase, cfg.ObfsChar)
-				if matched {
-					spans[i].Text = text
-					spans[i].Changed = true
-					changed = true
-				}
-			}
-		}
-		return nil, changed
 	}
-	return nil, false
+
+	if cfg.IgnoreCase && cfg.RewriteMatcher != nil {
+		for i := range spans {
+			spans[i].SkipFoldRewrite = false
+		}
+		rewriteRuleCount := len(cfg.Rules) - blockEnd
+		for i := range spans {
+			if useFoldRewritePreflight(rewriteRuleCount, len(spans[i].Text)) {
+				_, matched := cfg.RewriteMatcher.match(spans[i].Text)
+				spans[i].SkipFoldRewrite = !matched
+			}
+		}
+	}
+
+	changed := false
+	for _, rule := range cfg.Rules[blockEnd:stripEnd] {
+		for i := range spans {
+			if cfg.IgnoreCase && spans[i].SkipFoldRewrite {
+				continue
+			}
+			text, matched := stripRule(spans[i].Text, rule, cfg.IgnoreCase)
+			if matched {
+				spans[i].Text = text
+				spans[i].Changed = true
+				changed = true
+			}
+		}
+	}
+	for _, rule := range cfg.Rules[stripEnd:] {
+		for i := range spans {
+			if cfg.IgnoreCase && spans[i].SkipFoldRewrite {
+				continue
+			}
+			text, matched := obfuscateRule(spans[i].Text, rule, cfg.IgnoreCase, cfg.ObfsChar)
+			if matched {
+				spans[i].Text = text
+				spans[i].Changed = true
+				changed = true
+			}
+		}
+	}
+	return nil, changed
 }
 
 func rebuildBody(body []byte, spans []textSpan) ([]byte, error) {

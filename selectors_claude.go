@@ -62,15 +62,21 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				if roles.has(role.Str) {
 					appendStringSpan(spans, block.Get("text"), role.Str, roles)
 				}
+			case "search_result", "document":
+				if role.Str == "user" {
+					appendClaudeResultText(spans, block, "user", roles)
+				}
 			case "tool_result":
 				if role.Str != "user" || !roles.has("tool") {
 					return true
 				}
 				toolContent := block.Get("content")
+				appendStringSpan(spans, toolContent, "tool", roles)
 				if !toolContent.IsArray() {
 					return true
 				}
 				toolContent.ForEach(func(_, inner gjson.Result) bool {
+					appendClaudeResultText(spans, inner, "tool", roles)
 					if inner.IsObject() {
 						innerType := inner.Get("type")
 						if innerType.Type == gjson.String && innerType.Str == "text" {
@@ -84,4 +90,35 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		})
 		return true
 	})
+}
+
+func appendClaudeResultText(spans *[]textSpan, block gjson.Result, role string, roles scopeSet) {
+	if !roles.has(role) || !block.IsObject() {
+		return
+	}
+
+	blockType := block.Get("type")
+	if blockType.Type != gjson.String {
+		return
+	}
+
+	switch blockType.Str {
+	case "search_result":
+		content := block.Get("content")
+		if !content.IsArray() {
+			return
+		}
+		content.ForEach(func(_, part gjson.Result) bool {
+			if part.IsObject() && part.Get("type").Str == "text" {
+				appendStringSpan(spans, part.Get("text"), role, roles)
+			}
+			return true
+		})
+	case "document":
+		source := block.Get("source")
+		if !source.IsObject() || source.Get("type").Str != "text" {
+			return
+		}
+		appendStringSpan(spans, source.Get("data"), role, roles)
+	}
 }

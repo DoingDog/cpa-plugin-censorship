@@ -315,6 +315,40 @@ func BenchmarkDisabledRoleSelectors(b *testing.B) {
 	runBenchmarkDisabledRoleSelectors(b)
 }
 
+func BenchmarkGeminiSystemOnly(b *testing.B) {
+	const content = `{"role":"user","parts":[{"text":"hidden"}]}`
+	contents := strings.TrimSuffix(strings.Repeat(content+",", 1<<14), ",")
+	body := []byte(`{"systemInstruction":{"parts":[{"text":"system"}]},"contents":[` + contents + `]}`)
+	roles := scopeSet{"system": {}}
+	spans, err := selectTextSpans(body, "gemini", roles)
+	if err != nil || len(spans) != 1 || spans[0].Text != "system" || spans[0].Role != "system" {
+		b.Fatalf("selectTextSpans() = %#v, %v; want one system span", spans, err)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkSpansSink, benchmarkErrorSink = selectTextSpans(body, "gemini", roles)
+	}
+}
+
+func BenchmarkEmptyStringSpans(b *testing.B) {
+	body := benchmarkScenarioBody("", "", 1000, "")
+	roles := scopeSet{"user": {}}
+	spans, err := selectTextSpans(body, "openai", roles)
+	if err != nil || len(spans) != 0 {
+		b.Fatalf("selectTextSpans() = %#v, %v; want no empty string spans", spans, err)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkSpansSink, benchmarkErrorSink = selectTextSpans(body, "openai", roles)
+	}
+}
+
 func BenchmarkRebuildChangedSpans(b *testing.B) {
 	runBenchmarkRebuildChangedSpans(b)
 }
@@ -341,6 +375,30 @@ func BenchmarkExactBlockStrategies(b *testing.B) {
 
 func BenchmarkFoldedRewriteStrategies(b *testing.B) {
 	runBenchmarkFoldedRewriteStrategies(b)
+}
+
+func BenchmarkMixedTransformScenario(b *testing.B) {
+	rules := []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "xy"}}
+	cfg := benchmarkSnapshot(modeBlock, false, rules)
+	cfg.BlockEnd = 1
+	cfg.StripEnd = 2
+	cfg.rangesSet = true
+	if err := compileSnapshot(cfg); err != nil {
+		b.Fatal(err)
+	}
+	body := benchmarkScenarioBody("ABxy", "", 1, "")
+	want := benchmarkScenarioBody("x​y", "", 1, "")
+	got, err := transformRequest(body, "openai", cfg)
+	if err != nil || got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
+		b.Fatalf("transformRequest() = %#v, %v; want mixed cascade body %q", got, err, want)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
+	}
 }
 
 var (
@@ -568,9 +626,11 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 	cases := []struct {
 		rules, text int
 		set         string
+		mixed       bool
 	}{
 		{rules: 8, text: 4 << 10, set: "calibration"},
 		{rules: 32, text: 16 << 10, set: "calibration"},
+		{rules: 32, text: 16 << 10, set: "mixed-holdout", mixed: true},
 		{rules: 128, text: 64 << 10, set: "holdout"},
 	}
 	strategies := []struct {
@@ -582,11 +642,27 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 	}
 	for _, tc := range cases {
 		tc := tc
-		cfg := benchmarkSnapshot(modeStrip, true, benchmarkRules(tc.rules, ""))
+		rules := benchmarkRules(tc.rules, "")
+		selectedMode := modeStrip
+		pattern := "folded"
+		if tc.mixed {
+			rules = append([]compiledRule{{Term: "BLOCKME"}}, rules...)
+			selectedMode = modeBlock
+			pattern = "mixed-folded"
+		}
+		cfg := benchmarkSnapshot(selectedMode, true, rules)
+		if tc.mixed {
+			cfg.BlockEnd = 1
+			cfg.StripEnd = len(cfg.Rules)
+			cfg.rangesSet = true
+			if err := compileSnapshot(cfg); err != nil {
+				b.Fatal(err)
+			}
+		}
 		text := benchmarkSizedText(tc.text, "")
 		for _, strategy := range strategies {
 			strategy := strategy
-			b.Run(benchmarkStrategyName(strategy.name, modeStrip, tc.rules, tc.text, "folded", "none", tc.set), func(b *testing.B) {
+			b.Run(benchmarkStrategyName(strategy.name, selectedMode, len(rules), tc.text, pattern, "none", tc.set), func(b *testing.B) {
 				if benchmarkFoldRewriteStrategy(text, cfg, strategy.preflight) {
 					b.Fatal("total-miss strategy reported a match")
 				}
@@ -601,18 +677,33 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 	}
 }
 
+func TestBenchmarkFoldRewriteStrategyPreservesMixedBlockSemantics(t *testing.T) {
+	cfg := benchmarkSnapshot(modeBlock, true, []compiledRule{{Term: "BLOCKME"}, {Term: "rewrite"}})
+	cfg.BlockEnd = 1
+	cfg.StripEnd = len(cfg.Rules)
+	cfg.rangesSet = true
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	withPreflight := benchmarkFoldRewriteStrategy("blockme", cfg, true)
+	withoutPreflight := benchmarkFoldRewriteStrategy("blockme", cfg, false)
+	if withPreflight != withoutPreflight {
+		t.Fatalf("mixed block results differ: preflight=%t baseline=%t", withPreflight, withoutPreflight)
+	}
+	if withPreflight {
+		t.Fatal("mixed block strategy reported a rewrite")
+	}
+}
+
 func benchmarkFoldRewriteStrategy(text string, cfg *configSnapshot, preflight bool) bool {
-	if preflight {
-		spans := [...]textSpan{{Text: text}}
-		_, changed := applyMode(spans[:], cfg)
-		return changed
+	if !preflight {
+		withoutPreflight := *cfg
+		withoutPreflight.RewriteMatcher = nil
+		cfg = &withoutPreflight
 	}
-	changed := false
-	for _, rule := range cfg.Rules {
-		var matched bool
-		text, matched = stripRule(text, rule, true)
-		changed = changed || matched
-	}
+	spans := [...]textSpan{{Text: text}}
+	_, changed := applyMode(spans[:], cfg)
 	return changed
 }
 

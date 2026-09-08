@@ -162,6 +162,7 @@ type foldMatcherNode struct {
 type foldMatcher struct {
 	nodes     []foldMatcherNode
 	asciiRoot [utf8.RuneSelf]int
+	firstRule int
 }
 
 func (matcher *foldMatcher) transition(state int, key rune) (int, bool) {
@@ -184,9 +185,16 @@ func (matcher *foldMatcher) setTransition(state int, key rune, next int) {
 	matcher.nodes[state].next[key] = next
 }
 
-func newFoldMatcher(rules []compiledRule) *foldMatcher {
-	matcher := &foldMatcher{nodes: []foldMatcherNode{{minRule: -1}}}
-	for ruleIndex, rule := range rules {
+func newFoldMatcher(rules []compiledRule, ruleOffsets ...int) *foldMatcher {
+	ruleOffset := 0
+	if len(ruleOffsets) != 0 {
+		ruleOffset = ruleOffsets[0]
+	}
+	matcher := &foldMatcher{
+		nodes:     []foldMatcherNode{{minRule: -1}},
+		firstRule: ruleOffset,
+	}
+	for localIndex, rule := range rules {
 		if len(rule.Runes) == 0 {
 			continue
 		}
@@ -201,6 +209,7 @@ func newFoldMatcher(rules []compiledRule) *foldMatcher {
 			}
 			nodeIndex = next
 		}
+		ruleIndex := ruleOffset + localIndex
 		if matcher.nodes[nodeIndex].minRule < 0 || ruleIndex < matcher.nodes[nodeIndex].minRule {
 			matcher.nodes[nodeIndex].minRule = ruleIndex
 		}
@@ -259,8 +268,8 @@ func (matcher *foldMatcher) match(text string) (int, bool) {
 			}
 			state = matcher.nodes[state].fail
 		}
-		if ruleIndex := matcher.nodes[state].minRule; ruleIndex == 0 {
-			return 0, true
+		if ruleIndex := matcher.nodes[state].minRule; ruleIndex == matcher.firstRule {
+			return ruleIndex, true
 		} else if ruleIndex >= 0 && (bestRule < 0 || ruleIndex < bestRule) {
 			bestRule = ruleIndex
 		}

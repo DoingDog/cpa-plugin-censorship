@@ -80,6 +80,80 @@ func TestInteractionsPartsExcludeSnakeCaseMachineFields(t *testing.T) {
 	}
 }
 
+func TestInteractionsDirectTextContent(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	cases := []struct {
+		name, body, want string
+	}{
+		{
+			name: "direct object",
+			body: `{"input":{"type":"text","text":"SECRET"}}`,
+			want: `{"input":{"type":"text","text":""}}`,
+		},
+		{
+			name: "direct array element",
+			body: `{"input":[{"type":"text","text":"SECRET"}]}`,
+			want: `{"input":[{"type":"text","text":""}]}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := interceptRPC(t, "interactions", []byte(tc.body))
+			if resp.Terminate || string(resp.Body) != tc.want {
+				t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, tc.want)
+			}
+		})
+	}
+}
+
+func TestInteractionsDirectTextContentRespectsUserScope(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"input":{"type":"text","text":"SECRET"}}`)
+	resp := interceptRPC(t, "interactions", body)
+	got := resp.Body
+	if len(got) == 0 {
+		got = body
+	}
+	if resp.Terminate || !bytes.Equal(got, body) {
+		t.Fatalf("response = %#v, body = %s, want unchanged %s", resp, got, body)
+	}
+}
+
+func TestInteractionsDirectTextContentKeepsProtocolExclusions(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"input":[
+		{"type":"text","text":"SECRET direct"},
+		{"type":"text","text":"SECRET null camel","functionCall":null},
+		{"type":"text","text":"SECRET null snake","function_call":null},
+		{"type":"image","text":"SECRET image"},
+		{"type":"text","text":"SECRET inline","inlineData":{"data":"SECRET"}},
+		{"type":"text","text":"SECRET function","functionCall":{"name":"tool"}},
+		{"type":"thought","text":"SECRET thought"},
+		{"type":"function_call","content":"SECRET call"},
+		{"type":"model_output","content":"SECRET output"},
+		{"steps":[{"type":"text","text":"SECRET nested"}]}
+	]}`)
+	resp := interceptRPC(t, "interactions", body)
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET direct"`, After: `" direct"`},
+		rawReplacement{Before: `"SECRET null camel"`, After: `" null camel"`},
+		rawReplacement{Before: `"SECRET null snake"`, After: `" null snake"`},
+	)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+	}
+}
+
+func TestInteractionsDirectTextContentKeepsModelOutputAssistantOnly(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"input":[{"type":"text","text":"SECRET user"},{"type":"model_output","content":"SECRET assistant"}]}`)
+	want := `{"input":[{"type":"text","text":"SECRET user"},{"type":"model_output","content":" assistant"}]}`
+	resp := interceptRPC(t, "interactions", body)
+	if resp.Terminate || string(resp.Body) != want {
+		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+	}
+}
+
 func TestInteractionsTopLevelStringRows(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, user]\n")
 	cases := []struct {
@@ -162,7 +236,7 @@ func TestScanTextPartPreservesProtocolRules(t *testing.T) {
 		{name: "snake nested functionResponse thought signature", part: `{"text":"accepted","functionResponse":{"thought_signature":null}}`, allowed: false},
 		{name: "extra content Google thought signature", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":null}}}`, allowed: false},
 		{name: "ordinary extra content", part: `{"text":"accepted","extra_content":{"google":{"note":"value"}}}`, requireTextType: true, allowed: true},
-		{name: "escaped machine key", part: `{"text":"accepted","\u0066unctionCall":null}`, requireTextType: true, allowed: false},
+		{name: "escaped machine key", part: `{"text":"accepted","\u0066unctionCall":null}`, requireTextType: true, allowed: true},
 	}
 	machineKeys := []string{
 		"functionCall", "functionResponse", "function_call", "function_response",
@@ -175,7 +249,12 @@ func TestScanTextPartPreservesProtocolRules(t *testing.T) {
 			name, part      string
 			requireTextType bool
 			allowed         bool
-		}{name: "machine key " + key + " is present when null", part: `{"text":"accepted","` + key + `":null}`, requireTextType: true})
+		}{
+			name:            "machine key " + key + " is present when null",
+			part:            `{"text":"accepted","` + key + `":null}`,
+			requireTextType: true,
+			allowed:         key == "functionCall" || key == "function_call",
+		})
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

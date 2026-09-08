@@ -24,6 +24,9 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		collectParts(root.Get("systemInstruction"), "system")
 		collectParts(root.Get("system_instruction"), "system")
 	}
+	if !roles.has("user") && !roles.has("assistant") {
+		return
+	}
 
 	contents := root.Get("contents")
 	if !contents.IsArray() {
@@ -34,7 +37,7 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		role := content.Get("role")
 		var effectiveRole string
 		switch {
-		case !role.Exists():
+		case !role.Exists() || role.Type == gjson.Null || role.String() == "":
 			previousRole = nextGeminiRole(previousRole)
 			if previousRole == "user" {
 				effectiveRole = "user"

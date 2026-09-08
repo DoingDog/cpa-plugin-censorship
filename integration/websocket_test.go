@@ -5,6 +5,8 @@ package censorshipintegration
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +39,35 @@ func TestResponsesWebSocketModelTurnUsesResponsesSelector(t *testing.T) {
 	}
 }
 
-const websocketCompletionReadTimeout = 20 * time.Second
+const websocketCompletionReadTimeout = integrationIOTimeout
+
+func TestResponsesWebSocketDialTimesOutDuringStalledUpgrade(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	startedAt := time.Now()
+	conn, err := dialResponsesWebSocketWithTimeout("ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey, timeout)
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("stalled upgrade unexpectedly connected")
+	}
+	if err == nil {
+		t.Fatal("stalled upgrade unexpectedly completed")
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("WebSocket dial elapsed = %v, want <= %v", elapsed, time.Second)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("stalled upgrade did not reach server")
+	}
+}
 
 type wsMessage struct {
 	Opcode  int
@@ -72,6 +102,103 @@ func TestReadUntilCompletedReturnsOnDeadline(t *testing.T) {
 	}
 }
 
+func TestResponsesWebSocketReadTimesOutAfterDial(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, err := dialResponsesWebSocketWithTimeout("ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	started := time.Now()
+	_, _, err = conn.ReadMessage()
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("error = %v, want timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("WebSocket timeout elapsed = %v", elapsed)
+	}
+}
+
+func TestTerminalWebSocketTimeoutIsNotPeerClose(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"status":400}`)); err != nil {
+			return
+		}
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	conn, err := dialResponsesWebSocketWithTimeout("ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, event, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(event, "status").Int() != 400 {
+		t.Fatalf("terminal event = %s", event)
+	}
+	started := time.Now()
+	err = waitForWebSocketPeerCloseWithTimeout(conn, timeout)
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("error = %v, want timeout rather than peer close", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("terminal WebSocket timeout elapsed = %v", elapsed)
+	}
+}
+
+func waitForWebSocketPeerClose(conn *websocket.Conn) error {
+	return waitForWebSocketPeerCloseWithTimeout(conn, integrationIOTimeout)
+}
+
+func waitForWebSocketPeerCloseWithTimeout(conn *websocket.Conn, timeout time.Duration) error {
+	if err := setDeadline(conn.UnderlyingConn(), timeout); err != nil {
+		return err
+	}
+	_, _, err := conn.ReadMessage()
+	if err == nil {
+		return errors.New("connection stayed open after terminal 400 event")
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("terminal 400 was not followed by peer closure: %w", err)
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) || errors.Is(err, io.EOF) {
+		return nil
+	}
+	return fmt.Errorf("terminal 400 close read: %w", err)
+}
+
 func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\n")
@@ -92,9 +219,8 @@ func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
 	if gjson.GetBytes(event, "error.term").Exists() || gjson.GetBytes(event, "error.role").Exists() {
 		t.Fatalf("WebSocket unexpectedly retained plugin direct body: %s", event)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, _, err := conn.ReadMessage(); err == nil {
-		t.Fatal("connection stayed open after terminal 400 event")
+	if err := waitForWebSocketPeerClose(conn); err != nil {
+		t.Fatalf("terminal 400 was not followed by peer closure: %v", err)
 	}
 	if upstream.requestCount() != 0 {
 		t.Fatal("blocked WebSocket turn reached upstream")

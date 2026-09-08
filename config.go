@@ -29,14 +29,27 @@ type compiledRule struct {
 type scopeSet map[string]struct{}
 
 type configSnapshot struct {
+	// Mode is retained until transform.go uses the per-action ranges directly.
 	Mode              mode
 	IgnoreCase        bool
 	Rules             []compiledRule
+	BlockEnd          int
+	StripEnd          int
 	Formats           scopeSet
 	Roles             scopeSet
 	ObfsChar          string
 	BlockMatcher      *foldMatcher
+	RewriteMatcher    *foldMatcher
 	ExactBlockMatcher *byteMatcher
+	rangesSet         bool
+}
+
+type parsedWords struct {
+	legacy bool
+	list   []string
+	block  []string
+	strip  []string
+	obfs   []string
 }
 
 var activeConfig atomic.Pointer[configSnapshot]
@@ -102,6 +115,7 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 	}
 
 	cfg := defaultSnapshot()
+	var words parsedWords
 	for i := 0; i < len(root.Content); i += 2 {
 		key, value := root.Content[i].Value, root.Content[i+1]
 		switch key {
@@ -124,20 +138,11 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 				return nil, fmt.Errorf("decode ignore_case: %w", err)
 			}
 		case "words":
-			if value.Kind != yaml.SequenceNode {
-				return nil, fmt.Errorf("words must be a sequence")
+			parsed, err := parseWords(value)
+			if err != nil {
+				return nil, err
 			}
-			cfg.Rules = make([]compiledRule, 0, len(value.Content))
-			for _, item := range value.Content {
-				term, err := stringScalar(item, "word")
-				if err != nil {
-					return nil, err
-				}
-				if term == "" {
-					return nil, fmt.Errorf("word must not be empty")
-				}
-				cfg.Rules = append(cfg.Rules, compiledRule{Term: term})
-			}
+			words = parsed
 		case "scope":
 			if err := validateMapping(value, "scope"); err != nil {
 				return nil, err
@@ -188,14 +193,40 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 		}
 	}
 
-	if cfg.Mode == modeObfs {
-		for _, rule := range cfg.Rules {
-			if utf8.RuneCountInString(rule.Term) < 2 {
-				return nil, fmt.Errorf("obfs word %q must contain at least two Unicode scalars", rule.Term)
-			}
-			if strings.Contains(rule.Term, cfg.ObfsChar) {
-				return nil, fmt.Errorf("obfs word %q contains obfs.char", rule.Term)
-			}
+	if words.legacy {
+		switch cfg.Mode {
+		case modeBlock:
+			words.block = words.list
+		case modeStrip:
+			words.strip = words.list
+		case modeObfs:
+			words.obfs = words.list
+		}
+	}
+
+	total := len(words.block) + len(words.strip) + len(words.obfs)
+	if total > 0 {
+		cfg.Rules = make([]compiledRule, 0, total)
+	}
+	for _, term := range words.block {
+		cfg.Rules = append(cfg.Rules, compiledRule{Term: term})
+	}
+	cfg.BlockEnd = len(cfg.Rules)
+	for _, term := range words.strip {
+		cfg.Rules = append(cfg.Rules, compiledRule{Term: term})
+	}
+	cfg.StripEnd = len(cfg.Rules)
+	for _, term := range words.obfs {
+		cfg.Rules = append(cfg.Rules, compiledRule{Term: term})
+	}
+	cfg.rangesSet = true
+
+	for _, rule := range cfg.Rules[cfg.StripEnd:] {
+		if utf8.RuneCountInString(rule.Term) < 2 {
+			return nil, fmt.Errorf("obfs word %q must contain at least two Unicode scalars", rule.Term)
+		}
+		if strings.Contains(rule.Term, cfg.ObfsChar) {
+			return nil, fmt.Errorf("obfs word %q contains obfs.char", rule.Term)
 		}
 	}
 	if err := compileSnapshot(cfg); err != nil {
@@ -204,8 +235,66 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 	return cfg, nil
 }
 
+func parseWords(node *yaml.Node) (parsedWords, error) {
+	switch node.Kind {
+	case yaml.SequenceNode:
+		list, err := parseWordSequence(node, "words")
+		if err != nil {
+			return parsedWords{}, err
+		}
+		return parsedWords{legacy: true, list: list}, nil
+	case yaml.MappingNode:
+		if err := validateMapping(node, "words"); err != nil {
+			return parsedWords{}, err
+		}
+		var words parsedWords
+		for i := 0; i < len(node.Content); i += 2 {
+			key, value := node.Content[i].Value, node.Content[i+1]
+			terms, err := parseWordSequence(value, "words."+key)
+			if err != nil {
+				return parsedWords{}, err
+			}
+			switch key {
+			case "block":
+				words.block = terms
+			case "strip":
+				words.strip = terms
+			case "obfs":
+				words.obfs = terms
+			default:
+				return parsedWords{}, fmt.Errorf("unknown words key %q", key)
+			}
+		}
+		return words, nil
+	default:
+		return parsedWords{}, fmt.Errorf("words must be a sequence or mapping")
+	}
+}
+
+func parseWordSequence(node *yaml.Node, name string) ([]string, error) {
+	if node.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s must be a sequence", name)
+	}
+	if len(node.Content) == 0 {
+		return nil, nil
+	}
+	terms := make([]string, 0, len(node.Content))
+	for _, item := range node.Content {
+		term, err := stringScalar(item, "word")
+		if err != nil {
+			return nil, err
+		}
+		if term == "" {
+			return nil, fmt.Errorf("word must not be empty")
+		}
+		terms = append(terms, term)
+	}
+	return terms, nil
+}
+
 func compileSnapshot(cfg *configSnapshot) error {
 	cfg.BlockMatcher = nil
+	cfg.RewriteMatcher = nil
 	cfg.ExactBlockMatcher = nil
 	for i := range cfg.Rules {
 		rule := &cfg.Rules[i]
@@ -213,6 +302,19 @@ func compileSnapshot(cfg *configSnapshot) error {
 		rule.ExactReplacement = ""
 		rule.FoldFailure = nil
 	}
+
+	blockEnd, stripEnd := cfg.BlockEnd, cfg.StripEnd
+	if !cfg.rangesSet {
+		switch cfg.Mode {
+		case modeBlock:
+			blockEnd, stripEnd = len(cfg.Rules), len(cfg.Rules)
+		case modeStrip:
+			stripEnd = len(cfg.Rules)
+		}
+	}
+	blockRules := cfg.Rules[:blockEnd]
+	rewriteRules := cfg.Rules[blockEnd:]
+	obfsRules := cfg.Rules[stripEnd:]
 
 	if cfg.IgnoreCase {
 		for i := range cfg.Rules {
@@ -222,33 +324,29 @@ func compileSnapshot(cfg *configSnapshot) error {
 				rule.Runes = append(rule.Runes, foldClassRune(r))
 			}
 		}
-		switch cfg.Mode {
-		case modeBlock:
-			cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
-		case modeStrip, modeObfs:
-			if len(cfg.Rules) >= foldRewritePreflightMinRules {
-				cfg.BlockMatcher = newFoldMatcher(cfg.Rules)
-			}
-			for i := range cfg.Rules {
-				rule := &cfg.Rules[i]
-				if len(rule.Runes) >= foldKMPMinPatternScalars {
-					rule.FoldFailure = buildFoldFailure(rule.Runes)
-				}
+		if len(blockRules) > 0 {
+			cfg.BlockMatcher = newFoldMatcher(blockRules)
+		}
+		if len(rewriteRules) >= foldRewritePreflightMinRules {
+			cfg.RewriteMatcher = newFoldMatcher(rewriteRules)
+		}
+		for i := range rewriteRules {
+			rule := &rewriteRules[i]
+			if len(rule.Runes) >= foldKMPMinPatternScalars {
+				rule.FoldFailure = buildFoldFailure(rule.Runes)
 			}
 		}
 		return nil
 	}
 
-	if cfg.Mode == modeBlock && len(cfg.Rules) >= exactByteMatcherMinRules {
-		cfg.ExactBlockMatcher = newByteMatcher(cfg.Rules[exactByteMatcherPrefixRules:], exactByteMatcherPrefixRules)
+	if len(blockRules) >= exactByteMatcherMinRules {
+		cfg.ExactBlockMatcher = newByteMatcher(blockRules[exactByteMatcherPrefixRules:], exactByteMatcherPrefixRules)
 	}
 
-	if cfg.Mode == modeObfs {
-		for i := range cfg.Rules {
-			rule := &cfg.Rules[i]
-			_, firstSize := utf8.DecodeRuneInString(rule.Term)
-			rule.ExactReplacement = rule.Term[:firstSize] + cfg.ObfsChar + rule.Term[firstSize:]
-		}
+	for i := range obfsRules {
+		rule := &obfsRules[i]
+		_, firstSize := utf8.DecodeRuneInString(rule.Term)
+		rule.ExactReplacement = rule.Term[:firstSize] + cfg.ObfsChar + rule.Term[firstSize:]
 	}
 	return nil
 }

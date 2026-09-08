@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,7 +78,7 @@ func TestPackageLibraryAndChecksumContract(t *testing.T) {
 	if err := packageLibrary(library, archive); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeChecksum(checksum, archive); err != nil {
+	if _, err := writeChecksum(checksum, archive); err != nil {
 		t.Fatal(err)
 	}
 	zr, err := zip.OpenReader(archive)
@@ -247,6 +248,276 @@ func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
 	}
 }
 
+func TestPackagerRejectsMissingOrBareVersionBeforeChangingOutputs(t *testing.T) {
+	script, err := filepath.Abs("package-release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "missing"},
+		{name: "bare v", args: []string{"-version", "v"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			library := filepath.Join(tmp, "censorship.so")
+			archive := filepath.Join(tmp, "censorship.zip")
+			checksum := filepath.Join(tmp, "censorship.zip.sha256")
+			for path, contents := range map[string]string{
+				library:  "library contents",
+				archive:  "archive contents",
+				checksum: "checksum contents",
+			} {
+				if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := snapshotFiles(t, library, archive, checksum)
+
+			args := append([]string{"run", script}, tc.args...)
+			args = append(args, "-library", library, "-archive", archive, "-checksum", checksum)
+			cmd := exec.Command("go", args...)
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("packager unexpectedly succeeded:\n%s", output)
+			}
+			assertFilesUnchanged(t, before)
+		})
+	}
+}
+
+func TestPackagerRejectsPathCollisionsBeforeChangingFiles(t *testing.T) {
+	script, err := filepath.Abs("package-release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		paths func(t *testing.T, dir string) (string, string, string)
+	}{
+		{
+			name: "library archive equal",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), filepath.Join(dir, "library.so"), filepath.Join(dir, "checksum.sha256")
+			},
+		},
+		{
+			name: "library checksum equal",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), filepath.Join(dir, "archive.zip"), filepath.Join(dir, "library.so")
+			},
+		},
+		{
+			name: "archive checksum equal",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), filepath.Join(dir, "archive.zip"), filepath.Join(dir, "archive.zip")
+			},
+		},
+		{
+			name: "library archive lexical alias",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), "library.so", filepath.Join(dir, "checksum.sha256")
+			},
+		},
+		{
+			name: "library checksum lexical alias",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), filepath.Join(dir, "archive.zip"), "library.so"
+			},
+		},
+		{
+			name: "archive checksum lexical alias",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), filepath.Join(dir, "archive.zip"), "archive.zip"
+			},
+		},
+		{
+			name: "library archive filesystem alias",
+			paths: func(t *testing.T, dir string) (string, string, string) {
+				library := filepath.Join(dir, "library.so")
+				alias := filepath.Join(dir, "library-link.so")
+				if err := os.Link(library, alias); err != nil {
+					t.Fatal(err)
+				}
+				return library, alias, filepath.Join(dir, "checksum.sha256")
+			},
+		},
+		{
+			name: "library checksum filesystem alias",
+			paths: func(t *testing.T, dir string) (string, string, string) {
+				library := filepath.Join(dir, "library.so")
+				alias := filepath.Join(dir, "library-link.so")
+				if err := os.Link(library, alias); err != nil {
+					t.Fatal(err)
+				}
+				return library, filepath.Join(dir, "archive.zip"), alias
+			},
+		},
+		{
+			name: "archive checksum filesystem alias",
+			paths: func(t *testing.T, dir string) (string, string, string) {
+				archive := filepath.Join(dir, "archive.zip")
+				alias := filepath.Join(dir, "archive-link.zip")
+				if err := os.Link(archive, alias); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(dir, "library.so"), archive, alias
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			for path, contents := range map[string]string{
+				filepath.Join(tmp, "library.so"):      "library contents",
+				filepath.Join(tmp, "archive.zip"):     "archive contents",
+				filepath.Join(tmp, "checksum.sha256"): "checksum contents",
+			} {
+				if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			library, archive, checksum := tc.paths(t, tmp)
+			before := snapshotFiles(t, filepath.Join(tmp, "library.so"), filepath.Join(tmp, "archive.zip"), filepath.Join(tmp, "checksum.sha256"), filepath.Join(tmp, "library-link.so"), filepath.Join(tmp, "archive-link.zip"))
+
+			cmd := exec.Command("go", "run", script, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
+			cmd.Dir = tmp
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("packager unexpectedly succeeded:\n%s", output)
+			}
+			assertFilesUnchanged(t, before)
+		})
+	}
+}
+
+func TestValidateDirectPackagePathsRejectsAbsentOutputAliasesThroughJunction(t *testing.T) {
+	tmp := t.TempDir()
+	outside := filepath.Join(tmp, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	library := filepath.Join(outside, "censorship.so")
+	if err := os.WriteFile(library, []byte("library contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "linked")
+	linkPackageDirectory(t, outside, link)
+	archive := filepath.Join(link, "censorship.zip")
+	checksum := filepath.Join(outside, "censorship.zip")
+
+	if _, _, _, err := validateDirectPackagePaths(library, archive, checksum); err == nil {
+		t.Fatal("absent archive and checksum aliases accepted")
+	}
+}
+
+func linkPackageDirectory(t *testing.T, target, link string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if output, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v\n%s", err, output)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fileSnapshot struct {
+	contents []byte
+	modTime  int64
+}
+
+func snapshotFiles(t *testing.T, paths ...string) map[string]fileSnapshot {
+	t.Helper()
+	out := make(map[string]fileSnapshot, len(paths))
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[path] = fileSnapshot{contents: contents, modTime: info.ModTime().UnixNano()}
+	}
+	return out
+}
+
+func assertFilesUnchanged(t *testing.T, before map[string]fileSnapshot) {
+	t.Helper()
+	for path, want := range before {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !bytes.Equal(got, want.contents) {
+			t.Fatalf("contents changed for %s: %q, want %q", path, got, want.contents)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.ModTime().UnixNano(); got != want.modTime {
+			t.Fatalf("timestamp changed for %s: %d, want %d", path, got, want.modTime)
+		}
+	}
+}
+
+func TestPackageExistingArtifactsHashesEachArchiveOnce(t *testing.T) {
+	dist := filepath.Join(t.TempDir(), "dist")
+	out := filepath.Join(t.TempDir(), "out")
+	artifacts := []artifactSpec{
+		{osName: "linux", arch: "amd64"},
+		{osName: "windows", arch: "amd64"},
+	}
+	for _, artifact := range artifacts {
+		path := artifact.binaryPath(dist)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(artifact.osName+artifact.arch), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	originalSHA256File := sha256File
+	t.Cleanup(func() { sha256File = originalSHA256File })
+	calls := 0
+	sha256File = func(path string) (string, error) {
+		calls++
+		return originalSHA256File(path)
+	}
+
+	if err := packageExistingArtifacts("1.2.3", dist, out); err != nil {
+		t.Fatal(err)
+	}
+	if calls != len(artifacts) {
+		t.Fatalf("sha256File calls = %d, want %d", calls, len(artifacts))
+	}
+
+	aggregate, err := os.ReadFile(filepath.Join(out, "checksums.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range artifacts {
+		archive := filepath.Join(out, fmt.Sprintf("%s_%s_%s_%s.zip", pluginName, "1.2.3", artifact.osName, artifact.arch))
+		individual, err := os.ReadFile(archive + ".sha256")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(aggregate), string(individual)) {
+			t.Fatalf("aggregate checksum does not retain %q", individual)
+		}
+	}
+}
+
 func withEnvironment(base []string, key, value string) []string {
 	out := make([]string, 0, len(base)+1)
 	for _, entry := range base {
@@ -287,6 +558,73 @@ func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
 	}
 	if !strings.Contains(string(output), `-version "1.2.3" -library`) {
 		t.Fatalf("make package-platform did not pass normalized version:\n%s", output)
+	}
+}
+
+func TestMakeVersionValidationContract(t *testing.T) {
+	repo := filepath.Join("..", "..")
+	for _, version := range []string{"foo/bar", "v"} {
+		t.Run("rejects "+version, func(t *testing.T) {
+			cmd := exec.Command("make", "validate-version", "VERSION="+version)
+			cmd.Dir = repo
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("make validate-version accepted %q:\n%s", version, output)
+			}
+		})
+	}
+
+	for _, target := range []string{"build-platform", "build", "package-platform", "package"} {
+		t.Run(target+" validates before build", func(t *testing.T) {
+			cmd := exec.Command("make", "-n", target, "VERSION=foo/bar", "GOOS=linux", "GOARCH=amd64")
+			cmd.Dir = repo
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n %s: %v\n%s", target, err, output)
+			}
+			guard := strings.Index(string(output), "VERSION must normalize to a safe non-empty release version")
+			build := strings.Index(string(output), "mkdir -p")
+			if guard == -1 || build != -1 && guard > build {
+				t.Fatalf("make -n %s does not validate before building:\n%s", target, output)
+			}
+		})
+	}
+}
+
+func TestDocumentationSelectorContractIncludesToolResults(t *testing.T) {
+	for _, path := range []string{filepath.Join("..", "..", "README.md"), filepath.Join("..", "..", "RELEASE_NOTES.md")} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(contents)
+		for _, want := range []string{
+			"a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text",
+			"`function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text",
+			"Claude unselected tool-result fields",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s omits %q", path, want)
+			}
+		}
+		if strings.Contains(text, "Claude non-typed-text tool results") {
+			t.Fatalf("%s excludes selected Claude tool-result text", path)
+		}
+	}
+}
+
+func TestDocumentationDoesNotDenyOptionalLicense(t *testing.T) {
+	for _, path := range []string{filepath.Join("..", "..", "README.md"), filepath.Join("..", "..", "RELEASE_NOTES.md")} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(contents)
+		if !strings.Contains(text, "Each ZIP contains the platform library and an optional repository `LICENSE` if one exists.") {
+			t.Fatalf("%s omits conditional LICENSE packaging", path)
+		}
+		if strings.Contains(text, "This repository does not add a license file.") {
+			t.Fatalf("%s falsely denies optional LICENSE packaging", path)
+		}
 	}
 }
 
@@ -387,10 +725,16 @@ func TestBuildWorkflowContract(t *testing.T) {
 		!jobRunContains(build, "GOOS=${{ matrix.GOOS }}") ||
 		!jobRunContains(build, "GOARCH=${{ matrix.GOARCH }}") ||
 		jobActionWith(build, "msys2/setup-msys2@v2", "path-type") != "inherit" ||
-		!jobUses(build, "actions/upload-artifact@v4") {
+		!jobUses(build, "actions/upload-artifact@v4") ||
+		jobActionWithValue(build, "actions/upload-artifact@v4", "compression-level") != 0 ||
+		jobActionWith(build, "actions/upload-artifact@v4", "if-no-files-found") != "error" {
 		t.Fatal("matrix package/upload contract is incomplete")
 	}
 
+	const crossAction = "go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a"
+	if got := bytes.Count(raw, []byte("uses: "+crossAction+" # v1")); got != 2 {
+		t.Fatalf("pinned cross action lines = %d, want 2", got)
+	}
 	cross := map[string]struct {
 		target, dir, library, archive string
 	}{
@@ -403,21 +747,23 @@ func TestBuildWorkflowContract(t *testing.T) {
 		if !reflect.DeepEqual(normalizeNeeds(job.Needs), []string{"test"}) ||
 			job.If != buildCondition ||
 			!hasReleaseMetadata(job) ||
-			!jobUses(job, "go-cross/cgo-actions@v1") ||
-			jobActionEnv(job, "go-cross/cgo-actions@v1", "GOFLAGS") != "-trimpath -buildmode=c-shared" ||
-			jobActionWith(job, "go-cross/cgo-actions@v1", "dir") != "." ||
-			jobActionWith(job, "go-cross/cgo-actions@v1", "packages") != "." ||
-			jobActionWith(job, "go-cross/cgo-actions@v1", "targets") != tc.target ||
-			jobActionWith(job, "go-cross/cgo-actions@v1", "out-dir") != "dist/"+tc.dir ||
-			jobActionWith(job, "go-cross/cgo-actions@v1", "output") != tc.library ||
-			jobActionWith(job, "go-cross/cgo-actions@v1", "flags") != "-ldflags=-s -w" ||
-			jobActionWith(job, "go-cross/cgo-actions@v1", "x-flags") != "main.pluginVersion=${{ steps.release_metadata.outputs.version }}" ||
+			!jobUses(job, crossAction) ||
+			jobActionEnv(job, crossAction, "GOFLAGS") != "-trimpath -buildmode=c-shared" ||
+			jobActionWith(job, crossAction, "dir") != "." ||
+			jobActionWith(job, crossAction, "packages") != "." ||
+			jobActionWith(job, crossAction, "targets") != tc.target ||
+			jobActionWith(job, crossAction, "out-dir") != "dist/"+tc.dir ||
+			jobActionWith(job, crossAction, "output") != tc.library ||
+			jobActionWith(job, crossAction, "flags") != "-ldflags=-s -w" ||
+			jobActionWith(job, crossAction, "x-flags") != "main.pluginVersion=${{ steps.release_metadata.outputs.version }}" ||
 			!jobRunContains(job, "-version \"${VERSION}\"") ||
 			!jobRunContains(job, "go run ./.github/scripts/package-release.go") ||
 			!jobRunContains(job, "-library \""+libraryPath+"\"") ||
 			!jobRunContains(job, "-archive \"dist/"+tc.archive+"\"") ||
 			!jobRunContains(job, "-checksum \"dist/"+tc.archive+".sha256\"") ||
-			!jobUses(job, "actions/upload-artifact@v4") {
+			!jobUses(job, "actions/upload-artifact@v4") ||
+			jobActionWithValue(job, "actions/upload-artifact@v4", "compression-level") != 0 ||
+			jobActionWith(job, "actions/upload-artifact@v4", "if-no-files-found") != "error" {
 			t.Fatalf("cross job %s = %#v", id, job)
 		}
 	}
@@ -524,6 +870,15 @@ func jobActionWith(job workflowJob, action, key string) string {
 		}
 	}
 	return ""
+}
+
+func jobActionWithValue(job workflowJob, action, key string) any {
+	for _, step := range job.Steps {
+		if step.Uses == action {
+			return step.With[key]
+		}
+	}
+	return nil
 }
 
 func jobActionWithBool(job workflowJob, action, key string) bool {

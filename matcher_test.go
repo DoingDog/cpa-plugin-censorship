@@ -18,6 +18,17 @@ func TestFoldMatcherSelectsLowestRuleIndexAcrossOccurrences(t *testing.T) {
 	}
 }
 
+func TestFoldMatcherPreservesOffsetRuleIndex(t *testing.T) {
+	rules := []compiledRule{
+		{Term: "prefix", Runes: []rune("prefix")},
+		{Term: "tail", Runes: []rune("tail")},
+		{Term: "last", Runes: []rune("last")},
+	}
+	if got, ok := newFoldMatcher(rules[1:], 1).match("last tail"); !ok || got != 1 {
+		t.Fatalf("offset matcher = %d, %t; want 1, true", got, ok)
+	}
+}
+
 func TestFoldClassRuneUnifiesKelvinSign(t *testing.T) {
 	if got, want := foldClassRune('K'), foldClassRune('K'); got != want {
 		t.Fatalf("foldClassRune(K) = %U, foldClassRune(K) = %U; want equal keys", got, want)

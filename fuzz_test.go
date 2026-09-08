@@ -48,6 +48,22 @@ func TestValidJSONObjectRejectsNonJSONWhitespace(t *testing.T) {
 	}
 }
 
+func TestProtocolOracleClassifiesInvalidUTF8AsInvalidRequest(t *testing.T) {
+	body := []byte("{\"\x88\":[]}")
+	got := transformResult{Invalid: true}
+	if err := checkProtocolResult("interactions", body, modeBlock, false, got); err != nil {
+		t.Fatalf("checkProtocolResult() error = %v, want nil", err)
+	}
+}
+
+func TestProtocolOracleTreatsEmptyGeminiRoleAsUser(t *testing.T) {
+	body := []byte(`{"contents":[{"role":"","parts":[{"text":"SECRET"}]}]}`)
+	got := transformResult{Body: []byte(`{"contents":[{"role":"","parts":[{"text":""}]}]}`)}
+	if err := checkProtocolResult("gemini", body, modeStrip, false, got); err != nil {
+		t.Fatalf("checkProtocolResult() error = %v, want nil", err)
+	}
+}
+
 func TestProtocolOracleRejectsWrongResults(t *testing.T) {
 	matching := []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)
 	excluded := []byte(`{"tools":[{"description":"SECRET"}]}`)
@@ -87,25 +103,64 @@ func TestProtocolOracleRejectsOutsideSpanByteMutation(t *testing.T) {
 	}
 }
 
+func TestOracleApplyMixedRules(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode:      modeBlock,
+		Rules:     []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "xy"}},
+		BlockEnd:  1,
+		StripEnd:  2,
+		rangesSet: true,
+		ObfsChar:  "​",
+	}
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	got := applyRulesToTextsForTest([]string{"ABxy"}, cfg)
+	want := oracleApply([]string{"ABxy"}, cfg)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
 func FuzzRuleEngineAgainstOracle(f *testing.F) {
 	for _, seed := range []struct {
 		text, terms string
 		mode, fold  uint8
 	}{
+		{"plain", "", 3, 0},
+		{"BLOCK", "BLOCK", 3, 0},
+		{"AB", "AB", 4, 0},
+		{"AB", "AB", 5, 0},
+		{"AB", "BLOCK|AB", 6, 0},
+		{"AB", "BLOCK|AB", 7, 0},
+		{"ABCD", "AB|CD", 8, 0},
+		{"ABCD", "BLOCK|AB|CD", 9, 0},
 		{"ababa", "aba|ba", 0, 0},
+		{"ABxx", "AB|xx", 8, 0},
+		{"ABAB", "AB|AB", 4, 0},
+		{"AB", "BLOCK|AB|AB", 9, 0},
 		{"ALPHA Alpha", "Alpha", 1, 1},
 		{"ςΣσ", "Σ", 1, 1},
+		{"ALPHA", "BLOCK|Alpha|BETA", 9, 1},
 		{"STRASSE/straße", "straße", 1, 1},
 		{"世界世界", "世界", 2, 0},
+		{string([]byte{'a', 0xff, 0x00, 'x'}), string([]byte{0xff, 0x00, 'x', '|', 'z'}), 3, 0},
 	} {
 		f.Add(seed.text, seed.terms, seed.mode, seed.fold)
 	}
 	f.Fuzz(func(t *testing.T, text, packed string, modeByte, foldByte uint8) {
-		terms := boundedTerms(packed, 8, 32)
-		if len(terms) == 0 || len(text) > 256 {
+		var terms []string
+		if packed != "" {
+			terms = boundedTerms(packed, 8, 32)
+			if terms == nil {
+				t.Skip()
+			}
+		}
+		if len(text) > 256 {
 			t.Skip()
 		}
-		cfg := snapshotForFuzz(terms, modeByte%3, foldByte%2 == 1)
+		cfg := snapshotForFuzz(terms, modeByte, foldByte%2 == 1)
 		if cfg == nil {
 			t.Skip()
 		}
@@ -779,24 +834,31 @@ func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 	previousRole := ""
 	oracleForEachArray(contents, func(content json.RawMessage) {
 		role := ""
-		if rawRole, exists := oracleFirstField(content, "role"); exists {
+		rawRole, exists := oracleFirstField(content, "role")
+		missingRole := !exists || bytes.Equal(bytes.TrimSpace(rawRole), []byte("null"))
+		if !missingRole {
 			var value string
 			if json.Unmarshal(rawRole, &value) != nil {
 				previousRole = oracleNextGeminiRole(previousRole)
 				return
 			}
-			switch value {
-			case "user":
-				role = "user"
-				previousRole = value
-			case "model":
-				role = "assistant"
-				previousRole = value
-			default:
-				previousRole = oracleNextGeminiRole(previousRole)
-				return
+			if value == "" {
+				missingRole = true
+			} else {
+				switch value {
+				case "user":
+					role = "user"
+					previousRole = value
+				case "model":
+					role = "assistant"
+					previousRole = value
+				default:
+					previousRole = oracleNextGeminiRole(previousRole)
+					return
+				}
 			}
-		} else {
+		}
+		if missingRole {
 			previousRole = oracleNextGeminiRole(previousRole)
 			if previousRole == "user" {
 				role = "user"
@@ -1100,23 +1162,30 @@ func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	previousRole := ""
 	for _, content := range contents.array {
 		role := ""
-		if rawRole, exists := content.firstField("role"); exists {
+		rawRole, exists := content.firstField("role")
+		missingRole := !exists || (rawRole.kind == 'p' && rawRole.text == "null")
+		if !missingRole {
 			if rawRole.kind != 's' {
 				previousRole = oracleNextGeminiRole(previousRole)
 				continue
 			}
-			switch rawRole.text {
-			case "user":
-				role = "user"
-				previousRole = rawRole.text
-			case "model":
-				role = "assistant"
-				previousRole = rawRole.text
-			default:
-				previousRole = oracleNextGeminiRole(previousRole)
-				continue
+			if rawRole.text == "" {
+				missingRole = true
+			} else {
+				switch rawRole.text {
+				case "user":
+					role = "user"
+					previousRole = rawRole.text
+				case "model":
+					role = "assistant"
+					previousRole = rawRole.text
+				default:
+					previousRole = oracleNextGeminiRole(previousRole)
+					continue
+				}
 			}
-		} else {
+		}
+		if missingRole {
 			previousRole = oracleNextGeminiRole(previousRole)
 			if previousRole == "user" {
 				role = "user"
@@ -1320,23 +1389,51 @@ func boundedTerms(packed string, maxTerms, maxScalars int) []string {
 
 func snapshotForFuzz(terms []string, modeByte uint8, fold bool) *configSnapshot {
 	modes := [...]mode{modeBlock, modeStrip, modeObfs}
-	selected := modes[modeByte%uint8(len(modes))]
-	if selected == modeObfs {
-		for _, term := range terms {
-			if utf8.RuneCountInString(term) < 2 || strings.Contains(term, "​") {
-				return nil
-			}
-		}
-	}
 	rules := make([]compiledRule, len(terms))
 	for i, term := range terms {
 		rules[i] = compiledRule{Term: term}
 	}
 	cfg := &configSnapshot{
-		Mode:       selected,
 		IgnoreCase: fold,
 		Rules:      rules,
 		ObfsChar:   "​",
+	}
+	if modeByte < uint8(len(modes)) {
+		cfg.Mode = modes[modeByte]
+	} else {
+		cfg.Mode = modeBlock
+		cfg.rangesSet = true
+		mid := (len(rules) + 1) / 2
+		switch (modeByte - uint8(len(modes))) % 7 {
+		case 0:
+			cfg.BlockEnd = len(rules)
+			cfg.StripEnd = len(rules)
+		case 1:
+			cfg.StripEnd = len(rules)
+		case 2:
+		case 3:
+			cfg.BlockEnd = mid
+			cfg.StripEnd = len(rules)
+		case 4:
+			cfg.BlockEnd = mid
+			cfg.StripEnd = mid
+		case 5:
+			cfg.StripEnd = mid
+		case 6:
+			cfg.BlockEnd = len(rules) / 3
+			cfg.StripEnd = 2 * len(rules) / 3
+		}
+	}
+	obfsStart := 0
+	if cfg.rangesSet {
+		obfsStart = cfg.StripEnd
+	} else if cfg.Mode != modeObfs {
+		obfsStart = len(rules)
+	}
+	for _, rule := range rules[obfsStart:] {
+		if utf8.RuneCountInString(rule.Term) < 2 || strings.Contains(rule.Term, cfg.ObfsChar) {
+			return nil
+		}
 	}
 	if err := compileSnapshot(cfg); err != nil {
 		return nil
@@ -1384,6 +1481,37 @@ func oracleApply(texts []string, cfg *configSnapshot) fuzzRuleResult {
 	result := fuzzRuleResult{
 		Texts:       append([]string(nil), texts...),
 		SpanChanged: make([]bool, len(texts)),
+	}
+	if cfg.rangesSet {
+		for _, rule := range cfg.Rules[:cfg.BlockEnd] {
+			for i, text := range result.Texts {
+				if oracleContains(text, rule.Term, cfg.IgnoreCase) {
+					result.Blocked = &fuzzBlock{Term: rule.Term, Role: fuzzRole(i)}
+					return result
+				}
+			}
+		}
+		for _, rule := range cfg.Rules[cfg.BlockEnd:cfg.StripEnd] {
+			for i, text := range result.Texts {
+				next := oracleStrip(text, rule.Term, cfg.IgnoreCase)
+				if next != text {
+					result.Texts[i] = next
+					result.SpanChanged[i] = true
+					result.Changed = true
+				}
+			}
+		}
+		for _, rule := range cfg.Rules[cfg.StripEnd:] {
+			for i, text := range result.Texts {
+				next := oracleObfuscate(text, rule.Term, cfg.IgnoreCase, cfg.ObfsChar)
+				if next != text {
+					result.Texts[i] = next
+					result.SpanChanged[i] = true
+					result.Changed = true
+				}
+			}
+		}
+		return result
 	}
 	switch cfg.Mode {
 	case modeBlock:
@@ -1525,7 +1653,7 @@ func knownFormat(format string) bool {
 }
 
 func validJSONObject(body []byte) bool {
-	if !json.Valid(body) {
+	if !utf8.Valid(body) || !json.Valid(body) {
 		return false
 	}
 	for _, b := range body {

@@ -2,11 +2,11 @@
 
 `censorship` is a pure dynamic plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). It examines selected text leaves in model request bodies before authentication. The plugin is request-only; never inspects or changes model output, response bodies, SSE chunks, or server WebSocket events.
 
-The plugin exposes only `RequestInterceptor`. It has no custom panel, menu, or Management API. Configuration lives in CPA YAML, and words is the only term source; the plugin has no built-in terms, fallback list, or online download.
+The plugin exposes only `RequestInterceptor`. It has no custom panel, menu, or Management API. CPA's standard configuration UI supplies the Object-only rule editor described below; terms still live in CPA YAML. words is the only term source; the plugin has no built-in terms, fallback list, or online download.
 
-## Installation
+## Installation and compatibility
 
-Download the archive for the CPA host and copy the library to its platform plugin directory:
+Copy the native library to the CPA platform plugin directory, then start or restart CPA to load it.
 
 | Platform | CPA plugin path |
 |---|---|
@@ -18,11 +18,13 @@ Download the archive for the CPA host and copy the library to its platform plugi
 | macOS Apple silicon | `<CPA directory>/plugins/darwin/arm64/censorship.dylib` |
 | FreeBSD amd64 | `<CPA directory>/plugins/freebsd/amd64/censorship.so` |
 
-Start or restart CPA to load a newly installed library. Once loaded, valid non-Home configuration changes can apply without another restart as described under [Configuration reload](#configuration-reload).
+Linux release libraries require glibc 2.34+.
+
+v0.2.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Configuration
 
-CPA management clients can edit the five plugin-owned top-level fields exposed through standard `ConfigFields` metadata. `mode` is an enum, `ignore_case` is a boolean, `words` is a JSON array, and `scope` and `obfs` are JSON objects. The saved values remain ordinary CPA YAML configuration.
+CPA management clients expose `ignore_case`, `words`, `scope`, and `obfs` through standard `ConfigFields`. `words` is the Object-only rule editor: it has action buckets instead of a global selector. The panel does not render or emit global `mode`.
 
 ```yaml
 plugins:
@@ -30,10 +32,11 @@ plugins:
   configs:
     censorship:
       enabled: true
-      mode: block
       ignore_case: false
       words:
-        - example
+        block: [example]
+        strip: []
+        obfs: []
       scope:
         formats: [openai, openai-response, claude, gemini, interactions]
         roles: [system, developer, user]
@@ -46,22 +49,34 @@ Configuration types are strict and are not coerced. Unknown plugin keys, duplica
 | Field | Contract |
 |---|---|
 | `enabled` | `enabled`: boolean; host-owned. CPA uses it to enable this plugin. |
-| `mode` | `mode`: string; default `block`. Allowed values are `block`, `strip`, and `obfs`. |
 | `ignore_case` | `ignore_case`: boolean; default `false`. |
-| `words` | `words`: sequence of strings; default `[]`. Entries must be non-empty. |
+| `words` | `words`: Object with optional `block`, `strip`, and `obfs` arrays. Bucket keys are strict; any subset is valid, while unknown keys reject the configuration. Every term is a non-empty string. |
 | `scope.formats` | `scope.formats`: sequence of strings; default all five formats. Allowed values are `openai`, `openai-response`, `claude`, `gemini`, and `interactions`; explicit `[]` disables all formats. |
 | `scope.roles` | `scope.roles`: sequence of strings; default `system`, `developer`, and `user`. Optional values are `assistant` and `tool`; explicit `[]` disables all roles. |
 | `obfs.char` | `obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`. |
 
-The parser also accepts host-owned `priority` and `store` keys. It preserves each word's YAML order, duplicates, case, leading/trailing whitespace, and newlines; it does not sort, deduplicate, trim, normalize, or interpret regular expressions. In `obfs` mode every word must contain at least two Unicode scalars and must not already contain the configured `obfs.char`.
+The parser also accepts host-owned `priority` and `store` keys. It preserves each term's YAML order, duplicates, case, leading/trailing whitespace, and newlines; it does not sort, deduplicate, trim, normalize, or interpret regular expressions. `words.obfs` terms must contain at least two Unicode scalars and must not already contain the configured `obfs.char`. Block and strip terms do not receive that obfs-only validation.
 
-## Modes and rule ordering
+## Legacy handwritten YAML
 
-Eligible text nodes follow the original JSON string-token byte order in the current execution body. Matches never cross nodes. Each rule finds leftmost non-overlapping occurrences.
+For legacy handwritten YAML only, `words` may remain a legacy list together with global `mode`. The standard panel neither renders nor emits it.
 
-- `block`: block checks rules before document order and returns the YAML term with canonical role. The first matching YAML word wins, and the earliest eligible node for that word supplies `role`. The request stops with HTTP 400 and is not sent upstream.
-- `strip`: strip and obfs process all leftmost non-overlapping occurrences before the next rule. `strip` removes each actual source match from every eligible node.
-- `obfs`: uses the same rule-major order; obfs preserves original case and inserts after the first Unicode scalar of every actual match.
+```yaml
+mode: strip
+words: [example]
+```
+
+`mode`: string; default `block`. Allowed values are `block`, `strip`, and `obfs`; it selects the action for a legacy list. With Object `words`, a supplied `mode` remains syntax-validated but is behaviorally ignored.
+
+## Rule order and matching
+
+Eligible text nodes follow original JSON string-token byte order in the current execution body. Matches never cross nodes, and each rule finds leftmost non-overlapping occurrences.
+
+Rules always run in fixed action order: block -> strip -> obfs. A block bucket match stops the request before rewriting. Strip bucket rules run next in their YAML order, then obfs bucket rules run in their YAML order. A later rule reads text produced by an earlier rule; processing is once rather than to a fixed point.
+
+- block checks rules before document order and returns the YAML term with canonical role. The first matching word wins, and the earliest eligible node for that word supplies `role`. The request stops with HTTP 400 and is not sent upstream.
+- strip and obfs process all leftmost non-overlapping occurrences before the next rule. `strip` removes each actual source match from every eligible node.
+- obfs preserves original case and inserts after the first Unicode scalar of every actual match.
 
 A block response has this shape:
 
@@ -77,10 +92,6 @@ A block response has this shape:
 }
 ```
 
-Rules run once rather than to a fixed point. A later rule reads text produced by earlier rules. For example, `words: [ab, bc]` with `strip` transforms `abc` to `c`; reversing the word order transforms it to `a`. An identical request body, immutable configuration snapshot, and plugin version produce identical bytes, but repeated processing of already transformed content is not required to be idempotent.
-
-## Case-insensitive matching
-
 With `ignore_case: false`, matching is a case-sensitive literal substring operation. With `ignore_case: true`, the plugin compares equal-length Unicode scalar windows using Go `unicode.SimpleFold` equivalence while retaining byte spans from the original UTF-8 text.
 
 - Alpha/aLPHA matches.
@@ -92,34 +103,26 @@ There is no Unicode normalization and no full case folding. `strip` removes the 
 
 ## Source formats and selected text
 
-Selectors enter only the documented text leaves. There is no recursive fallback string walker.
+Selectors enter only the explicit text leaves listed here. There is no recursive fallback string walker.
 
-| `SourceFormat` | Eligible request text |
-|---|---|
-| `openai` | String message content and typed `text` parts for enabled `system`, `developer`, `user`, or opt-in `assistant`; opt-in string tool message content. Legacy `/v1/completions` prompts arrive here as canonical `user` messages after CPA conversion. |
-| `openai-response` | Top-level `instructions` as `system`, top-level string `input` as `user`, and documented message `content`, `input_text`, `output_text`, or `refusal` leaves. `output_text` and `refusal` use canonical `assistant` scope. |
-| `claude` | Top-level string/typed-text `system`, enabled message string/typed-text content, and the narrow opt-in typed-text tool result path. |
-| `gemini` | Text parts in `systemInstruction`/`system_instruction` and `contents`, excluding thought, signature, and machine-discriminator parts; Gemini `model` maps to `assistant`. |
-| `interactions` | Documented system instruction and recursive input text subsets; `model` and `model_output` map to opt-in `assistant`; unknown and tool item types are excluded. |
+- OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, and documented `tool` and legacy `function` result text; Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, plus documented `function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Responses `output_text` and `refusal` use canonical `assistant`; documented tool/function result text uses canonical `tool`.
+- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
+- Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role.
+- Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content.
 
-OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers.
+OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Gemini `model` maps to `assistant`.
 
-assistant is inspected only when explicitly listed in scope.roles. This applies only to assistant history carried in a later request and never to live output.
+assistant is inspected only when explicitly listed in scope.roles. This applies only to assistant history carried in a later request and never to live output. tool is inspected only for documented OpenAI and Claude result-text paths, including OpenAI string tool content and Claude selected tool_result text.
 
-tool is inspected only for OpenAI string tool content and Claude typed text tool_result content. More precisely:
+## Machine exclusions
 
-- OpenAI requires `messages[*].role == "tool"` and JSON-string `content`.
-- Claude requires a user message `tool_result` block whose `content[]` member has `type == "text"` and JSON-string `text`.
+Machine exclusions: tool calls, tool schemas, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed. Text result fields listed above are the only tool/function result exception.
 
-Unknown `SourceFormat`, roles, item types, content blocks, and future protocol shapes are left unchanged.
+This also excludes tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude unselected tool-result fields, Gemini `functionResponse`, Interactions function/tool data, and every model response.
+
+Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers. Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Unknown SourceFormat, roles, item types, content blocks, and future protocol shapes are left unchanged.
 
 Enabled known formats reject JSON objects with duplicate member names at any nesting depth. The plugin returns `censorship_invalid_request`; JSON text inside a string remains ordinary text rather than a nested request object.
-
-## Hard exclusions
-
-Never changes tool calls, tool schemas, arguments, reasoning, thinking, other tool/function results, JSON keys, machine JSON, binary uploads, or image/audio/video/file base64.
-
-This also excludes tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, Responses function/custom-tool outputs, Claude non-typed-text tool results, Gemini `functionResponse`, Interactions function/tool data, and every model response.
 
 ## Configuration reload
 
@@ -129,9 +132,9 @@ For an observable rollout, write configuration A, then change to configuration B
 
 If B is malformed, it is logged and invalid reconfiguration keeps the last-known-good snapshot. Direct edits to Home-mode local YAML do not trigger `plugin.reconfigure`.
 
-## Build and test
+## Build, ABI, and integration
 
-Go 1.26 and a working CGO compiler for the target are required.
+Go 1.26 and a working native or cross CGO compiler for the selected target are required. `make integration` builds against the fixed CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`; it covers HTTP, SSE, watcher reload, Responses WebSocket, and ABI scenarios.
 
 ```bash
 make test
@@ -140,17 +143,9 @@ make vet
 make integration
 ```
 
-`make integration` builds the plugin and fixed CPA commit `81e1b5374f99c212f196f34956eeed964a46b8fa`, then runs HTTP, SSE, watcher, Responses WebSocket, and ABI checks.
+The ABI boundary remains v1. `cliproxyPluginCall` retains `C.GoBytes` for input requests: the allocation gate failed because the borrowed candidate did not remove the input-sized before-auth allocation. After-auth has no input read. The retained copy has no claimed no-copy performance benefit.
 
-Build the current host or a selected host-supported target:
-
-```bash
-make build VERSION=v0.1.0
-make build-platform VERSION=v0.1.0 GOOS=linux GOARCH=amd64
-make package VERSION=v0.1.0 GOOS=windows GOARCH=amd64
-```
-
-`build-platform` and `package` require a suitable native or cross CGO compiler. GitHub Actions builds all seven supported tuples; the local `make build` convenience target always selects `GOHOSTOS` and `GOHOSTARCH`.
+Integration changes: Task 12 writes the watched configuration path in place and uses a bounded marker write/probe handshake; Task 13 reuses the CPA integration checkout; Task 14 hardens release packaging. Tagged CPA integration, runner, and package checks passed for those changes.
 
 ## Accepted pure-plugin limits
 
@@ -171,13 +166,6 @@ make package VERSION=v0.1.0 GOOS=windows GOARCH=amd64
 
 ## Release artifacts
 
-Releases contain these files for each supported tuple:
+Releases contain `censorship_<version>_<goos>_<goarch>.zip` and `censorship_<version>_<goos>_<goarch>.zip.sha256` for each supported tuple. One lowercase ASCII `v` is removed from a tag, `VERSION`, or packager `-version` input. The normalized version must be a safe ASCII filename component.
 
-```plaintext
-censorship_<version>_<goos>_<goarch>.zip
-censorship_<version>_<goos>_<goarch>.zip.sha256
-```
-
-One lowercase ASCII `v` is removed from a tag, `VERSION`, or packager `-version` input. The normalized version must be a safe ASCII filename component; direct cross-packaging commands pass the same version through the validator before creating output paths. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. This repository does not add a license file.
-
-Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates the seven per-platform checksum lines.
+Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates the seven per-platform checksum lines.

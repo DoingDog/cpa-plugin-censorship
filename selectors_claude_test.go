@@ -33,6 +33,7 @@ func TestClaudeSelectorRowsAndExclusions(t *testing.T) {
 		rawReplacement{Before: `"SECRET message system"`, After: `" message system"`},
 		rawReplacement{Before: `"SECRET user"`, After: `" user"`},
 		rawReplacement{Before: `"SECRET tool"`, After: `" tool"`},
+		rawReplacement{Before: `"SECRET string result"`, After: `" string result"`},
 		rawReplacement{Before: `"SECRET assistant"`, After: `" assistant"`},
 	)
 	if !bytes.Equal(resp.Body, want) {
@@ -71,5 +72,85 @@ func TestClaudeSelectorCanonicalRoles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { assertBlockedRole(t, "claude", tc.body, tc.role) })
+	}
+}
+
+func TestClaudeResultText(t *testing.T) {
+	cases := []struct {
+		name, roles, disabledRoles, body, before, after string
+	}{
+		{
+			name:          "string tool result",
+			roles:         "[tool]",
+			disabledRoles: "[user]",
+			body:          `{"messages":[{"role":"user","content":[{"type":"tool_result","content":"SECRET tool result"}]}]}`,
+			before:        `"SECRET tool result"`,
+			after:         `" tool result"`,
+		},
+		{
+			name:          "direct user search result",
+			roles:         "[user]",
+			disabledRoles: "[tool]",
+			body:          `{"messages":[{"role":"user","content":[{"type":"search_result","content":[{"type":"text","text":"SECRET direct search"}]}]}]}`,
+			before:        `"SECRET direct search"`,
+			after:         `" direct search"`,
+		},
+		{
+			name:          "nested tool search result",
+			roles:         "[tool]",
+			disabledRoles: "[user]",
+			body:          `{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"search_result","content":[{"type":"text","text":"SECRET nested search"}]}]}]}]}`,
+			before:        `"SECRET nested search"`,
+			after:         `" nested search"`,
+		},
+		{
+			name:          "direct user text document",
+			roles:         "[user]",
+			disabledRoles: "[tool]",
+			body:          `{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"SECRET direct document"}}]}]}`,
+			before:        `"SECRET direct document"`,
+			after:         `" direct document"`,
+		},
+		{
+			name:          "nested tool text document",
+			roles:         "[tool]",
+			disabledRoles: "[user]",
+			body:          `{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"document","source":{"type":"text","data":"SECRET nested document"}}]}]}]}`,
+			before:        `"SECRET nested document"`,
+			after:         `" nested document"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(tc.body)
+			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: "+tc.roles+"\n")
+			resp := interceptRPC(t, "claude", body)
+			want := replaceRawTokens(t, body, rawReplacement{Before: tc.before, After: tc.after})
+			if !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body = %s, want %s", resp.Body, want)
+			}
+
+			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: "+tc.disabledRoles+"\n")
+			resp = interceptRPC(t, "claude", body)
+			if resp.Body != nil || resp.Terminate {
+				t.Fatalf("disabled role response = %#v", resp)
+			}
+		})
+	}
+}
+
+func TestClaudeResultTextPreservesMachineFields(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user, tool]\n")
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","source":"SECRET search source","title":"SECRET search title","citations":[{"data":"SECRET citation data"}],"content":[{"type":"text","text":"SECRET direct search"},{"type":"image","source":{"data":"SECRET search non-text"}}]},{"type":"document","title":"SECRET document title","source":{"type":"text","media_type":"SECRET document media type","data":"SECRET direct document"}},{"type":"document","source":{"type":"url","url":"SECRET URL source"}},{"type":"document","source":{"type":"file","file_id":"SECRET file source"}},{"type":"document","source":{"type":"base64","media_type":"SECRET base64 media type","data":"SECRET base64 source"}},{"type":"tool_result","tool_use_id":"SECRET tool use id","is_error":"SECRET is error","content":["SECRET tool result",{"type":"search_result","source":"SECRET nested search source","title":"SECRET nested search title","citations":[{"data":"SECRET nested citation data"}],"content":[{"type":"text","text":"SECRET nested search"},{"type":"image","source":{"data":"SECRET nested search non-text"}}]},{"type":"document","title":"SECRET nested document title","source":{"type":"text","media_type":"SECRET nested document media type","data":"SECRET nested document"}},{"type":"document","source":{"type":"url","url":"SECRET nested URL source"}},{"type":"document","source":{"type":"file","file_id":"SECRET nested file source"}},{"type":"document","source":{"type":"base64","media_type":"SECRET nested base64 media type","data":"SECRET nested base64 source"}}]},{"type":"tool_use","input":{"query":"SECRET tool input"}},{"type":"thinking","thinking":"SECRET thinking","text":"SECRET thinking text"},{"type":"redacted_thinking","data":"SECRET redacted thinking"},{"type":"image","source":{"data":"SECRET image source"}}]}]}`)
+	resp := interceptRPC(t, "claude", body)
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET direct search"`, After: `" direct search"`},
+		rawReplacement{Before: `"SECRET direct document"`, After: `" direct document"`},
+		rawReplacement{Before: `"SECRET nested search"`, After: `" nested search"`},
+		rawReplacement{Before: `"SECRET nested document"`, After: `" nested document"`},
+	)
+	if !bytes.Equal(resp.Body, want) {
+		t.Fatalf("body differs outside selected Claude result text")
 	}
 }

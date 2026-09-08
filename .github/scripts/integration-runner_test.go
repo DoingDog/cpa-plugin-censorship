@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -35,6 +36,29 @@ func TestPluginExtension(t *testing.T) {
 	}
 	if _, err := pluginExtension("plan9"); err == nil {
 		t.Fatal("unsupported GOOS accepted")
+	}
+}
+
+func TestGoCommandUsesGOOverride(t *testing.T) {
+	t.Setenv("GO", "go-wrapper")
+
+	if got := goCommand(); got != "go-wrapper" {
+		t.Fatalf("go command = %q, want %q", got, "go-wrapper")
+	}
+}
+
+func TestGoCommandDefaultsToGoWhenGOIsEmpty(t *testing.T) {
+	t.Setenv("GO", "")
+
+	if got := goCommand(); got != "go" {
+		t.Fatalf("go command = %q, want %q", got, "go")
+	}
+}
+
+func TestPinnedCPARevision(t *testing.T) {
+	const want = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
+	if cpaSHA != want {
+		t.Fatalf("cpaSHA = %q, want %q", cpaSHA, want)
 	}
 }
 
@@ -73,6 +97,142 @@ func TestVerifyCheckoutRejectsDirtyWorktree(t *testing.T) {
 	}
 	if err := verifyCheckout(dir, head); err == nil {
 		t.Fatal("untracked file accepted")
+	}
+}
+
+func TestPrepareCheckoutReusesCheckoutAfterRemovingGeneratedTests(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, paths.checkout, "init")
+	runGitTest(t, paths.checkout, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
+	head := strings.TrimSpace(runGitOutput(t, paths.checkout, "rev-parse", "HEAD"))
+
+	generated := filepath.Join(paths.checkout, "integration", "censorshipplugin")
+	if err := os.MkdirAll(generated, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generated, "generated_test.go"), []byte("package censorshipplugin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareCheckout(paths, head); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(generated); !os.IsNotExist(err) {
+		t.Fatalf("generated integration tests remain after checkout preparation: %v", err)
+	}
+}
+
+func TestPrepareCheckoutRejectsSymlinkedCheckoutBeforeRemovingGeneratedTests(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	runGitTest(t, outside, "init")
+	runGitTest(t, outside, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
+	head := strings.TrimSpace(runGitOutput(t, outside, "rev-parse", "HEAD"))
+	generated := filepath.Join(outside, "integration", "censorshipplugin", "generated_test.go")
+	if err := os.MkdirAll(filepath.Dir(generated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(generated, []byte("package censorshipplugin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.integrationRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirectory(t, outside, paths.checkout)
+
+	if err := prepareCheckout(paths, head); err == nil {
+		t.Fatal("symlinked checkout accepted")
+	}
+	if _, err := os.Stat(generated); err != nil {
+		t.Fatalf("generated test outside integration root was removed: %v", err)
+	}
+}
+
+func linkDirectory(t *testing.T, target, link string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if output, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v\n%s", err, output)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCopyIntegrationFilesCopiesBenchmarkFixture(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths.repositoryRoot = root
+
+	integrationDir := filepath.Join(root, "integration")
+	if err := os.MkdirAll(integrationDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(integrationDir, "doc.go"), []byte("package censorshipintegration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(root, ".github", "scripts", "testdata", "abi_benchmark_test.go")
+	if err := os.MkdirAll(filepath.Dir(fixture), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const want = "package censorshipintegration\n\nfunc BenchmarkDynamicABIRequestInterceptors() {}\n"
+	if err := os.WriteFile(fixture, []byte(want), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyIntegrationFiles(paths); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(paths.checkout, "integration", "censorshipplugin", "abi_benchmark_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("copied fixture = %q, want %q", got, want)
+	}
+}
+
+func TestBenchmarkPlacementRunsOnlyFixtureInCPAIntegrationPackage(t *testing.T) {
+	got := integrationTestArgs(true)
+	want := []string{
+		"test", "-tags=integration", "-count=1", "-v", "./integration/censorshipplugin",
+		"-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("benchmark arguments = %q, want %q", got, want)
+	}
+}
+
+func TestParseBenchmarkMode(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want bool
+		err  bool
+	}{
+		{args: nil, want: false},
+		{args: []string{"-bench-abi"}, want: true},
+		{args: []string{"-unexpected"}, err: true},
+	} {
+		got, err := parseBenchmarkMode(tc.args)
+		if (err != nil) != tc.err || got != tc.want {
+			t.Errorf("parseBenchmarkMode(%q) = %t, %v; want %t, error %t", tc.args, got, err, tc.want, tc.err)
+		}
 	}
 }
 

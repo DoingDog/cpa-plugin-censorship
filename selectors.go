@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -63,7 +62,7 @@ func selectorHasEnabledRole(sourceFormat string, roles scopeSet) bool {
 	case "openai":
 		return roles.has("system") || roles.has("developer") || roles.has("user") || roles.has("assistant") || roles.has("tool")
 	case "openai-response":
-		return roles.has("system") || roles.has("developer") || roles.has("user") || roles.has("assistant")
+		return roles.has("system") || roles.has("developer") || roles.has("user") || roles.has("assistant") || roles.has("tool")
 	case "claude":
 		return roles.has("system") || roles.has("user") || roles.has("assistant") || roles.has("tool")
 	case "gemini", "interactions":
@@ -74,11 +73,11 @@ func selectorHasEnabledRole(sourceFormat string, roles scopeSet) bool {
 }
 
 func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSpan, error) {
-	if !gjson.ValidBytes(body) || len(bytes.TrimSpace(body)) == 0 {
+	if !jsonNestingWithin(body, maxJSONNestingDepth) || !utf8.Valid(body) || !gjson.ValidBytes(body) {
 		return nil, errInvalidRequest
 	}
 	root := gjson.ParseBytes(body)
-	if !root.IsObject() || !jsonNestingWithin(body, maxJSONNestingDepth) || hasDuplicateJSONMembers(root) {
+	if !root.IsObject() || hasDuplicateJSONMembers(root) {
 		return nil, errInvalidRequest
 	}
 	if len(roles) != 0 && !selectorHasEnabledRole(sourceFormat, roles) {
@@ -112,7 +111,7 @@ func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSp
 }
 
 func appendStringSpan(spans *[]textSpan, value gjson.Result, role string, roles scopeSet) {
-	if value.Type != gjson.String || !roles.has(role) || len(value.Raw) == 0 || value.Index < 0 || value.Index > int(^uint(0)>>1)-len(value.Raw) {
+	if value.Type != gjson.String || value.Str == "" || !roles.has(role) || len(value.Raw) == 0 || value.Index < 0 || value.Index > int(^uint(0)>>1)-len(value.Raw) {
 		return
 	}
 	*spans = append(*spans, textSpan{
@@ -140,7 +139,9 @@ func scanTextPart(part gjson.Result, requireTextType bool) (text gjson.Result, a
 			partType = value
 		case "thought":
 			thought = value.Type == gjson.True
-		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
+		case "functionCall", "function_call":
+			machinePart = machinePart || value.Type != gjson.Null
+		case "functionResponse", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
 			machinePart = true
 		case "extra_content":
 			if value.Get("google.thought_signature").Exists() {

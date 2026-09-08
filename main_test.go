@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -15,6 +14,12 @@ import (
 )
 
 var okEnvelopeByteSink []byte
+
+func TestSupportedPluginSchema(t *testing.T) {
+	if got, want := pluginabi.SchemaVersion, uint32(5); got != want {
+		t.Fatalf("plugin schema = %d, want %d", got, want)
+	}
+}
 
 func TestOKEnvelopeExactBytesAndAllocationCeiling(t *testing.T) {
 	type result struct {
@@ -93,7 +98,7 @@ func TestRegistrationDeclaresOnlyRequestInterceptor(t *testing.T) {
 	if got.SchemaVersion != pluginabi.SchemaVersion || got.Metadata.Name != "censorship" || got.Metadata.Version != pluginVersion {
 		t.Fatalf("registration = %#v", got)
 	}
-	if got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" || got.Metadata.ConfigFields == nil {
+	if got.Metadata.Author == "" || got.Metadata.GitHubRepository == "" || got.Metadata.Logo != "https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png" || got.Metadata.ConfigFields == nil {
 		t.Fatalf("metadata = %#v", got.Metadata)
 	}
 	if !got.Capabilities["request_interceptor"] {
@@ -109,23 +114,39 @@ func TestRegistrationDeclaresOnlyRequestInterceptor(t *testing.T) {
 func TestRegistrationExposesEditableConfigFields(t *testing.T) {
 	fields := pluginRegistration().Metadata.ConfigFields
 	want := []struct {
-		name       string
-		typeName   pluginapi.ConfigFieldType
-		enumValues []string
+		name        string
+		typeName    pluginapi.ConfigFieldType
+		description string
 	}{
-		{name: "mode", typeName: pluginapi.ConfigFieldTypeEnum, enumValues: []string{"block", "strip", "obfs"}},
-		{name: "ignore_case", typeName: pluginapi.ConfigFieldTypeBoolean},
-		{name: "words", typeName: pluginapi.ConfigFieldTypeArray},
-		{name: "scope", typeName: pluginapi.ConfigFieldTypeObject},
-		{name: "obfs", typeName: pluginapi.ConfigFieldTypeObject},
+		{name: "ignore_case", typeName: pluginapi.ConfigFieldTypeBoolean, description: "Match terms with Go unicode.SimpleFold equivalence (default false)."},
+		{name: "words", typeName: pluginapi.ConfigFieldTypeObject, description: "Optional block, strip, and obfs arrays; an empty object has no rules."},
+		{name: "scope", typeName: pluginapi.ConfigFieldTypeObject, description: "Optional object with formats and roles arrays; defaults to all supported formats and system, developer, and user roles."},
+		{name: "obfs", typeName: pluginapi.ConfigFieldTypeObject, description: "Obfuscation object whose char is U+200B or U+2060; used by obfs rules (default U+200B)."},
 	}
 	if len(fields) != len(want) {
 		t.Fatalf("config field count = %d, want %d: %#v", len(fields), len(want), fields)
 	}
 	for i, field := range fields {
-		if field.Name != want[i].name || field.Type != want[i].typeName || !reflect.DeepEqual(field.EnumValues, want[i].enumValues) || field.Description == "" {
-			t.Errorf("config field %d = %#v, want name=%q type=%q enum=%v and a description", i, field, want[i].name, want[i].typeName, want[i].enumValues)
+		if field.Name != want[i].name || field.Type != want[i].typeName || field.Description != want[i].description || field.EnumValues != nil {
+			t.Errorf("config field %d = %#v, want name=%q type=%q description=%q and no enum values", i, field, want[i].name, want[i].typeName, want[i].description)
 		}
+	}
+}
+
+func TestRegistrationUsesBuildVersion(t *testing.T) {
+	if got, want := pluginVersion, "0.0.0-dev"; got != want {
+		t.Fatalf("source pluginVersion = %q, want %q", got, want)
+	}
+
+	original := pluginVersion
+	t.Cleanup(func() { pluginVersion = original })
+	pluginVersion = "v0.2.0"
+
+	var env pluginabi.Envelope
+	decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, "")), &env)
+	got := decodeResult[registration](t, env)
+	if got.Metadata.Version != pluginVersion {
+		t.Fatalf("registration version = %q, want %q", got.Metadata.Version, pluginVersion)
 	}
 }
 
@@ -454,10 +475,11 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
   configs:
     censorship:
       enabled: true
-      mode: block
       ignore_case: false
       words:
-        - example
+        block: [example]
+        strip: []
+        obfs: []
       scope:
         formats: [openai, openai-response, claude, gemini, interactions]
         roles: [system, developer, user]
@@ -466,13 +488,32 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 
 	required := []string{
 		configExample,
+		"Object-only rule editor",
+		"does not render or emit global `mode`",
+		"legacy handwritten YAML",
+		"Object `words`, a supplied `mode` remains syntax-validated but is behaviorally ignored.",
+		"block -> strip -> obfs",
+		"OpenAI explicit text paths:",
+		"Claude explicit text paths:",
+		"Gemini explicit text paths:",
+		"Interactions explicit text paths:",
+		"Machine exclusions:",
+		"CLIProxyAPI v7.2.152, schema 5",
+		"c76dfd4e0edabab9000628b1560ab8ab379eadb8",
+		"native ABI v1",
+		"glibc 2.34+",
+		"C.GoBytes",
+		"allocation gate failed",
+		"optional repository `LICENSE` if one exists",
+		"Integration changes:",
+		"https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png",
 		"no custom panel, menu, or Management API",
 		"request-only; never inspects or changes model output",
 		"`enabled`: boolean; host-owned",
 		"`mode`: string; default `block`",
 		"`ignore_case`: boolean; default `false`",
 		"With `ignore_case: false`, matching is a case-sensitive literal substring operation.",
-		"`words`: sequence of strings; default `[]`",
+		"`words`: Object with optional `block`, `strip`, and `obfs` arrays",
 		"words is the only term source; the plugin has no built-in terms",
 		"`scope.formats`: sequence of strings; default all five formats",
 		"`scope.roles`: sequence of strings; default `system`, `developer`, and `user`",
@@ -493,10 +534,10 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"straße/STRASSE does not match",
 		"no Unicode normalization",
 		"assistant is inspected only when explicitly listed in scope.roles",
-		"tool is inspected only for OpenAI string tool content and Claude typed text tool_result content",
+		"tool is inspected only for documented OpenAI and Claude result-text paths",
 		"valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel",
 		"invalid reconfiguration keeps the last-known-good snapshot",
-		"Never changes tool calls, tool schemas, arguments, reasoning, thinking, other tool/function results, JSON keys, machine JSON, binary uploads, or image/audio/video/file base64.",
+		"Machine exclusions: tool calls, tool schemas, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
 		"1. hook is not raw ingress; document order follows current execution-body spans",
 		"2. preprocessing can observe uncensored input",
 		"3. Responses WebSocket covers only model-executed turns",
@@ -517,6 +558,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
 		for _, token := range required {
 			if !bytes.Contains(raw, []byte(token)) {
 				t.Errorf("%s missing %q", name, token)

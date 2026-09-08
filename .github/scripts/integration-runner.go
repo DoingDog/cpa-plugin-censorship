@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	cpaSHA    = "81e1b5374f99c212f196f34956eeed964a46b8fa"
+	cpaSHA    = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
 	cpaRemote = "https://github.com/router-for-me/CLIProxyAPI"
 )
 
@@ -35,6 +35,13 @@ func main() {
 }
 
 func run() error {
+	bench, err := parseBenchmarkMode(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	if os.Getenv("BENCH") == "1" {
+		bench = true
+	}
 	root, err := repositoryRoot()
 	if err != nil {
 		return err
@@ -43,7 +50,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := prepareCheckout(paths); err != nil {
+	if err := prepareCheckout(paths, cpaSHA); err != nil {
 		return err
 	}
 	if err := buildCPA(paths); err != nil {
@@ -56,7 +63,18 @@ func run() error {
 	if err := copyIntegrationFiles(paths); err != nil {
 		return err
 	}
-	return runIntegrationTests(paths, pluginDir, os.Getenv("BENCH") == "1")
+	return runIntegrationTests(paths, pluginDir, bench)
+}
+
+func parseBenchmarkMode(args []string) (bool, error) {
+	switch {
+	case len(args) == 0:
+		return false, nil
+	case len(args) == 1 && args[0] == "-bench-abi":
+		return true, nil
+	default:
+		return false, fmt.Errorf("usage: integration-runner [-bench-abi]")
+	}
 }
 
 func repositoryRoot() (string, error) {
@@ -106,7 +124,60 @@ func requireContained(root, path string) error {
 	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path %q escapes integration root %q", path, root)
 	}
+	for ancestor := path; ; ancestor = filepath.Dir(ancestor) {
+		info, err := os.Lstat(ancestor)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("inspect path %q: %w", ancestor, err)
+		}
+		if err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return fmt.Errorf("path %q escapes integration root %q through a link", path, root)
+		}
+		if ancestor == root {
+			break
+		}
+	}
+	canonicalRoot, err := canonicalExistingPath(root)
+	if err != nil {
+		return err
+	}
+	canonicalPath, err := canonicalExistingPath(path)
+	if err != nil {
+		return err
+	}
+	canonicalRel, err := filepath.Rel(canonicalRoot, canonicalPath)
+	if err != nil {
+		return fmt.Errorf("resolve %q relative to %q: %w", canonicalPath, canonicalRoot, err)
+	}
+	if canonicalRel == "." || canonicalRel == ".." || filepath.IsAbs(canonicalRel) || strings.HasPrefix(canonicalRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q escapes integration root %q", path, root)
+	}
 	return nil
+}
+
+func canonicalExistingPath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("make path absolute %q: %w", path, err)
+	}
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			for _, component := range missing {
+				resolved = filepath.Join(resolved, component)
+			}
+			return resolved, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve path %q: %w", path, err)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", fmt.Errorf("resolve path %q: no existing ancestor", path)
+		}
+		missing = append([]string{filepath.Base(path)}, missing...)
+		path = parent
+	}
 }
 
 func removeContained(root, path string) error {
@@ -157,8 +228,12 @@ func verifyCheckout(path, wantSHA string) error {
 	return nil
 }
 
-func prepareCheckout(paths runnerPaths) error {
-	if err := verifyCheckout(paths.checkout, cpaSHA); err == nil {
+func prepareCheckout(paths runnerPaths, wantSHA string) error {
+	generatedTests := filepath.Join(paths.checkout, "integration", "censorshipplugin")
+	if err := removeContained(paths.integrationRoot, generatedTests); err != nil {
+		return err
+	}
+	if err := verifyCheckout(paths.checkout, wantSHA); err == nil {
 		return nil
 	}
 	if err := removeContained(paths.integrationRoot, paths.checkout); err != nil {
@@ -170,7 +245,7 @@ func prepareCheckout(paths runnerPaths) error {
 	commands := [][]string{
 		{"git", "init"},
 		{"git", "remote", "add", "origin", cpaRemote},
-		{"git", "fetch", "--depth=1", "origin", cpaSHA},
+		{"git", "fetch", "--depth=1", "origin", wantSHA},
 		{"git", "checkout", "--detach", "FETCH_HEAD"},
 	}
 	for _, command := range commands {
@@ -178,7 +253,7 @@ func prepareCheckout(paths runnerPaths) error {
 			return err
 		}
 	}
-	return verifyCheckout(paths.checkout, cpaSHA)
+	return verifyCheckout(paths.checkout, wantSHA)
 }
 
 func buildCPA(paths runnerPaths) error {
@@ -188,7 +263,7 @@ func buildCPA(paths runnerPaths) error {
 	if err := os.MkdirAll(filepath.Dir(paths.bin), 0o755); err != nil {
 		return fmt.Errorf("create CPA binary directory: %w", err)
 	}
-	return runCommand(paths.checkout, nil, "go", "build", "-trimpath", "-o", paths.bin, "./cmd/server")
+	return runCommand(paths.checkout, nil, goCommand(), "build", "-trimpath", "-o", paths.bin, "./cmd/server")
 }
 
 func buildPlugin(paths runnerPaths) (string, error) {
@@ -205,7 +280,7 @@ func buildPlugin(paths runnerPaths) (string, error) {
 		return "", fmt.Errorf("create plugin directory: %w", err)
 	}
 	library := filepath.Join(platformDir, "censorship"+extension)
-	if err := runCommand(paths.repositoryRoot, []string{"CGO_ENABLED=1"}, "go", "build", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
+	if err := runCommand(paths.repositoryRoot, []string{"CGO_ENABLED=1"}, goCommand(), "build", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
 		return "", err
 	}
 	header := strings.TrimSuffix(library, extension) + ".h"
@@ -223,6 +298,7 @@ func copyIntegrationFiles(paths runnerPaths) error {
 	if len(sources) == 0 {
 		return fmt.Errorf("no integration Go files found")
 	}
+	sources = append(sources, filepath.Join(paths.repositoryRoot, ".github", "scripts", "testdata", "abi_benchmark_test.go"))
 	destination := filepath.Join(paths.checkout, "integration", "censorshipplugin")
 	if err := removeContained(paths.integrationRoot, destination); err != nil {
 		return err
@@ -243,16 +319,27 @@ func copyIntegrationFiles(paths runnerPaths) error {
 	return nil
 }
 
-func runIntegrationTests(paths runnerPaths, pluginDir string, bench bool) error {
+func integrationTestArgs(bench bool) []string {
 	args := []string{"test", "-tags=integration", "-count=1", "-v", "./integration/censorshipplugin"}
 	if bench {
-		args = append(args, "-run", "^$", "-bench", ".", "-benchmem")
+		args = append(args, "-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem")
 	}
+	return args
+}
+
+func runIntegrationTests(paths runnerPaths, pluginDir string, bench bool) error {
 	env := []string{
 		"CPA_INTEGRATION_BIN=" + paths.bin,
 		"CENSORSHIP_PLUGIN_DIR=" + pluginDir,
 	}
-	return runCommand(paths.checkout, env, "go", args...)
+	return runCommand(paths.checkout, env, goCommand(), integrationTestArgs(bench)...)
+}
+
+func goCommand() string {
+	if command := os.Getenv("GO"); command != "" {
+		return command
+	}
+	return "go"
 }
 
 func runCommand(dir string, extraEnv []string, name string, args ...string) error {
