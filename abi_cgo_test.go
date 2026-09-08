@@ -52,6 +52,75 @@ func TestShouldCopyPluginRequest(t *testing.T) {
 	}
 }
 
+func TestValidPluginRequest(t *testing.T) {
+	input := []byte{0x7f}
+	for _, tc := range []struct {
+		name   string
+		ptr    unsafe.Pointer
+		length uint64
+		want   bool
+	}{
+		{name: "nil zero", ptr: nil, length: 0, want: true},
+		{name: "nil one", ptr: nil, length: 1, want: false},
+		{name: "non-nil one", ptr: unsafe.Pointer(&input[0]), length: 1, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validPluginRequest(tc.ptr, tc.length); got != tc.want {
+				t.Fatalf("validPluginRequest(%v, %d) = %t, want %t", tc.ptr, tc.length, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCliproxyPluginCallRejectsNilNonzeroAfterAuthRequest(t *testing.T) {
+	method := append([]byte(pluginabi.MethodRequestInterceptAfter), 0)
+	var response pluginCallBuffer
+	if rc := cliproxyPluginCall((*pluginCallChar)(unsafe.Pointer(&method[0])), nil, pluginCallSize(1), &response); rc != 1 {
+		t.Fatalf("nil after-auth request with nonzero length returned %d, want 1", rc)
+	}
+	if response.ptr != nil || response.len != 0 {
+		t.Fatalf("rejected request response = (%v, %d), want (nil, 0)", response.ptr, response.len)
+	}
+}
+
+func TestCopyPluginRequest(t *testing.T) {
+	got, err := copyPluginRequest(nil, 0)
+	if err != nil || got != nil {
+		t.Fatalf("empty request = %v, %v", got, err)
+	}
+	if _, err := copyPluginRequest(nil, 1); err == nil {
+		t.Fatal("nil request with nonzero length succeeded")
+	}
+	input := []byte{0x7f}
+	got, err = copyPluginRequest(unsafe.Pointer(&input[0]), 1)
+	if err != nil || !bytes.Equal(got, input) {
+		t.Fatalf("copied request = %x, %v", got, err)
+	}
+	input[0] = 0
+	if got[0] != 0x7f {
+		t.Fatal("copied request aliases caller memory")
+	}
+}
+
+func TestCopyHostResponseRejectsNilNonzeroLength(t *testing.T) {
+	if _, err := copyHostResponse(nil, 1); err == nil {
+		t.Fatal("nil host response with nonzero length succeeded")
+	}
+	got, err := copyHostResponse(nil, 0)
+	if err != nil || got != nil {
+		t.Fatalf("empty response = %v, %v", got, err)
+	}
+	input := []byte{0x7f}
+	got, err = copyHostResponse(unsafe.Pointer(&input[0]), 1)
+	if err != nil || !bytes.Equal(got, input) {
+		t.Fatalf("copied response = %x, %v", got, err)
+	}
+	input[0] = 0
+	if got[0] != 0x7f {
+		t.Fatal("copied response aliases host memory")
+	}
+}
+
 func TestBorrowedRequest(t *testing.T) {
 	t.Run("zero length", func(t *testing.T) {
 		got, err := borrowedRequest(nil, 0)

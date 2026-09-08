@@ -60,6 +60,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 )
 
+type pluginCallBuffer = C.cliproxy_buffer
+type pluginCallChar = C.char
+type pluginCallSize = C.size_t
+
 func shouldCopyPluginRequest(method string) bool {
 	return method != pluginabi.MethodRequestInterceptAfter
 }
@@ -70,6 +74,38 @@ func checkedCIntLength(length uint64) (int, bool) {
 		return 0, false
 	}
 	return int(length), true
+}
+
+func validPluginRequest(ptr unsafe.Pointer, length uint64) bool {
+	return ptr != nil || length == 0
+}
+
+func copyPluginRequest(ptr unsafe.Pointer, length uint64) ([]byte, error) {
+	if _, err := borrowedRequest(ptr, length); err != nil {
+		return nil, err
+	}
+	if length == 0 {
+		return nil, nil
+	}
+	requestLen, ok := checkedCIntLength(length)
+	if !ok {
+		return nil, fmt.Errorf("request too large: %d", length)
+	}
+	return C.GoBytes(ptr, C.int(requestLen)), nil
+}
+
+func copyHostResponse(ptr unsafe.Pointer, length uint64) ([]byte, error) {
+	if length == 0 {
+		return nil, nil
+	}
+	if ptr == nil {
+		return nil, fmt.Errorf("host callback response pointer is nil with length %d", length)
+	}
+	responseLen, ok := checkedCIntLength(length)
+	if !ok {
+		return nil, fmt.Errorf("host callback response too large: %d", length)
+	}
+	return C.GoBytes(ptr, C.int(responseLen)), nil
 }
 
 // borrowedRequest returns host-owned input valid only during the synchronous ABI callback.
@@ -110,14 +146,11 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 		if rc != 0 {
 			return nil, fmt.Errorf("host callback failed with rc=%d", int(rc))
 		}
-		if response.ptr == nil || response.len == 0 {
-			return nil, nil
+		responseBytes, err := copyHostResponse(unsafe.Pointer(response.ptr), uint64(response.len))
+		if err != nil {
+			return nil, err
 		}
-		responseLen, ok := checkedCIntLength(uint64(response.len))
-		if !ok {
-			return nil, fmt.Errorf("host callback response too large: %d", uint64(response.len))
-		}
-		return C.GoBytes(response.ptr, C.int(responseLen)), nil
+		return responseBytes, nil
 	})
 	C.cliproxy_set_plugin_api(plugin, C.uint32_t(pluginabi.ABIVersion))
 	return 0
@@ -133,14 +166,17 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	if method == nil {
 		return 1
 	}
+	if !validPluginRequest(unsafe.Pointer(request), uint64(requestLen)) {
+		return 1
+	}
 	methodName := C.GoString(method)
 	var requestBytes []byte
-	if shouldCopyPluginRequest(methodName) && request != nil && requestLen > 0 {
-		requestLength, ok := checkedCIntLength(uint64(requestLen))
-		if !ok {
+	if shouldCopyPluginRequest(methodName) {
+		copiedRequest, err := copyPluginRequest(unsafe.Pointer(request), uint64(requestLen))
+		if err != nil {
 			return 1
 		}
-		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLength))
+		requestBytes = copiedRequest
 	}
 	payload, err := handleMethod(methodName, requestBytes)
 	if err != nil {
