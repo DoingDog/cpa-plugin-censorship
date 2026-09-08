@@ -690,3 +690,228 @@ The current artifact and checksum agree. `dist/`, raw logs, and temporary files 
 - [x] Task 15: published canonical Object configuration and accurate limits; documentation test, race test, and focused contract tests passed.
 - [x] Task 16: static, unit, race, vet, repaired fuzz, integration, baseline benchmark, paired performance, ABI benchmark, and Windows package evidence passed; performance adjudication is `NO_REGRESSION`; verification commit subject is `test: verify censorship v0.2.0`.
 - [x] Repository guide: project `CLAUDE.md` integrated alone as `0a413d870c6700c2e651bd01cc82f25515300c1d`; content and privacy constraints verified.
+
+
+## Task 17: Partitioned Review Fixes and Final Gate, 2026-09-08
+
+### Canonical review outcomes
+
+| Partition | Confirmed | Rejected | Outcome |
+| --- | ---: | ---: | --- |
+| A | 2 | 2 | Fixed A-001 and A-002. |
+| B | 0 | 0 | PASS, no finding survived evidence gating. |
+| C | 5 | 2 | Fixed C-01 through C-05. |
+| D | 5 | 0 | Fixed D-001 through D-005. |
+
+The coordinator used the one canonical result from each disjoint partition. It excluded a duplicate partition-D result and an orphan retry candidate because neither was the canonical correct-checkout review.
+
+### Evidence-gate dispositions
+
+- A-001, confirmed: `applyMode` reset `SkipFoldRewrite` for every selected span before deciding whether folded rewrite could use it. Exact and block-only requests made an unconditional extra pass. The fix gates reset and preflight bookkeeping on the folded-rewrite path.
+- A-002, confirmed: the mixed holdout benchmark sent a block rule through `stripRule` in baseline while preflight used `applyMode`, measuring different semantics. Both variants now use `applyMode`; baseline disables only `RewriteMatcher`.
+- A-R01, rejected: `borrowedRequest` is called only by ABI tests. Production still uses `C.GoBytes`, so this does not establish an ABI lifetime violation.
+- A-R02, rejected: a registration test's literal `schema_version: 4` does not establish that the plugin must reject mismatched incoming lifecycle schema values.
+- B, no confirmed finding: selector review and assigned selector tests supplied no concrete wrong result.
+- C-01, confirmed: `taskkill /PID <pid> /T` without `/F` can fail and leave console children alive. Cleanup now uses `/F`.
+- C-02, confirmed: a CPA build with the pinned revision and `vcs.modified=true` could pass host validation. The resolver now rejects modified builds.
+- C-03, confirmed: the five-second integration limit did not bound an accepted TCP connection that stalls during WebSocket upgrade. The handshake now runs under a timeout context.
+- C-04, confirmed: the ABI benchmark could measure an error, no-match, or already-mutated request. Its oracle now requires exact successful strip behavior and fresh request bytes each iteration.
+- C-05, confirmed: four timeout tests serially waited for five seconds each, producing a deterministic twenty-second floor. Tests inject a short timeout while production helpers retain their default.
+- C-R01 and C-R02, rejected: output-fixture matching and non-atomic watcher-write candidates concerned pre-review-range code; no in-range defect was proved.
+- D-001, confirmed: lexical containment allowed cleanup through a junction. `requireContained` now rejects symlink and junction ancestors before cleanup.
+- D-002, confirmed: archive and checksum paths under aliases of an absent file could refer to the same target, allowing checksum write to truncate the ZIP. The packager compares deepest-existing-ancestor filesystem identities and remaining suffixes.
+- D-003, confirmed: unsafe `VERSION` values were rejected only after library creation. `validate-version` now runs before build targets.
+- D-004, confirmed: README and RELEASE_NOTES omitted active Claude and OpenAI tool-result text paths, contradicting actual selector behavior. Both documents now state the exact selected fields.
+- D-005, confirmed: README and RELEASE_NOTES said no `LICENSE` exists even though package inspection includes it conditionally. The false statement was deleted.
+
+### Fix RED and GREEN evidence
+
+- A-001: direct changed-flow proof established the unnecessary reset before fix. GREEN: `go test . -run '^TestFoldRewritePreflight' -count=1` exited `0`.
+- A-002: direct benchmark-control-flow proof established unequal block semantics before fix. GREEN: `go test . -run '^TestBenchmarkFoldRewriteStrategyPreservesMixedBlockSemantics$' -count=1` exited `0`.
+- C-01: RED `TestTerminateCPAStopsWindowsProcessTree` failed with `taskkill` exit `128`; GREEN exited `0` in `0.514s`.
+- C-02: RED `TestRevisionRejectsModifiedBuild` failed with `expected modified build rejection`; GREEN exited `0` in `0.052s`.
+- C-03: RED failed to compile because the timeout helper did not exist; GREEN `TestResponsesWebSocketDialTimesOutDuringStalledUpgrade` exited `0` in `0.158s`.
+- C-04: the worker added exact response, termination, and request-immutability assertions, then passed `make integration` and one dynamic ABI benchmark run.
+- C-05: RED timeout group failed after `20.060s`; GREEN exited `0` in `0.469s`.
+- D-001: RED accepted a symlinked checkout; GREEN `TestPrepareCheckoutRejectsSymlinkedCheckoutBeforeRemovingGeneratedTests` exited `0` in `0.396s`.
+- D-002: RED accepted absent output aliases; GREEN `TestValidateDirectPackagePathsRejectsAbsentOutputAliasesThroughJunction` exited `0` in `0.139s`.
+- D-003: RED accepted `foo/bar` and delayed validation; GREEN `TestMakeVersionValidationContract` exited `0` in `0.816s`.
+- D-004: RED documentation contract reported omitted tool-result paths; GREEN exited `0` in `0.044s`.
+- D-005: RED reported a false optional-`LICENSE` denial; GREEN exited `0` in `0.041s`.
+- The round-1 final gate found a real Windows CRLF comparison failure in the document contract. Commit `4e6b41b` normalizes CRLF to LF before comparison. Its focused test, `make test`, and `make race` passed before the fresh round-2 gate.
+
+### Fresh final gate, round 2
+
+Control checkout: `C:/Users/user/Downloads/cpa-plugin-censorship`, branch `feat/v0.2.0`, HEAD `4e6b41bc7fca2d1612b011a263ae30cd093f6201`.
+
+Every command began with:
+
+```powershell
+Set-Location -LiteralPath 'C:/Users/user/Downloads/cpa-plugin-censorship'
+$env:GOPATH='C:/Users/user/go'
+$env:GOMODCACHE='C:/Users/user/go/pkg/mod'
+$root = git rev-parse --show-toplevel
+$root
+if ($root -ne 'C:/Users/user/Downloads/cpa-plugin-censorship') { throw "Unexpected repository root: $root" }
+```
+
+`make test`
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+go test ./...
+ok  	github.com/DoingDog/cpa-plugin-censorship	(cached)
+?   	github.com/DoingDog/cpa-plugin-censorship/integration	[no test files]
+```
+
+Exit code: `0`.
+
+`go test .github/scripts/integration-runner.go .github/scripts/integration-runner_test.go -count=1`
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+ok  	command-line-arguments	2.049s
+```
+
+Exit code: `0`.
+
+`go test .github/scripts/package-release.go .github/scripts/package-release_test.go -count=1`
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+ok  	command-line-arguments	7.599s
+```
+
+Exit code: `0`.
+
+`make race`
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+go test -race ./...
+ok  	github.com/DoingDog/cpa-plugin-censorship	(cached)
+?   	github.com/DoingDog/cpa-plugin-censorship/integration	[no test files]
+```
+
+Exit code: `0`.
+
+`make vet`
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+go vet ./...
+```
+
+Exit code: `0`.
+
+`make integration` built current-HEAD `.integration/bin.exe` and `.integration/run/plugins` before the direct tagged test.
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+go test .github/scripts/integration-runner.go .github/scripts/integration-runner_test.go
+ok  	command-line-arguments	2.001s
+go run ./.github/scripts/integration-runner.go
+=== RUN   TestDynamicABIResponseOracle
+=== RUN   TestDynamicABIResponseOracle/successful_strip
+=== RUN   TestDynamicABIResponseOracle/terminated_response
+=== RUN   TestDynamicABIResponseOracle/empty_response
+=== RUN   TestDynamicABIResponseOracle/mutated_request
+--- PASS: TestDynamicABIResponseOracle (0.00s)
+    --- PASS: TestDynamicABIResponseOracle/successful_strip (0.00s)
+    --- PASS: TestDynamicABIResponseOracle/terminated_response (0.00s)
+    --- PASS: TestDynamicABIResponseOracle/empty_response (0.00s)
+    --- PASS: TestDynamicABIResponseOracle/mutated_request (0.00s)
+=== RUN   TestResolveCPAPathsNormalizesRelativePaths
+--- PASS: TestResolveCPAPathsNormalizesRelativePaths (0.00s)
+=== RUN   TestRevisionRejectsWrongAndMissingVCSRevision
+=== RUN   TestRevisionRejectsWrongAndMissingVCSRevision/wrong
+=== RUN   TestRevisionRejectsWrongAndMissingVCSRevision/missing
+--- PASS: TestRevisionRejectsWrongAndMissingVCSRevision (0.00s)
+    --- PASS: TestRevisionRejectsWrongAndMissingVCSRevision/wrong
+    --- PASS: TestRevisionRejectsWrongAndMissingVCSRevision/missing
+```
+```plaintext
+=== RUN   TestRevisionRejectsModifiedBuild
+--- PASS: TestRevisionRejectsModifiedBuild (0.00s)
+=== RUN   TestTerminateCPAStopsWindowsProcessTree
+--- PASS: TestTerminateCPAStopsWindowsProcessTree (0.51s)
+=== RUN   TestTerminateCPAProcessTreeHelper
+--- PASS: TestTerminateCPAProcessTreeHelper (0.00s)
+=== RUN   TestReadinessUsesAuthenticatedModelsEndpoint
+--- PASS: TestReadinessUsesAuthenticatedModelsEndpoint (0.01s)
+=== RUN   TestHTTPClientTimeout
+--- PASS: TestHTTPClientTimeout (0.10s)
+=== RUN   TestTCPTimeoutAfterConnection
+--- PASS: TestTCPTimeoutAfterConnection (0.10s)
+=== RUN   TestHTTPBlockIncludesTermAndRole
+--- PASS: TestHTTPBlockIncludesTermAndRole (0.79s)
+=== RUN   TestHTTPRejectsDuplicateJSONMembers
+--- PASS: TestHTTPRejectsDuplicateJSONMembers (0.60s)
+=== RUN   TestLegacyCompletionsPromptUsesConvertedUserRole
+--- PASS: TestLegacyCompletionsPromptUsesConvertedUserRole (0.61s)
+=== RUN   TestWatcherReloadLinearizesAtObservedSnapshotB
+--- PASS: TestWatcherReloadLinearizesAtObservedSnapshotB (2.77s)
+=== RUN   TestHTTPResponsesBlockStringInput
+--- PASS: TestHTTPResponsesBlockStringInput (0.59s)
+=== RUN   TestHTTPResponsesTransformsStringInput
+--- PASS: TestHTTPResponsesTransformsStringInput (0.66s)
+=== RUN   TestHTTPResponsesTransformsStructuredInputText
+--- PASS: TestHTTPResponsesTransformsStructuredInputText (0.58s)
+=== RUN   TestHTTPAndSSEOutputTraceUnaffected
+=== RUN   TestHTTPAndSSEOutputTraceUnaffected/nonmatching/stream=false
+=== RUN   TestHTTPAndSSEOutputTraceUnaffected/nonmatching/stream=true
+=== RUN   TestHTTPAndSSEOutputTraceUnaffected/strip
+=== RUN   TestHTTPAndSSEOutputTraceUnaffected/obfs
+--- PASS: TestHTTPAndSSEOutputTraceUnaffected (4.61s)
+    --- PASS: TestHTTPAndSSEOutputTraceUnaffected/nonmatching/stream=false (1.23s)
+    --- PASS: TestHTTPAndSSEOutputTraceUnaffected/nonmatching/stream=true (1.16s)
+    --- PASS: TestHTTPAndSSEOutputTraceUnaffected/strip (1.10s)
+    --- PASS: TestHTTPAndSSEOutputTraceUnaffected/obfs (1.13s)
+=== RUN   TestResponsesWebSocketModelTurnUsesResponsesSelector
+--- PASS: TestResponsesWebSocketModelTurnUsesResponsesSelector (0.61s)
+=== RUN   TestResponsesWebSocketDialTimesOutDuringStalledUpgrade
+--- PASS: TestResponsesWebSocketDialTimesOutDuringStalledUpgrade (0.10s)
+=== RUN   TestReadUntilCompletedReturnsOnDeadline
+--- PASS: TestReadUntilCompletedReturnsOnDeadline (0.01s)
+=== RUN   TestResponsesWebSocketReadTimesOutAfterDial
+--- PASS: TestResponsesWebSocketReadTimesOutAfterDial (0.10s)
+=== RUN   TestTerminalWebSocketTimeoutIsNotPeerClose
+--- PASS: TestTerminalWebSocketTimeoutIsNotPeerClose (0.10s)
+=== RUN   TestResponsesWebSocketBlockReturnsStatus400ThenCloses
+--- PASS: TestResponsesWebSocketBlockReturnsStatus400ThenCloses (0.59s)
+=== RUN   TestResponsesWebSocketOutputMessagesUnaffected
+=== RUN   TestResponsesWebSocketOutputMessagesUnaffected/strip
+=== RUN   TestResponsesWebSocketOutputMessagesUnaffected/obfs
+--- PASS: TestResponsesWebSocketOutputMessagesUnaffected (3.42s)
+    --- PASS: TestResponsesWebSocketOutputMessagesUnaffected/strip (1.16s)
+    --- PASS: TestResponsesWebSocketOutputMessagesUnaffected/obfs (1.12s)
+PASS
+ok  	github.com/router-for-me/CLIProxyAPI/v7/integration/censorshipplugin	16.961s
+```
+
+`make integration` exit code: `0`.
+
+The direct tagged package command set:
+
+```powershell
+$env:CPA_INTEGRATION_BIN='C:/Users/user/Downloads/cpa-plugin-censorship/.integration/bin.exe'
+$env:CENSORSHIP_PLUGIN_DIR='C:/Users/user/Downloads/cpa-plugin-censorship/.integration/run/plugins'
+go test -tags=integration ./integration -count=1
+```
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+ok  	github.com/DoingDog/cpa-plugin-censorship/integration	16.591s
+```
+
+Exit code: `0`.
+
+Final `git diff --check; git status --short` output:
+
+```plaintext
+C:/Users/user/Downloads/cpa-plugin-censorship
+```
+
+Exit code: `0`. `git diff --check` produced no output and `git status --short` was empty before review evidence was written.
+
+Round-2 result: **PASS**. No source or test file changed during this gate. The final report is `.superpowers/sdd/2026-09-07-censorship-v0.2.0/task-17-final-gate-round-2.md`.
