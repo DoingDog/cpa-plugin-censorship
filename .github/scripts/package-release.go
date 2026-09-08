@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -40,16 +41,19 @@ func run() error {
 		if *libraryPath == "" || *archivePath == "" || *checksumPath == "" {
 			return fmt.Errorf("library, archive, and checksum are required together")
 		}
-		if *versionFlag != "" {
-			version := normalizeReleaseVersion(*versionFlag)
-			if err := validateReleaseVersion(version); err != nil {
-				return err
-			}
-		}
-		if err := packageLibrary(*libraryPath, *archivePath); err != nil {
+		version := normalizeReleaseVersion(*versionFlag)
+		if err := validateReleaseVersion(version); err != nil {
 			return err
 		}
-		return writeChecksum(*checksumPath, *archivePath)
+		library, archive, checksum, err := validateDirectPackagePaths(*libraryPath, *archivePath, *checksumPath)
+		if err != nil {
+			return err
+		}
+		if err := packageLibrary(library, archive); err != nil {
+			return err
+		}
+		_, err = writeChecksum(checksum, archive)
+		return err
 	}
 
 	version, err := resolveVersion(*versionFlag)
@@ -64,7 +68,7 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		return fmt.Errorf("create output dir %s: %w", outDir, err)
 	}
 
-	zipPaths := make([]string, 0, len(artifactSpecs()))
+	checksumLines := make([]string, 0, len(artifactSpecs()))
 	for _, artifact := range artifactSpecs() {
 		binaryPath := artifact.binaryPath(distDir)
 		if _, err := os.Stat(binaryPath); err != nil {
@@ -78,15 +82,16 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		if err := packageLibrary(binaryPath, zipPath); err != nil {
 			return err
 		}
-		if err := writeChecksum(zipPath+".sha256", zipPath); err != nil {
+		line, err := writeChecksum(zipPath+".sha256", zipPath)
+		if err != nil {
 			return err
 		}
-		zipPaths = append(zipPaths, zipPath)
+		checksumLines = append(checksumLines, line)
 	}
-	if len(zipPaths) == 0 {
+	if len(checksumLines) == 0 {
 		return fmt.Errorf("no supported artifacts found under %s", filepath.ToSlash(distDir))
 	}
-	return writeChecksums(filepath.Join(outDir, "checksums.txt"), zipPaths)
+	return writeChecksums(filepath.Join(outDir, "checksums.txt"), checksumLines)
 }
 
 func artifactSpecs() []artifactSpec {
@@ -175,6 +180,70 @@ func isASCIIDigit(c byte) bool {
 	return c >= '0' && c <= '9'
 }
 
+func validateDirectPackagePaths(libraryPath, archivePath, checksumPath string) (string, string, string, error) {
+	library, err := canonicalPath(libraryPath)
+	if err != nil {
+		return "", "", "", err
+	}
+	archive, err := canonicalPath(archivePath)
+	if err != nil {
+		return "", "", "", err
+	}
+	checksum, err := canonicalPath(checksumPath)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	for _, pair := range []struct {
+		firstName  string
+		firstPath  string
+		secondName string
+		secondPath string
+	}{
+		{"library", library, "archive", archive},
+		{"library", library, "checksum", checksum},
+		{"archive", archive, "checksum", checksum},
+	} {
+		same, err := pathsAlias(pair.firstPath, pair.secondPath)
+		if err != nil {
+			return "", "", "", err
+		}
+		if same {
+			return "", "", "", fmt.Errorf("%s and %s must refer to different files", pair.firstName, pair.secondName)
+		}
+	}
+	return library, archive, checksum, nil
+}
+
+func canonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("make path absolute %s: %w", filepath.ToSlash(path), err)
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func pathsAlias(firstPath, secondPath string) (bool, error) {
+	if firstPath == secondPath || runtime.GOOS == "windows" && strings.EqualFold(firstPath, secondPath) {
+		return true, nil
+	}
+	firstInfo, err := os.Stat(firstPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat path %s: %w", filepath.ToSlash(firstPath), err)
+	}
+	secondInfo, err := os.Stat(secondPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat path %s: %w", filepath.ToSlash(secondPath), err)
+	}
+	return os.SameFile(firstInfo, secondInfo), nil
+}
+
 func packageLibrary(libraryPath, archivePath string) error {
 	library, err := os.Open(libraryPath)
 	if err != nil {
@@ -258,40 +327,31 @@ func addOptionalFile(writer *zip.Writer, path string) error {
 	return nil
 }
 
-func writeChecksum(checksumPath, archivePath string) error {
+func writeChecksum(checksumPath, archivePath string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(checksumPath), 0o755); err != nil {
-		return fmt.Errorf("create checksum directory: %w", err)
+		return "", fmt.Errorf("create checksum directory: %w", err)
 	}
 	checksum, err := sha256File(archivePath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	line := fmt.Sprintf("%s  %s\n", checksum, filepath.Base(archivePath))
 	if err := os.WriteFile(checksumPath, []byte(line), 0o644); err != nil {
-		return fmt.Errorf("write checksum %s: %w", filepath.ToSlash(checksumPath), err)
+		return "", fmt.Errorf("write checksum %s: %w", filepath.ToSlash(checksumPath), err)
 	}
-	return nil
+	return line, nil
 }
 
-func writeChecksums(path string, zipPaths []string) error {
-	var builder strings.Builder
-	for _, zipPath := range zipPaths {
-		checksum, err := sha256File(zipPath)
-		if err != nil {
-			return err
-		}
-		builder.WriteString(checksum)
-		builder.WriteString("  ")
-		builder.WriteString(filepath.Base(zipPath))
-		builder.WriteByte('\n')
-	}
-	if err := os.WriteFile(path, []byte(builder.String()), 0o644); err != nil {
+func writeChecksums(path string, checksumLines []string) error {
+	if err := os.WriteFile(path, []byte(strings.Join(checksumLines, "")), 0o644); err != nil {
 		return fmt.Errorf("write checksums %s: %w", path, err)
 	}
 	return nil
 }
 
-func sha256File(path string) (string, error) {
+var sha256File = sha256FileImpl
+
+func sha256FileImpl(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open zip for checksum %s: %w", path, err)

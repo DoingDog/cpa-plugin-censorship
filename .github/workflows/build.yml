@@ -90,6 +90,8 @@ jobs:
           path: |
             dist/censorship_${{ steps.release_metadata.outputs.version }}_${{ matrix.GOOS }}_${{ matrix.GOARCH }}.zip
             dist/censorship_${{ steps.release_metadata.outputs.version }}_${{ matrix.GOOS }}_${{ matrix.GOARCH }}.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
 
   build-windows-arm64:
     needs: test
@@ -113,7 +115,7 @@ jobs:
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
           echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-      - uses: go-cross/cgo-actions@v1
+      - uses: go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a # v1
         env:
           GOFLAGS: -trimpath -buildmode=c-shared
         with:
@@ -137,6 +139,8 @@ jobs:
           path: |
             dist/censorship_${{ steps.release_metadata.outputs.version }}_windows_arm64.zip
             dist/censorship_${{ steps.release_metadata.outputs.version }}_windows_arm64.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
 
   build-freebsd-amd64:
     needs: test
@@ -160,7 +164,7 @@ jobs:
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
           echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-      - uses: go-cross/cgo-actions@v1
+      - uses: go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a # v1
         env:
           GOFLAGS: -trimpath -buildmode=c-shared
         with:
@@ -184,6 +188,8 @@ jobs:
           path: |
             dist/censorship_${{ steps.release_metadata.outputs.version }}_freebsd_amd64.zip
             dist/censorship_${{ steps.release_metadata.outputs.version }}_freebsd_amd64.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
 
   release:
     needs: [build, build-windows-arm64, build-freebsd-amd64]
