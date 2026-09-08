@@ -1,24 +1,13 @@
-# cpa-plugin-censorship
+# CPA Censorship Plugin
 
 ## Scope
 
-This repository develops only the `censorship` CPA plugin. Do not modify CLIProxyAPI (CPA) core code here.
+- Develop only this CPA censorship plugin. Do not modify CLIProxyAPI core.
+- Keep the Go/CGO boundary compatible with the pinned `github.com/router-for-me/CLIProxyAPI/v7` dependency and native ABI v1. Treat ABI ownership and pointer lifetimes as compatibility contracts.
 
-## Compatibility and boundary
+## Commands
 
-- Target Go 1.26.0 and the pinned `github.com/router-for-me/CLIProxyAPI/v7 v7.2.152` dependency.
-- Build a native `c-shared` plugin with CGO and preserve native ABI v1. Keep host interaction within the pinned CLIProxyAPI boundary.
-- Preserve ABI ownership: do not free or retain memory owned by the other side of the C boundary.
-- Keep `C.GoBytes` for before-auth input. Replace it only if a benchmark demonstrates that the candidate removes the input-sized before-auth allocation. After-auth does not read input; do not describe the retained copy as a no-copy optimization.
-
-## Configuration and matching
-
-- `words` is an Object with optional `block`, `strip`, and `obfs` term arrays. Do not add a global Object-mode selector.
-- Global `mode` with a list-valued `words` is supported only for legacy handwritten YAML. The standard configuration panel sends Object `words` only and never sends global `mode`.
-- Preserve the processing order: `block` -> `strip` -> `obfs`.
-- Enumerate only documented natural-language text paths for each provider. Do not add generic recursive string walking or fallback recursion.
-
-## Development commands
+Run the smallest relevant command before finishing:
 
 ```bash
 make build
@@ -26,17 +15,24 @@ make test
 make race
 make vet
 make integration
-make package VERSION=vX.Y.Z
+make package
 ```
 
-`make build` and platform packaging require a working native or cross CGO compiler for the selected target.
+`make build` and `make package` require a working CGO compiler for the selected target.
 
-## Generated artifacts and releases
+## Configuration and request handling
 
-- `.integration/` and `dist/` are generated integration and packaging artifacts; do not hand-edit them as source.
-- Release archives use `censorship_<version>_<goos>_<goarch>.zip`, each with a matching `.zip.sha256`. Publish `checksums.txt` containing the seven per-platform checksum lines.
+- `words` is a strict Object with optional ordered `block`, `strip`, and `obfs` arrays. Preserve terms exactly as supplied.
+- A legacy `words` sequence with global `mode` is accepted only in handwritten YAML. The panel renders and emits only Object `words`; it must not emit a global `mode`.
+- Process matching in this fixed order: `block` -> `strip` -> `obfs`.
+- Select only documented, explicit natural-language text paths for each provider. Do not add a generic recursive string walker or inspect machine fields.
+
+## ABI and generated artifacts
+
+- Keep `C.GoBytes` in `cliproxyPluginCall` for request input. Remove it only after a benchmark proves the candidate removes the input-sized pre-auth allocation.
+- Do not hand-edit generated `.integration/` or `dist/` artifacts. Release packages need their matching lowercase SHA-256 files and aggregate `checksums.txt` entries.
 
 ## Change discipline
 
-- Make surgical changes only. Do not refactor, reformat, stage, or modify unrelated work.
-- Use TDD for behavior changes: add the smallest failing test first, implement the minimum fix, then run the relevant checks.
+- Make surgical changes only. Do not refactor or reformat unrelated code.
+- Use TDD for behavior changes: add or update a focused failing test first, then make it pass.
