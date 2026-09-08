@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -98,6 +99,82 @@ func TestPackageLibraryAndChecksumContract(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{64}  censorship_1\.2\.3_linux_amd64\.zip\n$`).Match(line) {
 		t.Fatalf("checksum = %q", line)
+	}
+}
+
+func TestPackageLibraryIsDeterministicAcrossSourceMtimes(t *testing.T) {
+	script, err := filepath.Abs("package-release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	library := filepath.Join(tmp, "censorship.so")
+	license := filepath.Join(tmp, "LICENSE")
+	archive := filepath.Join(tmp, "censorship_1.2.3_linux_amd64.zip")
+	checksum := archive + ".sha256"
+	for path, contents := range map[string]string{
+		library: "fixture library",
+		license: "fixture license\n",
+	} {
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	firstModified := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
+	secondModified := firstModified.Add(6 * time.Second)
+	runPackager := func() {
+		cmd := exec.Command("go", "run", script, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
+		cmd.Dir = tmp
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("packager: %v\n%s", err, output)
+		}
+	}
+	for _, path := range []string{library, license} {
+		if err := os.Chtimes(path, firstModified, firstModified); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runPackager()
+	firstArchive, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstChecksum, err := os.ReadFile(checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{library, license} {
+		if err := os.Chtimes(path, secondModified, secondModified); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runPackager()
+	secondArchive, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondChecksum, err := os.ReadFile(checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(secondArchive, firstArchive) {
+		t.Fatal("ZIP bytes changed when only source mtimes changed")
+	}
+	if !bytes.Equal(secondChecksum, firstChecksum) {
+		t.Fatal("checksum line changed when only source mtimes changed")
+	}
+
+	reader, err := zip.OpenReader(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	wantModified := time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for _, file := range reader.File {
+		if !file.Modified.Equal(wantModified) {
+			t.Fatalf("ZIP entry %q Modified = %s, want %s", file.Name, file.Modified, wantModified)
+		}
 	}
 }
 
@@ -367,11 +444,74 @@ func TestPackagerRejectsPathCollisionsBeforeChangingFiles(t *testing.T) {
 				return filepath.Join(dir, "library.so"), archive, alias
 			},
 		},
+		{
+			name: "checksum repository LICENSE",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), filepath.Join(dir, "archive.zip"), filepath.Join(dir, "LICENSE")
+			},
+		},
+		{
+			name: "archive repository LICENSE",
+			paths: func(_ *testing.T, dir string) (string, string, string) {
+				return filepath.Join(dir, "library.so"), filepath.Join(dir, "LICENSE"), filepath.Join(dir, "checksum.sha256")
+			},
+		},
+		{
+			name: "checksum dangling symlink to archive",
+			paths: func(t *testing.T, dir string) (string, string, string) {
+				archive := filepath.Join(dir, "archive.zip")
+				checksum := filepath.Join(dir, "checksum.sha256")
+				if err := os.Remove(archive); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(checksum); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Base(archive), checksum); err != nil {
+					if os.IsPermission(err) {
+						t.Skipf("symlink not permitted: %v", err)
+					}
+					t.Fatal(err)
+				}
+				return filepath.Join(dir, "library.so"), archive, checksum
+			},
+		},
+		{
+			name: "LICENSE dangling symlink to archive",
+			paths: func(t *testing.T, dir string) (string, string, string) {
+				archive := filepath.Join(dir, "archive.zip")
+				license := filepath.Join(dir, "LICENSE")
+				if err := os.Remove(archive); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(license); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Base(archive), license); err != nil {
+					if os.IsPermission(err) {
+						t.Skipf("symlink not permitted: %v", err)
+					}
+					t.Fatal(err)
+				}
+				return filepath.Join(dir, "library.so"), archive, filepath.Join(dir, "checksum.sha256")
+			},
+		},
+		{
+			name: "absent case-only output aliases",
+			paths: func(t *testing.T, dir string) (string, string, string) {
+				out := filepath.Join(dir, "out")
+				if err := os.MkdirAll(out, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(dir, "library.so"), filepath.Join(out, "Archive.zip"), filepath.Join(out, "archive.zip")
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmp := t.TempDir()
 			for path, contents := range map[string]string{
 				filepath.Join(tmp, "library.so"):      "library contents",
+				filepath.Join(tmp, "LICENSE"):         "license contents",
 				filepath.Join(tmp, "archive.zip"):     "archive contents",
 				filepath.Join(tmp, "checksum.sha256"): "checksum contents",
 			} {
@@ -380,7 +520,17 @@ func TestPackagerRejectsPathCollisionsBeforeChangingFiles(t *testing.T) {
 				}
 			}
 			library, archive, checksum := tc.paths(t, tmp)
-			before := snapshotFiles(t, filepath.Join(tmp, "library.so"), filepath.Join(tmp, "archive.zip"), filepath.Join(tmp, "checksum.sha256"), filepath.Join(tmp, "library-link.so"), filepath.Join(tmp, "archive-link.zip"))
+			before := snapshotFiles(t,
+				filepath.Join(tmp, "library.so"),
+				filepath.Join(tmp, "LICENSE"),
+				filepath.Join(tmp, "archive.zip"),
+				filepath.Join(tmp, "checksum.sha256"),
+				filepath.Join(tmp, "library-link.so"),
+				filepath.Join(tmp, "archive-link.zip"),
+				library,
+				archive,
+				checksum,
+			)
 
 			cmd := exec.Command("go", "run", script, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
 			cmd.Dir = tmp
@@ -426,26 +576,44 @@ func linkPackageDirectory(t *testing.T, target, link string) {
 }
 
 type fileSnapshot struct {
-	contents []byte
-	modTime  int64
+	exists     bool
+	symlink    bool
+	contents   []byte
+	linkTarget string
+	modTime    int64
 }
 
 func snapshotFiles(t *testing.T, paths ...string) map[string]fileSnapshot {
 	t.Helper()
 	out := make(map[string]fileSnapshot, len(paths))
 	for _, path := range paths {
-		contents, err := os.ReadFile(path)
+		info, err := os.Lstat(path)
 		if os.IsNotExist(err) {
+			out[path] = fileSnapshot{}
 			continue
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
+		snapshot := fileSnapshot{
+			exists:  true,
+			symlink: info.Mode()&os.ModeSymlink != 0,
+			modTime: info.ModTime().UnixNano(),
 		}
-		out[path] = fileSnapshot{contents: contents, modTime: info.ModTime().UnixNano()}
+		if snapshot.symlink {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.linkTarget = linkTarget
+		} else {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot.contents = contents
+		}
+		out[path] = snapshot
 	}
 	return out
 }
@@ -453,19 +621,41 @@ func snapshotFiles(t *testing.T, paths ...string) map[string]fileSnapshot {
 func assertFilesUnchanged(t *testing.T, before map[string]fileSnapshot) {
 	t.Helper()
 	for path, want := range before {
-		got, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
+		info, err := os.Lstat(path)
+		if !want.exists {
+			if err == nil {
+				t.Fatalf("path was created: %s", path)
+			}
+			if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			continue
 		}
-		if !bytes.Equal(got, want.contents) {
-			t.Fatalf("contents changed for %s: %q, want %q", path, got, want.contents)
-		}
-		info, err := os.Stat(path)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("inspect %s: %v", path, err)
 		}
 		if got := info.ModTime().UnixNano(); got != want.modTime {
 			t.Fatalf("timestamp changed for %s: %d, want %d", path, got, want.modTime)
+		}
+		if got := info.Mode()&os.ModeSymlink != 0; got != want.symlink {
+			t.Fatalf("symlink state changed for %s", path)
+		}
+		if want.symlink {
+			linkTarget, err := os.Readlink(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if linkTarget != want.linkTarget {
+				t.Fatalf("symlink target changed for %s: %q, want %q", path, linkTarget, want.linkTarget)
+			}
+			continue
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !bytes.Equal(contents, want.contents) {
+			t.Fatalf("contents changed for %s: %q, want %q", path, contents, want.contents)
 		}
 	}
 }
@@ -556,12 +746,65 @@ func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("make -n package-platform: %v\n%s", err, output)
 	}
-	if !strings.Contains(string(output), `-version "1.2.3" -library`) {
-		t.Fatalf("make package-platform did not pass normalized version:\n%s", output)
+	if !strings.Contains(string(output), `-version "$PACKAGER_VERSION" -library`) {
+		t.Fatalf("make package-platform did not read the raw version from the environment:\n%s", output)
+	}
+
+	cmd = exec.Command("make", "-n", "package", "GOOS=linux", "GOARCH=amd64", "VERSION=vv")
+	cmd.Dir = filepath.Join("..", "..")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n package VERSION=vv: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), `-version "$PACKAGER_VERSION" -library "dist/linux_amd64/censorship.so" -archive "dist/censorship_v_linux_amd64.zip"`) {
+		t.Fatalf("make package did not carry raw vv to the packager and use v in the artifact name:\n%s", output)
+	}
+
+	cmd = exec.Command("make", "-n", "package", "VERSION=vv")
+	cmd.Dir = filepath.Join("..", "..")
+	cmd.Env = withEnvironment(withEnvironment(os.Environ(), "GOOS", ""), "GOARCH", "")
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n package VERSION=vv without target tuple: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), `-dist dist -out dist -version "$PACKAGER_VERSION"`) {
+		t.Fatalf("make package aggregate command did not carry raw vv to the packager:\n%s", output)
 	}
 }
 
 func TestMakeVersionValidationContract(t *testing.T) {
+	makefile, err := filepath.Abs(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		value    string
+		sentinel string
+	}{
+		{value: `v1";touch VERSION_INJECTION_SENTINEL;version="1`, sentinel: "VERSION_INJECTION_SENTINEL"},
+		{value: `$(shell touch VERSION_MAKE_SENTINEL)`, sentinel: "VERSION_MAKE_SENTINEL"},
+		{value: "v1\nprintf injected", sentinel: ""},
+		{value: "v1 whitespace", sentinel: ""},
+		{value: "v1/path", sentinel: ""},
+	} {
+		t.Run("rejects unsafe VERSION", func(t *testing.T) {
+			tmp := t.TempDir()
+			cmd := exec.Command("make", "-f", makefile, "validate-version", "VERSION="+tc.value)
+			cmd.Dir = tmp
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("make validate-version accepted %q:\n%s", tc.value, output)
+			}
+			if tc.sentinel == "" {
+				return
+			}
+			if _, err := os.Lstat(filepath.Join(tmp, tc.sentinel)); err == nil {
+				t.Fatalf("make validate-version created %s for %q", tc.sentinel, tc.value)
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		})
+	}
+
 	repo := filepath.Join("..", "..")
 	for _, version := range []string{"foo/bar", "v"} {
 		t.Run("rejects "+version, func(t *testing.T) {
