@@ -3,7 +3,6 @@
 package censorshipintegration
 
 import (
-	"bytes"
 	"fmt"
 	"reflect"
 	"testing"
@@ -19,7 +18,7 @@ func TestHTTPBlockIncludesTermAndRole(t *testing.T) {
 	if status != 400 || header.Get("Content-Type") != "application/json" || gjson.GetBytes(body, "error.term").String() != "Alpha" || gjson.GetBytes(body, "error.role").String() != "user" {
 		t.Fatalf("status=%d header=%v body=%s", status, header, body)
 	}
-	if upstream.requestCount() != 0 {
+	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked request reached upstream")
 	}
 }
@@ -32,7 +31,7 @@ func TestHTTPRejectsDuplicateJSONMembers(t *testing.T) {
 	if status != 400 || header.Get("Content-Type") != "application/json" || gjson.GetBytes(response, "error.code").String() != "censorship_invalid_request" {
 		t.Fatalf("status=%d header=%v body=%s", status, header, response)
 	}
-	if upstream.requestCount() != 0 {
+	if upstream.arrivalCount() != 0 {
 		t.Fatal("duplicate-member request reached upstream")
 	}
 }
@@ -44,7 +43,7 @@ func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 	if status != 400 || gjson.GetBytes(body, "error.term").String() != "Alpha" || gjson.GetBytes(body, "error.role").String() != "user" {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
-	if upstream.requestCount() != 0 {
+	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked legacy prompt reached upstream")
 	}
 }
@@ -56,7 +55,7 @@ func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
 	if status != 400 || gjson.GetBytes(body, "error.term").String() != "alpha-only" {
 		t.Fatalf("snapshot A did not block alpha-only: status=%d body=%s", status, body)
 	}
-	if upstream.requestCount() != 0 {
+	if upstream.arrivalCount() != 0 {
 		t.Fatal("snapshot A block reached upstream")
 	}
 
@@ -102,7 +101,7 @@ func TestHTTPResponsesBlockStringInput(t *testing.T) {
 	if status != 400 {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
-	if upstream.requestCount() != 0 {
+	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked Responses input reached upstream")
 	}
 }
@@ -134,6 +133,23 @@ func TestHTTPResponsesTransformsStructuredInputText(t *testing.T) {
 	}
 }
 
+func TestCapturedChatContentValidatorRejectsTransformedDecoy(t *testing.T) {
+	captured := []byte(`{"messages":[{"content":"before SECRET after"}],"decoy":"before  after"}`)
+	if err := validateCapturedChatContent(captured, "before SECRET after", "before  after"); err == nil {
+		t.Fatal("validator accepted a transformed decoy while messages[0].content remained untransformed")
+	}
+}
+
+func validateCapturedChatContent(captured []byte, input, transformed string) error {
+	if got := gjson.GetBytes(captured, "messages.0.content").String(); got != transformed {
+		return fmt.Errorf("upstream message content = %q, want %q; body = %s", got, transformed, captured)
+	}
+	if got := gjson.GetBytes(captured, "messages.0.content").String(); got == input {
+		return fmt.Errorf("upstream message content remained input %q; body = %s", got, captured)
+	}
+	return nil
+}
+
 func TestHTTPAndSSEOutputTraceUnaffected(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprintf("nonmatching/stream=%t", stream), func(t *testing.T) {
@@ -161,11 +177,11 @@ func TestHTTPAndSSEOutputTraceUnaffected(t *testing.T) {
 			enabledUpstream := newMockUpstream(t)
 			disabled := startCPA(t, disabledUpstream.URL, false, "")
 			enabled := startCPA(t, enabledUpstream.URL, true, tc.config)
-			body := chatBody(tc.input, true)
+			body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"stream":true,"decoy":%q}`, modelName, tc.input, tc.transformed))
 			disabledTrace := captureHTTP11Trace(t, disabled.baseURL+"/v1/chat/completions", downstreamKey, body)
 			enabledTrace := captureHTTP11Trace(t, enabled.baseURL+"/v1/chat/completions", downstreamKey, body)
-			if !bytes.Contains(enabledUpstream.lastRequest(), []byte(tc.transformed)) {
-				t.Fatalf("upstream body = %s", enabledUpstream.lastRequest())
+			if err := validateCapturedChatContent(enabledUpstream.lastRequest(), tc.input, tc.transformed); err != nil {
+				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(enabledTrace, disabledTrace) {
 				t.Fatalf("enabled trace = %#v, disabled trace = %#v", enabledTrace, disabledTrace)
