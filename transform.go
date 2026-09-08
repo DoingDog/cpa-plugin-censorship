@@ -210,11 +210,10 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 		}
 	}
 
-	for i := range spans {
-		spans[i].SkipFoldRewrite = false
-	}
-
 	if cfg.IgnoreCase && cfg.RewriteMatcher != nil {
+		for i := range spans {
+			spans[i].SkipFoldRewrite = false
+		}
 		rewriteRuleCount := len(cfg.Rules) - blockEnd
 		for i := range spans {
 			if useFoldRewritePreflight(rewriteRuleCount, len(spans[i].Text)) {

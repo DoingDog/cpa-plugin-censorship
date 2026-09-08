@@ -677,18 +677,33 @@ func runBenchmarkRewritePreflightStrategies(b *testing.B) {
 	}
 }
 
+func TestBenchmarkFoldRewriteStrategyPreservesMixedBlockSemantics(t *testing.T) {
+	cfg := benchmarkSnapshot(modeBlock, true, []compiledRule{{Term: "BLOCKME"}, {Term: "rewrite"}})
+	cfg.BlockEnd = 1
+	cfg.StripEnd = len(cfg.Rules)
+	cfg.rangesSet = true
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	withPreflight := benchmarkFoldRewriteStrategy("blockme", cfg, true)
+	withoutPreflight := benchmarkFoldRewriteStrategy("blockme", cfg, false)
+	if withPreflight != withoutPreflight {
+		t.Fatalf("mixed block results differ: preflight=%t baseline=%t", withPreflight, withoutPreflight)
+	}
+	if withPreflight {
+		t.Fatal("mixed block strategy reported a rewrite")
+	}
+}
+
 func benchmarkFoldRewriteStrategy(text string, cfg *configSnapshot, preflight bool) bool {
-	if preflight {
-		spans := [...]textSpan{{Text: text}}
-		_, changed := applyMode(spans[:], cfg)
-		return changed
+	if !preflight {
+		withoutPreflight := *cfg
+		withoutPreflight.RewriteMatcher = nil
+		cfg = &withoutPreflight
 	}
-	changed := false
-	for _, rule := range cfg.Rules {
-		var matched bool
-		text, matched = stripRule(text, rule, true)
-		changed = changed || matched
-	}
+	spans := [...]textSpan{{Text: text}}
+	_, changed := applyMode(spans[:], cfg)
 	return changed
 }
 

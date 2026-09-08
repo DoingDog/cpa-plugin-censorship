@@ -371,6 +371,30 @@ func TestUseFoldRewritePreflightBoundary(t *testing.T) {
 	}
 }
 
+func TestFoldRewritePreflightLeavesFlagsOutsideFoldedRewritePath(t *testing.T) {
+	exactCfg := mustConfig(t, `mode: strip
+words: [HIT]
+`)
+	noPreflightCfg := mustConfig(t, `mode: strip
+ignore_case: true
+words: [HIT]
+`)
+	noPreflightCfg.RewriteMatcher = nil
+
+	for name, cfg := range map[string]*configSnapshot{
+		"exact":        exactCfg,
+		"no preflight": noPreflightCfg,
+	} {
+		t.Run(name, func(t *testing.T) {
+			spans := []textSpan{{Text: strings.Repeat("z", 4096), SkipFoldRewrite: true}}
+			blocked, changed := applyMode(spans, cfg)
+			if blocked != nil || changed || !spans[0].SkipFoldRewrite {
+				t.Fatalf("applyMode() = %#v, %t, SkipFoldRewrite=%t; want untouched preflight flag", blocked, changed, spans[0].SkipFoldRewrite)
+			}
+		})
+	}
+}
+
 func TestFoldRewritePreflightMarksOnlyTotalMisses(t *testing.T) {
 	cfg := mustConfig(t, `mode: strip
 ignore_case: true
