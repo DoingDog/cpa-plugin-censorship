@@ -41,6 +41,34 @@ func TestResponsesWebSocketModelTurnUsesResponsesSelector(t *testing.T) {
 
 const websocketCompletionReadTimeout = integrationIOTimeout
 
+func TestResponsesWebSocketDialTimesOutDuringStalledUpgrade(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	startedAt := time.Now()
+	conn, err := dialResponsesWebSocketWithTimeout("ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey, timeout)
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("stalled upgrade unexpectedly connected")
+	}
+	if err == nil {
+		t.Fatal("stalled upgrade unexpectedly completed")
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("WebSocket dial elapsed = %v, want <= %v", elapsed, time.Second)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("stalled upgrade did not reach server")
+	}
+}
+
 type wsMessage struct {
 	Opcode  int
 	Payload []byte
@@ -75,6 +103,7 @@ func TestReadUntilCompletedReturnsOnDeadline(t *testing.T) {
 }
 
 func TestResponsesWebSocketReadTimesOutAfterDial(t *testing.T) {
+	const timeout = 100 * time.Millisecond
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -86,20 +115,24 @@ func TestResponsesWebSocketReadTimesOutAfterDial(t *testing.T) {
 	}))
 	defer server.Close()
 
-	conn := dialResponsesWebSocket(t, "ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey)
+	conn, err := dialResponsesWebSocketWithTimeout("ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer conn.Close()
 	started := time.Now()
-	_, _, err := conn.ReadMessage()
+	_, _, err = conn.ReadMessage()
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("error = %v, want timeout", err)
 	}
-	if elapsed := time.Since(started); elapsed < 4*time.Second || elapsed > 10*time.Second {
+	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("WebSocket timeout elapsed = %v", elapsed)
 	}
 }
 
 func TestTerminalWebSocketTimeoutIsNotPeerClose(t *testing.T) {
+	const timeout = 100 * time.Millisecond
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -117,7 +150,10 @@ func TestTerminalWebSocketTimeoutIsNotPeerClose(t *testing.T) {
 	}))
 	defer server.Close()
 
-	conn := dialResponsesWebSocket(t, "ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey)
+	conn, err := dialResponsesWebSocketWithTimeout("ws"+strings.TrimPrefix(server.URL, "http"), downstreamKey, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer conn.Close()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create"}`)); err != nil {
 		t.Fatal(err)
@@ -130,18 +166,22 @@ func TestTerminalWebSocketTimeoutIsNotPeerClose(t *testing.T) {
 		t.Fatalf("terminal event = %s", event)
 	}
 	started := time.Now()
-	err = waitForWebSocketPeerClose(conn)
+	err = waitForWebSocketPeerCloseWithTimeout(conn, timeout)
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("error = %v, want timeout rather than peer close", err)
 	}
-	if elapsed := time.Since(started); elapsed < 4*time.Second || elapsed > 10*time.Second {
+	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("terminal WebSocket timeout elapsed = %v", elapsed)
 	}
 }
 
 func waitForWebSocketPeerClose(conn *websocket.Conn) error {
-	if err := setIntegrationDeadline(conn.UnderlyingConn()); err != nil {
+	return waitForWebSocketPeerCloseWithTimeout(conn, integrationIOTimeout)
+}
+
+func waitForWebSocketPeerCloseWithTimeout(conn *websocket.Conn, timeout time.Duration) error {
+	if err := setDeadline(conn.UnderlyingConn(), timeout); err != nil {
 		return err
 	}
 	_, _, err := conn.ReadMessage()

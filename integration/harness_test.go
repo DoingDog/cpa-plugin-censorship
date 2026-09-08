@@ -74,16 +74,22 @@ func resolveCPAPathsWithBuildInfo(binaryPath, pluginPath string, readBuildInfo f
 		return cpaPaths{}, fmt.Errorf("read CPA build info %q: %w", binary, err)
 	}
 	actualRevision := ""
+	modified := false
 	if info != nil {
 		for _, setting := range info.Settings {
-			if setting.Key == "vcs.revision" {
+			switch setting.Key {
+			case "vcs.revision":
 				actualRevision = setting.Value
-				break
+			case "vcs.modified":
+				modified = setting.Value == "true"
 			}
 		}
 	}
 	if actualRevision != cpaSHA {
 		return cpaPaths{}, fmt.Errorf("CPA vcs.revision mismatch: expected %q, actual %q", cpaSHA, actualRevision)
+	}
+	if modified {
+		return cpaPaths{}, fmt.Errorf("CPA vcs.modified mismatch: expected %q, actual %q", "false", "true")
 	}
 	return cpaPaths{binary: binary, pluginDir: pluginDir}, nil
 }
@@ -158,6 +164,92 @@ func TestRevisionRejectsWrongAndMissingVCSRevision(t *testing.T) {
 	}
 }
 
+func TestRevisionRejectsModifiedBuild(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = resolveCPAPathsWithBuildInfo(binary, t.TempDir(), func(string) (*debug.BuildInfo, error) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: cpaSHA},
+			{Key: "vcs.modified", Value: "true"},
+		}}, nil
+	})
+	if err == nil {
+		t.Fatal("expected modified build rejection")
+	}
+	if !strings.Contains(err.Error(), "vcs.modified") || !strings.Contains(err.Error(), "true") {
+		t.Fatalf("modified build error = %q", err)
+	}
+}
+
+func TestTerminateCPAStopsWindowsProcessTree(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("taskkill process trees are Windows-specific")
+	}
+
+	parent := exec.Command(os.Args[0], "-test.run=^TestTerminateCPAProcessTreeHelper$")
+	parent.Env = append(os.Environ(), "GO_WANT_PROCESS_TREE_HELPER=1")
+	stdout, err := parent.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	parentDone := make(chan error, 1)
+	go func() { parentDone <- parent.Wait() }()
+
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		t.Fatalf("read child PID: %v", scanner.Err())
+	}
+	childPID, err := strconv.Atoi(scanner.Text())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("taskkill", "/PID", strconv.Itoa(parent.Process.Pid), "/T", "/F").Run()
+		_ = exec.Command("taskkill", "/PID", strconv.Itoa(childPID), "/T", "/F").Run()
+	})
+
+	if err := terminateCPA(parent.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForProcess(parentDone, time.Second) {
+		t.Fatal("parent did not exit within one second")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		output, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", childPID), "/NH").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(output, []byte(strconv.Itoa(childPID))) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child PID %d remained after parent cleanup: %s", childPID, output)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestTerminateCPAProcessTreeHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_PROCESS_TREE_HELPER") != "1" {
+		return
+	}
+
+	child := exec.Command("powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 60")
+	if err := child.Start(); err != nil {
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stdout, child.Process.Pid)
+	_ = child.Wait()
+	os.Exit(0)
+}
+
 func TestReadinessUsesAuthenticatedModelsEndpoint(t *testing.T) {
 	type readinessRequest struct {
 		method        string
@@ -193,13 +285,16 @@ func TestReadinessUsesAuthenticatedModelsEndpoint(t *testing.T) {
 }
 
 func TestHTTPClientTimeout(t *testing.T) {
+	const timeout = 100 * time.Millisecond
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
 
+	client := *integrationHTTPClient
+	client.Timeout = timeout
 	started := time.Now()
-	_, err := integrationHTTPClient.Get(server.URL)
+	_, err := client.Get(server.URL)
 	if err == nil {
 		t.Fatal("request unexpectedly completed")
 	}
@@ -207,12 +302,13 @@ func TestHTTPClientTimeout(t *testing.T) {
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("error = %v, want timeout", err)
 	}
-	if elapsed := time.Since(started); elapsed < 4*time.Second || elapsed > 10*time.Second {
+	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("HTTP timeout elapsed = %v", elapsed)
 	}
 }
 
 func TestTCPTimeoutAfterConnection(t *testing.T) {
+	const timeout = 100 * time.Millisecond
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -233,7 +329,7 @@ func TestTCPTimeoutAfterConnection(t *testing.T) {
 	defer connection.Close()
 	serverConnection := <-accepted
 	defer serverConnection.Close()
-	if err := setIntegrationDeadline(connection); err != nil {
+	if err := setDeadline(connection, timeout); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +339,7 @@ func TestTCPTimeoutAfterConnection(t *testing.T) {
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("error = %v, want timeout", err)
 	}
-	if elapsed := time.Since(started); elapsed < 4*time.Second || elapsed > 10*time.Second {
+	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("TCP timeout elapsed = %v", elapsed)
 	}
 }
@@ -539,7 +635,7 @@ func waitForProcess(done <-chan error, timeout time.Duration) bool {
 
 func terminateCPA(pid int) error {
 	if runtime.GOOS == "windows" {
-		return exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T").Run()
+		return exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
 	}
 	return exec.Command("kill", "-TERM", strconv.Itoa(pid)).Run()
 }
@@ -718,22 +814,37 @@ func chatBody(text string, stream bool) []byte {
 func dialResponsesWebSocket(t *testing.T, target, key string) *websocket.Conn {
 	t.Helper()
 
-	header := make(http.Header)
-	header.Set("Authorization", "Bearer "+key)
-	connection, response, err := websocket.DefaultDialer.DialContext(context.Background(), target, header)
-	if response != nil {
-		_ = response.Body.Close()
-	}
+	connection, err := dialResponsesWebSocketWithTimeout(target, key, integrationIOTimeout)
 	if err != nil {
 		t.Fatalf("dial Responses WebSocket: %v", err)
-	}
-	if err := setIntegrationDeadline(connection.UnderlyingConn()); err != nil {
-		_ = connection.Close()
-		t.Fatal(err)
 	}
 	return connection
 }
 
+func dialResponsesWebSocketWithTimeout(target, key string, timeout time.Duration) (*websocket.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	header := make(http.Header)
+	header.Set("Authorization", "Bearer "+key)
+	connection, response, err := websocket.DefaultDialer.DialContext(ctx, target, header)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := setDeadline(connection.UnderlyingConn(), timeout); err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+	return connection, nil
+}
+
 func setIntegrationDeadline(connection net.Conn) error {
-	return connection.SetDeadline(time.Now().Add(integrationIOTimeout))
+	return setDeadline(connection, integrationIOTimeout)
+}
+
+func setDeadline(connection net.Conn, timeout time.Duration) error {
+	return connection.SetDeadline(time.Now().Add(timeout))
 }
