@@ -467,3 +467,226 @@ No branch stores the raw slice, aliases it into a surviving string, closes over 
 ### REFACTOR
 
 - Replaced the stale list-plus-mode primary fixture with the canonical Object block in the contract test and both documents. The global `mode` example is retained only in the explicit handwritten-YAML compatibility subsection.
+
+## Task 16: Run the Full Verification Matrix and Package v0.2.0, 2026-09-08
+
+### Partition verdicts
+
+| Partition | Evidence | Verdict |
+| --- | --- | --- |
+| Static, unit, race, and vet | `task-16-static-round-2.md` | PASS |
+| Integration and checkout reuse | `task-16-integration-round-2.md` | PASS |
+| Fuzz repair and post-repair fuzz runs | `task-16-repair-report.md` | PASS |
+| Historical benchmark baseline | `task-16-baseline-report.md` | PASS |
+| Paired performance gate | `task-16-performance-adjudication.md` | PASS, adjudication `NO_REGRESSION` |
+| Windows package, checksum, and ZIP | Package evidence consolidated in `task-16-performance-adjudication.md` | PASS |
+
+All counted verification commands ran in `C:/Users/user/Downloads/cpa-plugin-censorship`. The static partition confirmed branch `feat/v0.2.0`. The paired performance evidence used baseline `da6e91262f1faaf82cacc5425eaf4a7f1b911042` and current `448c85200f33391811edab4237b6884a4ad105c8`.
+
+### Root, formatting, static, unit, race, and vet commands
+
+- `Set-Location -LiteralPath 'C:/Users/user/Downloads/cpa-plugin-censorship'; (Get-Location).Path; git rev-parse --show-toplevel`
+  - exit code: `0`
+  - decisive output: both path checks returned exact root `C:/Users/user/Downloads/cpa-plugin-censorship`.
+- `git rev-parse --show-toplevel`
+  - exit code: `0`
+  - decisive output: `C:/Users/user/Downloads/cpa-plugin-censorship`.
+- `git branch --show-current`
+  - exit code: `0`
+  - decisive output: `feat/v0.2.0`.
+- `git status --short` before formatting
+  - exit code: `0`
+  - decisive output: 20 retained tracked `M` paths and untracked `task-12-full.log`.
+- `gofmt -w` over every path returned by `git ls-files -- '*.go'`
+  - exit code: `0`
+  - decisive output: no formatter output.
+- `git diff --check` immediately after formatting
+  - exit code: `0`
+  - decisive output: no whitespace errors; Git emitted LF-to-CRLF warnings only.
+- `git status --short` after formatting
+  - exit code: `0`
+  - decisive output: the same 20 retained tracked `M` paths and untracked log.
+- `make test`
+  - exit code: `0`
+  - decisive output: `go test ./...` passed; `integration` reported `[no test files]`.
+- `go test .github/scripts/integration-runner.go .github/scripts/integration-runner_test.go -count=1`
+  - exit code: `0`
+  - decisive output: `ok command-line-arguments 1.675s`.
+- `go test .github/scripts/package-release.go .github/scripts/package-release_test.go -count=1`
+  - exit code: `0`
+  - decisive output: `ok command-line-arguments 6.839s`.
+- `go -C C:/Users/user/Downloads/cpa-plugin-censorship test .github/scripts/integration-runner.go .github/scripts/integration-runner_test.go -run '^TestPinnedCPARevision$' -count=1`
+  - exit code: `0`
+  - decisive output: `ok command-line-arguments 0.039s`.
+- `make race`
+  - exit code: `0`
+  - decisive output: `go test -race ./...` passed; `integration` reported `[no test files]`.
+- `make vet`
+  - exit code: `0`
+  - decisive output: `go vet ./...` passed.
+- Final `git diff --check`
+  - exit code: `0`
+  - decisive output: no whitespace errors; Git emitted LF-to-CRLF warnings only.
+- Final `git status --short` and `git diff --numstat`
+  - exit code: `0`
+  - decisive output: the same retained status and no textual numstat rows. The 20 tracked status entries predated round 2 and did not contain a gofmt-produced content diff, so none qualifies for staging as a formatter change.
+
+The Task 2 lifecycle guard used `^TestPinnedCPARevision$` exactly once. No wrapper with `[no tests to run]` ran in static round 2. The partition did not run standalone integration, fuzz, benchmark, or package commands.
+
+### Integration commands
+
+| Order | Literal command | Exit code | Actual duration | Result |
+| ---: | --- | ---: | ---: | --- |
+| 1 | `make integration` | `0` | `00:01:38.6893060` | PASS |
+| 2 | `go test -mod=readonly -tags=integration ./integration -count=1` | `0` | `00:01:24.2863915` | PASS |
+| 3 | `make integration` | `0` | `00:01:34.4425159` | PASS |
+
+Before command 2, `CPA_INTEGRATION_BIN` was set to `C:/Users/user/Downloads/cpa-plugin-censorship/.integration/bin.exe` and `CENSORSHIP_PLUGIN_DIR` was set to `C:/Users/user/Downloads/cpa-plugin-censorship/.integration/run/plugins`. An output-forwarding setup error happened before any `make` process started and is not a counted command.
+
+The second `make integration` reused the existing checkout. `.git` remained the Git directory and CPA `HEAD` remained `448c85200f33391811edab4237b6884a4ad105c8` before and after. Its restricted VCS-token scan found zero matches. The 20 tracked status entries and `task-12-full.log` remained unchanged.
+
+### Fuzz-oracle repair and fuzz commands
+
+- `go -C C:/Users/user/Downloads/cpa-plugin-censorship test . -run '^TestProtocolOracleClassifiesInvalidUTF8AsInvalidRequest$' -count=1`
+  - RED exit code: `1`; decisive output: `valid JSON object marked invalid`.
+  - GREEN exit code: `0`; `validJSONObject` now requires `utf8.Valid(body)` as well as JSON validity.
+- `go -C C:/Users/user/Downloads/cpa-plugin-censorship test . -run '^TestProtocolOracleTreatsEmptyGeminiRoleAsUser$' -count=1`
+  - RED exit code: `1`; decisive output: `request without eligible match was rebuilt`.
+  - GREEN exit code: `0`; both oracle Gemini walkers now treat absent, `null`, and empty roles like production.
+- `go -C C:/Users/user/Downloads/cpa-plugin-censorship test . -run '^TestProtocolOracle(ClassifiesInvalidUTF8AsInvalidRequest|TreatsEmptyGeminiRoleAsUser)$' -count=1`
+  - exit code: `0`.
+- `go -C C:/Users/user/Downloads/cpa-plugin-censorship test . -run '^$' -fuzz '^FuzzRuleEngineAgainstOracle$' -fuzztime=30s`
+  - exit code: `0`; PASS in `30.307s`.
+- `go -C C:/Users/user/Downloads/cpa-plugin-censorship test . -run '^$' -fuzz '^FuzzProtocolTransform$' -fuzztime=30s`
+  - exit code: `0`; PASS in `31.326s`.
+- `go -C C:/Users/user/Downloads/cpa-plugin-censorship test . -run '^$' -fuzz '^FuzzRebuildBodyAgainstMarshalOracle$' -fuzztime=30s`
+  - exit code: `0`; PASS in `31.180s`.
+- `git -C C:/Users/user/Downloads/cpa-plugin-censorship diff --check`
+  - exit code: `0`; no whitespace errors, with pre-existing LF-to-CRLF warnings only.
+
+The generated failing corpora were deleted only after focused regressions covered them. Only `fuzz_test.go` was staged in repair commit `448c852 fix: repair v0.2.0 verification failure`.
+
+### Historical baseline command
+
+```powershell
+$ErrorActionPreference = 'Stop'; $repo = 'C:\Users\user\Downloads\cpa-plugin-censorship'; $rawOutput = 'C:\Users\user\Downloads\cpa-plugin-censorship\.superpowers\sdd\2026-09-07-censorship-v0.2.0\censorship-v020-before-bench.txt'; $benchmarkPattern = '^(BenchmarkTransformMatrix|BenchmarkFoldStripDense|BenchmarkFoldObfuscateDense|BenchmarkFoldRootTransitions|BenchmarkFoldedRewriteStrategies|BenchmarkExactBlockStrategies)$'; $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ('cpa-plugin-censorship-task16-da6e912-clean-' + [guid]::NewGuid().ToString('N')); $archivePath = Join-Path $tempDir 'source.tar'; $resolved = (& git -C $repo rev-parse 'da6e912^{commit}'); $resolveExit = $LASTEXITCODE; if ($resolveExit -ne 0) { throw "git rev-parse failed with exit code $resolveExit" }; New-Item -ItemType Directory -Path $tempDir -ErrorAction Stop | Out-Null; $archiveExit = $null; $extractExit = $null; $benchmarkExit = $null; $cleanupExit = 0; try { & git -C $repo archive --format=tar da6e912 > $archivePath; $archiveExit = $LASTEXITCODE; if ($archiveExit -ne 0) { throw "git archive failed with exit code $archiveExit" }; & tar.exe -xf $archivePath -C $tempDir; $extractExit = $LASTEXITCODE; if ($extractExit -ne 0) { throw "tar extraction failed with exit code $extractExit" }; Remove-Item -LiteralPath $archivePath -Force -Confirm:$false; Push-Location -LiteralPath $tempDir; try { & go test . -run '^$' -bench $benchmarkPattern -benchmem -count=5 2>&1 | Tee-Object -FilePath $rawOutput; $benchmarkExit = $LASTEXITCODE } finally { Pop-Location } } finally { try { Remove-Item -LiteralPath $tempDir -Recurse -Force -Confirm:$false } catch { $cleanupExit = 1; Write-Error $_ } }; Write-Output "resolved_commit=$resolved"; Write-Output "temporary_directory=$tempDir"; Write-Output "archive_exit=$archiveExit"; Write-Output "extract_exit=$extractExit"; Write-Output "benchmark_exit=$benchmarkExit"; Write-Output "cleanup_exit=$cleanupExit"; if ($null -eq $benchmarkExit) { exit 1 }; if ($cleanupExit -ne 0) { exit $cleanupExit }; exit $benchmarkExit
+```
+
+- wrapper exit code: `0`.
+- component exit codes: `archive_exit=0`, `extract_exit=0`, `benchmark_exit=0`, `cleanup_exit=0`.
+- decisive output: `resolved_commit=da6e91262f1faaf82cacc5425eaf4a7f1b911042` and `PASS`.
+- comparable benchmarks: `BenchmarkTransformMatrix`, `BenchmarkFoldStripDense`, `BenchmarkFoldObfuscateDense`, `BenchmarkFoldRootTransitions`, `BenchmarkFoldedRewriteStrategies`, and `BenchmarkExactBlockStrategies`, each with `-benchmem -count=5`.
+- post-only benchmarks excluded from the historical run: `BenchmarkMixedTransformScenario`, `BenchmarkEmptyStringSpans`, and `BenchmarkGeminiSystemOnly`.
+- the source was obtained with `git archive`; no `checkout`, `switch`, `reset`, `restore`, or `stash` command ran, and the temporary extraction directory was deleted.
+
+### Paired benchmark commands and exits
+
+Execution order was `baseline-1`, `current-1`, `current-2`, `baseline-2`. Every command below ran once in each output with exit vector `0/0/0/0`, `-cpu=16`, and three samples per output.
+
+1. `go test . -run '^$' -bench '^BenchmarkExactBlockStrategies$/^impl=(baseline|production)$/^mode=block$/^rules=256$/^text=65536$/^pattern=literal$/^match=last$/^set=calibration$' -benchmem -count=3 -cpu=16`
+2. `go test . -run '^$' -bench '^(BenchmarkFoldObfuscateDense|BenchmarkFoldStripDense)$' -benchmem -count=3 -cpu=16`
+3. `go test . -run '^$' -bench '^BenchmarkFoldedRewriteStrategies$/^impl=(baseline|production)$/^mode=obfs$/^rules=1$/^text=65536$/^pattern=invalid-utf8-16scalars$/^match=sparse$/^set=holdout$' -benchmem -count=3 -cpu=16`
+4. `go test . -run '^$' -bench '^BenchmarkFoldedRewriteStrategies$/^impl=(baseline|production)$/^mode=strip$/^rules=1$/^text=65536$/^pattern=ascii-16scalars$/^match=overlap$/^set=holdout$' -benchmem -count=3 -cpu=16`
+5. `go test . -run '^$' -bench '^BenchmarkFoldedRewriteStrategies$/^impl=(baseline|kmp|production)$/^mode=strip$/^rules=1$/^text=16384$/^pattern=ascii-8scalars$/^match=none$/^set=calibration$' -benchmem -count=3 -cpu=16`
+6. `go test . -run '^$' -bench '^BenchmarkFoldedRewriteStrategies$/^impl=(baseline|production)$/^mode=obfs$/^rules=1$/^text=65536$/^pattern=ascii-16scalars$/^match=dense$/^set=holdout$' -benchmem -count=3 -cpu=16`
+7. `go test . -run '^$' -bench '^BenchmarkFoldedRewriteStrategies$/^impl=(baseline|production)$/^mode=obfs$/^rules=1$/^text=65536$/^pattern=ascii-16scalars$/^match=none$/^set=holdout$' -benchmem -count=3 -cpu=16`
+8. `go test . -run '^$' -bench '^BenchmarkTransformMatrix$/^body=1048576$/^words=1024$/^fold=false$' -benchmem -count=3 -cpu=16`
+
+Each paired output contained eight `PASS` sections, eight `ok` package footers, command exits `0,0,0,0,0,0,0,0`, and `block_exit_code=0`:
+
+| Output | Ref | Elapsed | Samples |
+| --- | --- | ---: | --- |
+| `performance-paired-baseline-1.txt` | `da6e91262f1faaf82cacc5425eaf4a7f1b911042` | `89.337s` | 3 each |
+| `performance-paired-current-1.txt` | `448c85200f33391811edab4237b6884a4ad105c8` | `88.843s` | 3 each |
+| `performance-paired-current-2.txt` | `448c85200f33391811edab4237b6884a4ad105c8` | `86.374s` | 3 each |
+| `performance-paired-baseline-2.txt` | `da6e91262f1faaf82cacc5425eaf4a7f1b911042` | `87.407s` | 3 each |
+
+The comparison uses each output's median of three `ns/op` samples. Interleaved medians are the medians of the two baseline or current run medians. Absolute ratio is current divided by baseline. For `impl=production`, normalized values are production divided by the matching same-run `impl=baseline`; paired ratios test direction stability.
+
+| # | Candidate | Baseline median ns/op | Current median ns/op | Absolute ratio | Paired absolute ratios | Normalized ratio | Paired normalized ratios | Verdict |
+| ---: | --- | ---: | ---: | ---: | --- | ---: | --- | --- |
+| 1 | `BenchmarkExactBlockStrategies/impl=baseline/mode=block/rules=256/text=65536/pattern=literal/match=last/set=calibration-16` | `195,754.0` | `204,559.5` | `1.0450x`, `+4.50%` | `1.2236x`, `0.8871x` | n/a | n/a | reference-only |
+| 2 | `BenchmarkFoldObfuscateDense-16` | `17,077,636.5` | `19,014,975.5` | `1.1134x`, `+11.34%` | `1.0054x`, `1.2202x` | n/a | n/a | noise |
+| 3 | `BenchmarkFoldStripDense-16` | `9,141,449.5` | `10,021,218.0` | `1.0962x`, `+9.62%` | `1.0003x`, `1.1927x` | n/a | n/a | noise |
+| 4 | `BenchmarkFoldedRewriteStrategies/impl=baseline/mode=obfs/rules=1/text=65536/pattern=invalid-utf8-16scalars/match=sparse/set=holdout-16` | `5,172,956.5` | `5,227,829.5` | `1.0106x`, `+1.06%` | `1.0160x`, `1.0052x` | n/a | n/a | reference-only |
+| 5 | `BenchmarkFoldedRewriteStrategies/impl=baseline/mode=strip/rules=1/text=65536/pattern=ascii-16scalars/match=overlap/set=holdout-16` | `224,841.0` | `213,289.0` | `0.9486x`, `-5.14%` | `1.1742x`, `0.7734x` | n/a | n/a | reference-only |
+| 6 | `BenchmarkFoldedRewriteStrategies/impl=kmp/mode=strip/rules=1/text=16384/pattern=ascii-8scalars/match=none/set=calibration-16` | `61,670.5` | `70,632.0` | `1.1453x`, `+14.53%` | `1.1298x`, `1.1611x` | n/a | n/a | reference-only |
+| 7 | `BenchmarkFoldedRewriteStrategies/impl=production/mode=obfs/rules=1/text=65536/pattern=ascii-16scalars/match=dense/set=holdout-16` | `263,225.5` | `233,844.5` | `0.8884x`, `-11.16%` | `0.8053x`, `0.9900x` | `0.8168x`, `-18.32%` | `0.8134x`, `0.8209x` | noise |
+| 8 | `BenchmarkFoldedRewriteStrategies/impl=production/mode=obfs/rules=1/text=65536/pattern=ascii-16scalars/match=none/set=holdout-16` | `292,541.5` | `245,391.5` | `0.8388x`, `-16.12%` | `0.8927x`, `0.7910x` | `0.9173x`, `-8.27%` | `1.0947x`, `0.7893x` | noise |
+| 9 | `BenchmarkFoldedRewriteStrategies/impl=production/mode=obfs/rules=1/text=65536/pattern=invalid-utf8-16scalars/match=sparse/set=holdout-16` | `1,035,427.0` | `979,883.0` | `0.9464x`, `-5.36%` | `0.9838x`, `0.9118x` | `0.9364x`, `-6.36%` | `0.9684x`, `0.9070x` | noise |
+| 10 | `BenchmarkTransformMatrix/body=1048576/words=1024/fold=false-16` | `5,313,800.0` | `4,941,321.5` | `0.9299x`, `-7.01%` | `0.8845x`, `0.9715x` | n/a | n/a | noise |
+
+The only stable material direct-strategy slowdown is `impl=kmp` in case 6. Its production sibling is `1.1170x` slower absolutely and `1.0610x` slower after same-run normalization, but normalized pairs reverse at `0.8829x` and `1.2410x`. Dense cases 2 and 3 changed only in the second current run, while the first pair was within `0.54%`; matching controls identify run-specific variation. No production candidate is slower in a stable direction after same-run normalization. Final performance status: `NO_REGRESSION`.
+
+The benchmark-definition command was:
+
+```powershell
+git diff --unified=0 da6e91262f1faaf82cacc5425eaf4a7f1b911042 448c85200f33391811edab4237b6884a4ad105c8 -- benchmark_test.go
+```
+
+- exit code: `0`.
+- decisive output: all selected benchmark definitions are unchanged. Only three post-only benchmarks and unselected `runBenchmarkRewritePreflightStrategies` code differ. The related `matcher.go` diff changes only `foldMatcher` rule-offset handling; `rewriteFolded`, `rewriteFoldedKMP`, `stripRule`, and `obfuscateRule` are unchanged.
+
+No benchmark was rerun for adjudication. The gate reused the four completed interleaved outputs once and introduced no unrequested materiality threshold.
+
+### ABI benchmark evidence
+
+- `go run ./.github/scripts/integration-runner.go -bench-abi`
+  - exit code: `0`; PASS in `9.845s`.
+
+| Payload | Before-auth -> after-auth ns/op | Before-auth -> after-auth B/op | Before-auth -> after-auth allocs/op |
+| --- | ---: | ---: | ---: |
+| 1 KiB | `56,386 -> 22,681` | `11,159 -> 6,302` | `31 -> 29` |
+| 1 MiB | `27,803,588 -> 1,848,338` | `10,291,138 -> 4,512,906` | `38 -> 32` |
+| 20 MiB | `511,753,550 -> 17,537,427` | `223,729,748 -> 94,153,355` | `42 -> 34` |
+
+Task 11's borrowing candidate did not remove the input-sized before-auth allocation, so production retains the safe input-side `C.GoBytes` copy. No no-copy benefit is claimed.
+
+### Windows package, checksum, and ZIP evidence
+
+- `make package VERSION=v0.2.0 GOOS=windows GOARCH=amd64`
+  - exit code: `0`; PASS.
+  - historical digest for that then-current ZIP: `f650928db5cb2a9efd8b85f45b2c1099d2dae642010fbc83e5e188ef67e60209`.
+
+The artifact was later rebuilt, so the historical digest does not describe the current ZIP. The permitted checksum and archive recheck did not rebuild it and found:
+
+- ZIP: `dist/censorship_0.2.0_windows_amd64.zip`, `2,136,591` bytes.
+- DLL: `dist/windows_amd64/censorship.dll`, `4,896,256` bytes.
+- current calculated SHA-256: `2fdd8f5d53691a4a98cf8e70a731fa8fcec01f832d5cd9efc7ca37976e877e2e`.
+- checksum file content: `2fdd8f5d53691a4a98cf8e70a731fa8fcec01f832d5cd9efc7ca37976e877e2e  censorship_0.2.0_windows_amd64.zip`.
+- ZIP entries: exactly `censorship.dll` and `LICENSE`.
+
+The current artifact and checksum agree. `dist/`, raw logs, and temporary files remain outside the verification commit.
+
+### Active constraints
+
+- Active module: `github.com/router-for-me/CLIProxyAPI/v7 v7.2.152`. Active module files contain neither revision `81e1b537` nor pin `v7.2.147`.
+- Active registration fields are `ignore_case`, `words`, `scope`, and `obfs`; `main.go` has no active `ConfigField.*mode` registration.
+- `words` remains an Object with ordered `block`, `strip`, and `obfs` arrays. The panel emits no global `mode`; legacy global `mode` remains handwritten-YAML compatibility only.
+- Matching order remains `block` -> `strip` -> `obfs`.
+- Provider selection remains limited to documented natural-language paths; no generic recursive string walker was added.
+- The exact required Logo URL is present in `main.go`, `main_test.go`, `README.md`, and `RELEASE_NOTES.md`.
+- `abi_cgo.go` intentionally retains two `C.GoBytes` calls under the Task 11 safety ruling.
+- A literal repository-wide old-reference or `C.GoBytes` grep is intentionally not clean because historical specs and plans retain old references and the production ABI retains the two required copies. Active dependency and metadata checks are clean.
+- Integration run 2 reused its checkout and did not synchronize a remote or initialize another checkout.
+- Release packages require lowercase SHA-256 files, aggregate `checksums.txt` entries, and the repository `LICENSE` when present.
+
+## Repository Guide: Add Project CLAUDE.md, 2026-09-08
+
+- Source commit `ddb4b38fb440540a562ef3aa065b56e74189ef1d`, subject `docs: add repository guidance`, changed only `CLAUDE.md`.
+- The source commit was not previously an ancestor of `feat/v0.2.0`.
+- The add/add conflict was resolved using the source commit's guide. The control-branch commit is `0a413d870c6700c2e651bd01cc82f25515300c1d`, subject `docs: add repository guidance`, and its committed path list contains only `CLAUDE.md`.
+- `CLAUDE.md` exists and contains the plugin-only scope, smallest relevant verification commands, Object `words` and legacy-YAML rules, fixed phase order, explicit provider-path boundary, ABI ownership and `C.GoBytes` constraints, generated-artifact rules, and surgical TDD discipline.
+- The guide contains no absolute-path pattern and no private model preference.
+- `git diff --check`
+  - exit code: `0`.
+- The guide integration did not stage, modify, or overwrite the pre-existing Task 16 tracked working-tree status.
+
+## Completion ledger, Tasks 12 through 16 and repository guide
+
+- [x] Task 12: hardened CPA integration coverage; focused watcher, full tagged integration, and race coverage passed; integrated as `db6ec74da3870cbb3432fdb676be35efa1fa8159`.
+- [x] Task 13: reused the existing CPA integration checkout; runner tests passed; integrated as `4dd60496f0ed98359a0167c78633d39f5fb0c60a`.
+- [x] Task 14: hardened normalized release packaging, checksums, and conditional `LICENSE`; script tests passed; integrated as `ca7f15c76c10d2400155abb8b86352132803310b`.
+- [x] Task 15: published canonical Object configuration and accurate limits; documentation test, race test, and focused contract tests passed.
+- [x] Task 16: static, unit, race, vet, repaired fuzz, integration, baseline benchmark, paired performance, ABI benchmark, and Windows package evidence passed; performance adjudication is `NO_REGRESSION`; verification commit subject is `test: verify censorship v0.2.0`.
+- [x] Repository guide: project `CLAUDE.md` integrated alone as `0a413d870c6700c2e651bd01cc82f25515300c1d`; content and privacy constraints verified.
