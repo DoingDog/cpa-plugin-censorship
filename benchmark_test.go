@@ -361,6 +361,71 @@ func BenchmarkExactRewriteStrategies(b *testing.B) {
 	runBenchmarkExactRewriteStrategies(b)
 }
 
+func BenchmarkExactRewritePreflight(b *testing.B) {
+	runBenchmarkExactRewritePreflight(b)
+}
+
+func TestBenchmarkExactRewritePreflightMatchesBaseline(t *testing.T) {
+	rules := func(terms ...string) []compiledRule {
+		out := make([]compiledRule, len(terms))
+		for i, term := range terms {
+			out[i] = compiledRule{Term: term}
+		}
+		return out
+	}
+	cases := []struct {
+		name            string
+		rules           []compiledRule
+		spans           []textSpan
+		wantSpanChanged []bool
+		wantChanged     bool
+	}{
+		{
+			name:            "none multiple spans",
+			rules:           rules("FIRST", "MIDDLE", "LAST", "DUP", "DUP", "AB", "ab", "CROSS"),
+			spans:           []textSpan{{Text: "plain", Role: "user"}, {Text: "also plain", Role: "assistant"}},
+			wantSpanChanged: []bool{false, false},
+		},
+		{name: "first", rules: rules("FIRST", "MIDDLE", "LAST"), spans: []textSpan{{Text: "FIRST plain", Role: "user"}}, wantSpanChanged: []bool{true}, wantChanged: true},
+		{name: "middle", rules: rules("FIRST", "MIDDLE", "LAST"), spans: []textSpan{{Text: "plain MIDDLE plain", Role: "user"}}, wantSpanChanged: []bool{true}, wantChanged: true},
+		{name: "last", rules: rules("FIRST", "MIDDLE", "LAST"), spans: []textSpan{{Text: "plain LAST", Role: "user"}}, wantSpanChanged: []bool{true}, wantChanged: true},
+		{name: "dense", rules: rules("DUP"), spans: []textSpan{{Text: strings.Repeat("DUP", 32), Role: "user"}}, wantSpanChanged: []bool{true}, wantChanged: true},
+		{name: "duplicate", rules: rules("DUP", "DUP"), spans: []textSpan{{Text: "DUP", Role: "user"}}, wantSpanChanged: []bool{true}, wantChanged: true},
+		{name: "cross span", rules: rules("CROSS"), spans: []textSpan{{Text: "CR", Role: "user"}, {Text: "OSS", Role: "assistant"}}, wantSpanChanged: []bool{false, false}},
+		{name: "later span hit", rules: rules("LATER"), spans: []textSpan{{Text: "plain", Role: "user"}, {Text: "LATER plain", Role: "assistant"}}, wantSpanChanged: []bool{false, true}, wantChanged: true},
+		{name: "strip cascade", rules: rules("AB", "ab"), spans: []textSpan{{Text: "aABb", Role: "user"}}, wantSpanChanged: []bool{true}, wantChanged: true},
+		{name: "obfs cascade", rules: rules("AB", "A​B"), spans: []textSpan{{Text: "AB", Role: "user"}}, wantSpanChanged: []bool{true}, wantChanged: true},
+	}
+	for _, selectedMode := range []mode{modeStrip, modeObfs} {
+		for _, tc := range cases {
+			t.Run(string(selectedMode)+"/"+tc.name, func(t *testing.T) {
+				cfg := benchmarkSnapshot(selectedMode, false, append([]compiledRule(nil), tc.rules...))
+				baseline := append([]textSpan(nil), tc.spans...)
+				candidate := append([]textSpan(nil), tc.spans...)
+				_, baselineChanged := applyMode(baseline, cfg)
+				if baselineChanged != tc.wantChanged {
+					t.Fatalf("baseline changed = %t, want %t", baselineChanged, tc.wantChanged)
+				}
+				for i, wantSpanChanged := range tc.wantSpanChanged {
+					if baseline[i].Changed != wantSpanChanged {
+						t.Fatalf("baseline span %d changed = %t, want %t", i, baseline[i].Changed, wantSpanChanged)
+					}
+				}
+				matcher := newByteMatcher(cfg.Rules[cfg.BlockEnd:], cfg.BlockEnd)
+				gotChanged := benchmarkExactRewriteSpansStrategy(candidate, cfg, matcher)
+				if gotChanged != tc.wantChanged {
+					t.Fatalf("changed = %t, want %t", gotChanged, tc.wantChanged)
+				}
+				for i := range baseline {
+					if candidate[i].Text != baseline[i].Text || candidate[i].Changed != baseline[i].Changed {
+						t.Errorf("span %d = %#v, want %#v", i, candidate[i], baseline[i])
+					}
+				}
+			})
+		}
+	}
+}
+
 func BenchmarkFoldRootTransitions(b *testing.B) {
 	runBenchmarkFoldRootTransitions(b)
 }
@@ -593,6 +658,171 @@ func benchmarkRewriteExpected(text string, rules []compiledRule, selectedMode mo
 		}
 	}
 	return text
+}
+
+func runBenchmarkExactRewritePreflight(b *testing.B) {
+	const (
+		ruleCount = 1024
+		textBytes = 20 << 20
+	)
+	type benchmarkCase struct {
+		match string
+	}
+	cases := []benchmarkCase{
+		{match: "total-miss"},
+		{match: "first-sparse"},
+		{match: "last-sparse"},
+		{match: "dense"},
+		{match: "duplicate"},
+		{match: "cross-span"},
+		{match: "cascade"},
+	}
+	for _, selectedMode := range []mode{modeStrip, modeObfs} {
+		for _, tc := range cases {
+			tc := tc
+			rules, texts := benchmarkExactRewriteFixture(selectedMode, tc.match, ruleCount, textBytes)
+			cfg := benchmarkSnapshot(selectedMode, false, rules)
+			wantSpans := benchmarkExactRewriteSpans(texts)
+			_, wantChanged := applyMode(wantSpans, cfg)
+			for _, impl := range []struct {
+				name    string
+				matcher *byteMatcher
+			}{
+				{name: "baseline"},
+				{name: "preflight", matcher: newByteMatcher(cfg.Rules[cfg.BlockEnd:], cfg.BlockEnd)},
+			} {
+				impl := impl
+				for _, parallel := range []bool{false, true} {
+					parallel := parallel
+					execution := "serial"
+					if parallel {
+						execution = "parallel"
+					}
+					name := fmt.Sprintf("impl=%s/mode=%s/rules=%d/text=%d/pattern=literal/match=%s/set=holdout/execution=%s", impl.name, selectedMode, ruleCount, textBytes, tc.match, execution)
+					b.Run(name, func(b *testing.B) {
+						gotSpans := benchmarkExactRewriteSpans(texts)
+						gotChanged := benchmarkExactRewriteSpansStrategy(gotSpans, cfg, impl.matcher)
+						if gotChanged != wantChanged {
+							b.Fatalf("strategy changed = %t; want %t", gotChanged, wantChanged)
+						}
+						for i := range wantSpans {
+							if gotSpans[i].Text != wantSpans[i].Text || gotSpans[i].Changed != wantSpans[i].Changed {
+								b.Fatalf("span %d = %#v; want %#v", i, gotSpans[i], wantSpans[i])
+							}
+						}
+
+						b.ReportAllocs()
+						b.SetBytes(textBytes)
+						b.ResetTimer()
+						if parallel {
+							b.RunParallel(func(pb *testing.PB) {
+								var text string
+								var changed bool
+								for pb.Next() {
+									if len(texts) == 1 {
+										text, changed = benchmarkExactRewriteStrategy(texts[0], cfg, impl.matcher)
+									} else {
+										spans := [...]textSpan{{Text: texts[0], Role: "user"}, {Text: texts[1], Role: "assistant"}}
+										changed = benchmarkExactRewriteSpansStrategy(spans[:], cfg, impl.matcher)
+										text = spans[0].Text
+									}
+								}
+								runtime.KeepAlive(text)
+								runtime.KeepAlive(changed)
+							})
+							return
+						}
+						for i := 0; i < b.N; i++ {
+							if len(texts) == 1 {
+								benchmarkStringSink, benchmarkBoolSink = benchmarkExactRewriteStrategy(texts[0], cfg, impl.matcher)
+								continue
+							}
+							spans := [...]textSpan{{Text: texts[0], Role: "user"}, {Text: texts[1], Role: "assistant"}}
+							benchmarkBoolSink = benchmarkExactRewriteSpansStrategy(spans[:], cfg, impl.matcher)
+							benchmarkStringSink = spans[0].Text
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func benchmarkExactRewriteFixture(selectedMode mode, match string, ruleCount, textBytes int) ([]compiledRule, []string) {
+	rules := benchmarkRules(ruleCount, "")
+	setRule := func(index int, term string) {
+		rules[index] = compiledRule{Term: term}
+	}
+	switch match {
+	case "total-miss":
+		return rules, []string{strings.Repeat("x", textBytes)}
+	case "first-sparse":
+		setRule(0, "FIRSTHIT")
+		return rules, []string{benchmarkPositionedText(textBytes, "FIRSTHIT", "first")}
+	case "last-sparse":
+		setRule(len(rules)-1, "LASTHIT")
+		return rules, []string{benchmarkPositionedText(textBytes, "LASTHIT", "last")}
+	case "dense":
+		setRule(0, "DENSEHIT")
+		return rules, []string{strings.Repeat("DENSEHIT", textBytes/len("DENSEHIT")+1)[:textBytes]}
+	case "duplicate":
+		setRule(len(rules)/2, "DUPHIT")
+		setRule(len(rules)/2+1, "DUPHIT")
+		return rules, []string{benchmarkPositionedText(textBytes, "DUPHIT", "middle")}
+	case "cross-span":
+		setRule(len(rules)-1, "CROSSHIT")
+		firstBytes := textBytes / 2
+		return rules, []string{
+			strings.Repeat("x", firstBytes-len("CRO")) + "CRO",
+			"SSHIT" + strings.Repeat("x", textBytes-firstBytes-len("SSHIT")),
+		}
+	case "cascade":
+		if selectedMode == modeStrip {
+			setRule(0, "AB")
+			setRule(1, "ab")
+			return rules, []string{benchmarkSizedText(textBytes, "aABb")}
+		}
+		setRule(0, "AB")
+		setRule(1, "A​B")
+		return rules, []string{benchmarkSizedText(textBytes, "AB")}
+	default:
+		panic("unknown exact rewrite benchmark match")
+	}
+}
+
+func benchmarkExactRewriteSpans(texts []string) []textSpan {
+	spans := make([]textSpan, len(texts))
+	for i, text := range texts {
+		spans[i] = textSpan{Text: text, Role: "user"}
+		if i > 0 {
+			spans[i].Role = "assistant"
+		}
+	}
+	return spans
+}
+
+func benchmarkExactRewriteStrategy(text string, cfg *configSnapshot, matcher *byteMatcher) (string, bool) {
+	spans := [...]textSpan{{Text: text, Role: "user"}}
+	if matcher != nil {
+		if _, matched := matcher.match(text); !matched {
+			return text, false
+		}
+	}
+	_, changed := applyMode(spans[:], cfg)
+	return spans[0].Text, changed
+}
+
+func benchmarkExactRewriteSpansStrategy(spans []textSpan, cfg *configSnapshot, matcher *byteMatcher) bool {
+	changed := false
+	for i := range spans {
+		text, spanChanged := benchmarkExactRewriteStrategy(spans[i].Text, cfg, matcher)
+		spans[i].Text = text
+		if spanChanged {
+			spans[i].Changed = true
+			changed = true
+		}
+	}
+	return changed
 }
 
 func runBenchmarkFoldRootTransitions(b *testing.B) {
