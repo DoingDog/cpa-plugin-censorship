@@ -48,6 +48,22 @@ func TestValidJSONObjectRejectsNonJSONWhitespace(t *testing.T) {
 	}
 }
 
+func TestProtocolOracleClassifiesInvalidUTF8AsInvalidRequest(t *testing.T) {
+	body := []byte("{\"\x88\":[]}")
+	got := transformResult{Invalid: true}
+	if err := checkProtocolResult("interactions", body, modeBlock, false, got); err != nil {
+		t.Fatalf("checkProtocolResult() error = %v, want nil", err)
+	}
+}
+
+func TestProtocolOracleTreatsEmptyGeminiRoleAsUser(t *testing.T) {
+	body := []byte(`{"contents":[{"role":"","parts":[{"text":"SECRET"}]}]}`)
+	got := transformResult{Body: []byte(`{"contents":[{"role":"","parts":[{"text":""}]}]}`)}
+	if err := checkProtocolResult("gemini", body, modeStrip, false, got); err != nil {
+		t.Fatalf("checkProtocolResult() error = %v, want nil", err)
+	}
+}
+
 func TestProtocolOracleRejectsWrongResults(t *testing.T) {
 	matching := []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)
 	excluded := []byte(`{"tools":[{"description":"SECRET"}]}`)
@@ -818,24 +834,31 @@ func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 	previousRole := ""
 	oracleForEachArray(contents, func(content json.RawMessage) {
 		role := ""
-		if rawRole, exists := oracleFirstField(content, "role"); exists {
+		rawRole, exists := oracleFirstField(content, "role")
+		missingRole := !exists || bytes.Equal(bytes.TrimSpace(rawRole), []byte("null"))
+		if !missingRole {
 			var value string
 			if json.Unmarshal(rawRole, &value) != nil {
 				previousRole = oracleNextGeminiRole(previousRole)
 				return
 			}
-			switch value {
-			case "user":
-				role = "user"
-				previousRole = value
-			case "model":
-				role = "assistant"
-				previousRole = value
-			default:
-				previousRole = oracleNextGeminiRole(previousRole)
-				return
+			if value == "" {
+				missingRole = true
+			} else {
+				switch value {
+				case "user":
+					role = "user"
+					previousRole = value
+				case "model":
+					role = "assistant"
+					previousRole = value
+				default:
+					previousRole = oracleNextGeminiRole(previousRole)
+					return
+				}
 			}
-		} else {
+		}
+		if missingRole {
 			previousRole = oracleNextGeminiRole(previousRole)
 			if previousRole == "user" {
 				role = "user"
@@ -1139,23 +1162,30 @@ func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	previousRole := ""
 	for _, content := range contents.array {
 		role := ""
-		if rawRole, exists := content.firstField("role"); exists {
+		rawRole, exists := content.firstField("role")
+		missingRole := !exists || (rawRole.kind == 'p' && rawRole.text == "null")
+		if !missingRole {
 			if rawRole.kind != 's' {
 				previousRole = oracleNextGeminiRole(previousRole)
 				continue
 			}
-			switch rawRole.text {
-			case "user":
-				role = "user"
-				previousRole = rawRole.text
-			case "model":
-				role = "assistant"
-				previousRole = rawRole.text
-			default:
-				previousRole = oracleNextGeminiRole(previousRole)
-				continue
+			if rawRole.text == "" {
+				missingRole = true
+			} else {
+				switch rawRole.text {
+				case "user":
+					role = "user"
+					previousRole = rawRole.text
+				case "model":
+					role = "assistant"
+					previousRole = rawRole.text
+				default:
+					previousRole = oracleNextGeminiRole(previousRole)
+					continue
+				}
 			}
-		} else {
+		}
+		if missingRole {
 			previousRole = oracleNextGeminiRole(previousRole)
 			if previousRole == "user" {
 				role = "user"
@@ -1623,7 +1653,7 @@ func knownFormat(format string) bool {
 }
 
 func validJSONObject(body []byte) bool {
-	if !json.Valid(body) {
+	if !utf8.Valid(body) || !json.Valid(body) {
 		return false
 	}
 	for _, b := range body {
