@@ -116,9 +116,23 @@ func appendClaudeResultText(spans *[]textSpan, block gjson.Result, role string, 
 		})
 	case "document":
 		source := block.Get("source")
-		if !source.IsObject() || source.Get("type").Str != "text" {
+		if !source.IsObject() {
 			return
 		}
-		appendStringSpan(spans, source.Get("data"), role, roles)
+		switch source.Get("type").Str {
+		case "text":
+			appendStringSpan(spans, source.Get("data"), role, roles)
+		case "content":
+			content := source.Get("content")
+			if !content.IsArray() {
+				return
+			}
+			content.ForEach(func(_, part gjson.Result) bool {
+				if part.IsObject() && part.Get("type").Str == "text" {
+					appendStringSpan(spans, part.Get("text"), role, roles)
+				}
+				return true
+			})
+		}
 	}
 }
