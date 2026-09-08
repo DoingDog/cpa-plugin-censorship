@@ -475,10 +475,11 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
   configs:
     censorship:
       enabled: true
-      mode: block
       ignore_case: false
       words:
-        - example
+        block: [example]
+        strip: []
+        obfs: []
       scope:
         formats: [openai, openai-response, claude, gemini, interactions]
         roles: [system, developer, user]
@@ -487,13 +488,32 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 
 	required := []string{
 		configExample,
+		"Object-only rule editor",
+		"does not render or emit global `mode`",
+		"legacy handwritten YAML",
+		"Object `words`, a supplied `mode` remains syntax-validated but is behaviorally ignored.",
+		"block -> strip -> obfs",
+		"OpenAI explicit text paths:",
+		"Claude explicit text paths:",
+		"Gemini explicit text paths:",
+		"Interactions explicit text paths:",
+		"Machine exclusions:",
+		"CLIProxyAPI v7.2.152, schema 5",
+		"c76dfd4e0edabab9000628b1560ab8ab379eadb8",
+		"native ABI v1",
+		"glibc 2.34+",
+		"C.GoBytes",
+		"allocation gate failed",
+		"optional repository `LICENSE` if one exists",
+		"Integration changes:",
+		"https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png",
 		"no custom panel, menu, or Management API",
 		"request-only; never inspects or changes model output",
 		"`enabled`: boolean; host-owned",
 		"`mode`: string; default `block`",
 		"`ignore_case`: boolean; default `false`",
 		"With `ignore_case: false`, matching is a case-sensitive literal substring operation.",
-		"`words`: sequence of strings; default `[]`",
+		"`words`: Object with optional `block`, `strip`, and `obfs` arrays",
 		"words is the only term source; the plugin has no built-in terms",
 		"`scope.formats`: sequence of strings; default all five formats",
 		"`scope.roles`: sequence of strings; default `system`, `developer`, and `user`",
@@ -514,10 +534,10 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"straße/STRASSE does not match",
 		"no Unicode normalization",
 		"assistant is inspected only when explicitly listed in scope.roles",
-		"tool is inspected only for OpenAI string tool content and Claude typed text tool_result content",
+		"tool is inspected only for documented OpenAI and Claude result-text paths",
 		"valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel",
 		"invalid reconfiguration keeps the last-known-good snapshot",
-		"Never changes tool calls, tool schemas, arguments, reasoning, thinking, other tool/function results, JSON keys, machine JSON, binary uploads, or image/audio/video/file base64.",
+		"Machine exclusions: tool calls, tool schemas, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
 		"1. hook is not raw ingress; document order follows current execution-body spans",
 		"2. preprocessing can observe uncensored input",
 		"3. Responses WebSocket covers only model-executed turns",

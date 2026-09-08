@@ -383,3 +383,87 @@ No branch stores the raw slice, aliases it into a surviving string, closes over 
 - The restored-copy benchmark passed. Its 20 MiB before-auth result was `1202176600 ns/op; 223730848 B/op; 43 allocs/op`, consistent with retaining the copy.
 - `go vet ./...` passed.
 - `go test ./...` and `go test -race ./...` both stopped at the pre-existing `TestDocumentationListsConfigAndLimits` contract failure: unchanged `README.md` and `RELEASE_NOTES.md` lack the expected `plugins.configs.censorship` block. Task 11 changes do not modify either file.
+
+
+## Task 12: Harden CPA Integration Coverage, 2026-09-08
+
+### RED
+
+- `TestWatcherReloadLinearizesAtObservedSnapshotB` before the bounded handshake failed twice after about 23 seconds. Literal decisive output: `config watcher not observed, last status=200 body={"id":"chatcmpl-censorship-fixture"...}`.
+
+### GREEN
+
+- `$env:CPA_INTEGRATION_BIN = 'C:\Users\user\AppData\Local\Temp\cpa-c76.exe'; $env:CENSORSHIP_PLUGIN_DIR = Join-Path (Get-Location) '.integration\run\plugins\windows\amd64'; go test -mod=readonly -tags=integration ./integration -run '^TestWatcherReloadLinearizesAtObservedSnapshotB$' -count=1 -v`
+  - exit code: `0`
+  - literal output: `--- PASS: TestWatcherReloadLinearizesAtObservedSnapshotB (4.88s)` and `ok      github.com/DoingDog/cpa-plugin-censorship/integration  4.930s`.
+- The full worker command `go test -mod=readonly -tags=integration ./integration -count=1 -v` passed. Literal output: `--- PASS: TestWatcherReloadLinearizesAtObservedSnapshotB (4.86s)`, `--- PASS: TestHTTPAndSSEOutputTraceUnaffected (21.35s)`, `--- PASS: TestResponsesWebSocketOutputMessagesUnaffected (15.95s)`, and `ok      github.com/DoingDog/cpa-plugin-censorship/integration  83.917s`.
+- `go test -race -mod=readonly -tags=integration ./integration -run '^(TestResolve|TestRevision|TestReadiness|Test.*Timeout)' -count=1`
+  - exit code: `0`
+  - literal output: `ok      github.com/DoingDog/cpa-plugin-censorship/integration  16.114s`.
+- Worker commit: source `a3845852031be421bf9c2f1ef876937524003e82`; integrated as `db6ec74da3870cbb3432fdb676be35efa1fa8159` with subject `test: harden CPA integration coverage`.
+
+### REFACTOR
+
+- The watcher writes the same path and probes a B-only marker under a bounded deadline. Windows cleanup waits for CPA process exit before returning.
+
+## Task 13: Reuse CPA Integration Checkout, 2026-09-08
+
+### GREEN
+
+- `go -C "C:/Users/user/Downloads/cpa-plugin-censorship" test .github/scripts/integration-runner.go .github/scripts/integration-runner_test.go`
+  - exit code: `0`
+  - literal report output: `Passed: command-line-arguments in 1.983s.`
+- Source commits `8d43b7e3b4b4714a9246d435fd2f68cf0544392a` and `f81f1e397fd9353f241f344861cc56b8b444b3c4` were integrated as `4dd60496f0ed98359a0167c78633d39f5fb0c60a`, subject `perf: reuse CPA integration checkout`.
+
+### REFACTOR
+
+- The integration runner reuses the existing CPA checkout. No second checkout is created.
+
+## Task 14: Harden Release Packaging, 2026-09-08
+
+### GREEN
+
+- `go -C "C:/Users/user/Downloads/cpa-plugin-censorship" test .github/scripts/package-release.go .github/scripts/package-release_test.go`
+  - exit code: `0`
+  - literal report output: `Passed: command-line-arguments in 8.113s.`
+- Source commit `f99188837a1520e2c1221a30fc8291456c8197b4` was integrated as `ca7f15c76c10d2400155abb8b86352132803310b`, subject `build: harden release packaging`.
+
+### REFACTOR
+
+- Packaging validates normalized versions, produces matching checksums, and includes the repository `LICENSE` only when it exists.
+
+## Tooling-wave combined tagged integration, 2026-09-08
+
+- `$env:CPA_INTEGRATION_BIN = "C:/Users/user/Downloads/cpa-plugin-censorship/.integration/bin.exe"; $env:CENSORSHIP_PLUGIN_DIR = "C:/Users/user/Downloads/cpa-plugin-censorship/.integration/run/plugins"; go -C "C:/Users/user/Downloads/cpa-plugin-censorship/.integration/cpa" test -tags=integration -count=1 -v ./integration/censorshipplugin`
+  - exit code: `0`
+  - literal report output: `Passed: github.com/router-for-me/CLIProxyAPI/v7/integration/censorshipplugin in 88.571s.`
+- `git -C "C:/Users/user/Downloads/cpa-plugin-censorship" diff --check`
+  - exit code: `0`
+  - literal report output: no output.
+
+## Task 15: Integrate Tooling Wave and Publish Accurate Documentation, 2026-09-08
+
+### RED
+
+- `go -C "C:/Users/user/Downloads/cpa-plugin-censorship" test . -run '^TestDocumentationListsConfigAndLimits$' -count=1`
+  - exit code: `1`
+  - decisive output: both `README.md` and `RELEASE_NOTES.md` were missing the canonical Object `words` configuration block. The updated contract also reported missing Object-only panel, legacy-mode compatibility, fixed phase order, provider-path, ABI, packaging, and integration documentation.
+
+### GREEN
+
+- `go -C "C:/Users/user/Downloads/cpa-plugin-censorship" test . -run '^TestDocumentationListsConfigAndLimits$' -count=1`
+  - exit code: `0`
+  - literal output: `ok      github.com/DoingDog/cpa-plugin-censorship  0.064s`.
+- `go -C "C:/Users/user/Downloads/cpa-plugin-censorship" test -race . -run '^TestDocumentationListsConfigAndLimits$' -count=1`
+  - exit code: `0`
+  - literal output: `ok      github.com/DoingDog/cpa-plugin-censorship  1.102s`.
+- `go -C "C:/Users/user/Downloads/cpa-plugin-censorship" test . -run '^(TestDocumentation|TestRegistration|TestParseConfig)' -count=1`
+  - exit code: `0`
+  - literal output: `ok      github.com/DoingDog/cpa-plugin-censorship  0.060s`.
+- `git -C "C:/Users/user/Downloads/cpa-plugin-censorship" diff --check`
+  - exit code: `0`
+  - output: only Git LF-to-CRLF warnings for `README.md`, `RELEASE_NOTES.md`, and `main_test.go`; no whitespace error.
+
+### REFACTOR
+
+- Replaced the stale list-plus-mode primary fixture with the canonical Object block in the contract test and both documents. The global `mode` example is retained only in the explicit handwritten-YAML compatibility subsection.
