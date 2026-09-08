@@ -6,7 +6,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"debug/buildinfo"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,10 +31,222 @@ import (
 )
 
 const (
-	cpaSHA        = "81e1b5374f99c212f196f34956eeed964a46b8fa"
-	downstreamKey = "censorship-integration-key"
-	modelName     = "censorship-integration-model"
+	cpaSHA               = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
+	downstreamKey        = "censorship-integration-key"
+	modelName            = "censorship-integration-model"
+	integrationIOTimeout = 5 * time.Second
 )
+
+var integrationHTTPClient = &http.Client{Timeout: integrationIOTimeout}
+
+type cpaPaths struct {
+	binary    string
+	pluginDir string
+}
+
+func resolveCPAPaths(binaryPath, pluginPath string) (cpaPaths, error) {
+	return resolveCPAPathsWithBuildInfo(binaryPath, pluginPath, buildinfo.ReadFile)
+}
+
+func resolveCPAPathsWithBuildInfo(binaryPath, pluginPath string, readBuildInfo func(string) (*debug.BuildInfo, error)) (cpaPaths, error) {
+	if binaryPath == "" {
+		return cpaPaths{}, errors.New("CPA_INTEGRATION_BIN is required")
+	}
+	if pluginPath == "" {
+		return cpaPaths{}, errors.New("CENSORSHIP_PLUGIN_DIR is required")
+	}
+
+	binary, err := exec.LookPath(binaryPath)
+	if err != nil {
+		return cpaPaths{}, fmt.Errorf("resolve CPA binary %q: %w", binaryPath, err)
+	}
+	binary, err = filepath.Abs(binary)
+	if err != nil {
+		return cpaPaths{}, fmt.Errorf("make CPA binary path absolute: %w", err)
+	}
+	pluginDir, err := filepath.Abs(pluginPath)
+	if err != nil {
+		return cpaPaths{}, fmt.Errorf("make plugin directory path absolute: %w", err)
+	}
+
+	info, err := readBuildInfo(binary)
+	if err != nil {
+		return cpaPaths{}, fmt.Errorf("read CPA build info %q: %w", binary, err)
+	}
+	actualRevision := ""
+	if info != nil {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				actualRevision = setting.Value
+				break
+			}
+		}
+	}
+	if actualRevision != cpaSHA {
+		return cpaPaths{}, fmt.Errorf("CPA vcs.revision mismatch: expected %q, actual %q", cpaSHA, actualRevision)
+	}
+	return cpaPaths{binary: binary, pluginDir: pluginDir}, nil
+}
+
+func TestResolveCPAPathsNormalizesRelativePaths(t *testing.T) {
+	binaryName := "cpa"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binary := filepath.Join(t.TempDir(), binaryName)
+	if err := os.WriteFile(binary, nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pluginDir := t.TempDir()
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeBinary, err := filepath.Rel(workingDir, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativePluginDir, err := filepath.Rel(workingDir, pluginDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBuildInfo := func(string) (*debug.BuildInfo, error) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: cpaSHA}}}, nil
+	}
+
+	absolutePaths, err := resolveCPAPathsWithBuildInfo(binary, pluginDir, readBuildInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativePaths, err := resolveCPAPathsWithBuildInfo(relativeBinary, relativePluginDir, readBuildInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relativePaths != absolutePaths {
+		t.Fatalf("relative paths = %#v, absolute paths = %#v", relativePaths, absolutePaths)
+	}
+	if !filepath.IsAbs(absolutePaths.binary) || !filepath.IsAbs(absolutePaths.pluginDir) {
+		t.Fatalf("resolved paths are not absolute: %#v", absolutePaths)
+	}
+}
+
+func TestRevisionRejectsWrongAndMissingVCSRevision(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pluginDir := t.TempDir()
+	for _, tc := range []struct {
+		name     string
+		settings []debug.BuildSetting
+		actual   string
+	}{
+		{name: "wrong", settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "wrong-revision"}}, actual: "wrong-revision"},
+		{name: "missing", actual: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolveCPAPathsWithBuildInfo(binary, pluginDir, func(string) (*debug.BuildInfo, error) {
+				return &debug.BuildInfo{Settings: tc.settings}, nil
+			})
+			if err == nil {
+				t.Fatal("expected revision mismatch")
+			}
+			if !strings.Contains(err.Error(), cpaSHA) || !strings.Contains(err.Error(), fmt.Sprintf("%q", tc.actual)) {
+				t.Fatalf("mismatch error %q does not include expected %q and actual %q", err, cpaSHA, tc.actual)
+			}
+		})
+	}
+}
+
+func TestReadinessUsesAuthenticatedModelsEndpoint(t *testing.T) {
+	type readinessRequest struct {
+		method        string
+		authorization string
+	}
+	seenRequest := make(chan readinessRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		seenRequest <- readinessRequest{method: r.Method, authorization: r.Header.Get("Authorization")}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	logPath := filepath.Join(t.TempDir(), "cpa.log")
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForCPA(t, &cpaInstance{
+		baseURL:  server.URL,
+		waitDone: make(chan error),
+		logPath:  logPath,
+	})
+	request := <-seenRequest
+	if request.method != http.MethodGet {
+		t.Fatalf("method = %q", request.method)
+	}
+	if request.authorization != "Bearer "+downstreamKey {
+		t.Fatalf("Authorization = %q", request.authorization)
+	}
+}
+
+func TestHTTPClientTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	started := time.Now()
+	_, err := integrationHTTPClient.Get(server.URL)
+	if err == nil {
+		t.Fatal("request unexpectedly completed")
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("error = %v, want timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed < 4*time.Second || elapsed > 10*time.Second {
+		t.Fatalf("HTTP timeout elapsed = %v", elapsed)
+	}
+}
+
+func TestTCPTimeoutAfterConnection(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err == nil {
+			accepted <- connection
+		}
+	}()
+
+	connection, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	serverConnection := <-accepted
+	defer serverConnection.Close()
+	if err := setIntegrationDeadline(connection); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	_, err = connection.Read(make([]byte, 1))
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("error = %v, want timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed < 4*time.Second || elapsed > 10*time.Second {
+		t.Fatalf("TCP timeout elapsed = %v", elapsed)
+	}
+}
 
 type upstreamCapture struct {
 	mu       sync.Mutex
@@ -71,6 +286,14 @@ type cpaInstance struct {
 	wsURL    string
 	waitDone chan error
 	logPath  string
+	logFile  *os.File
+	logClose sync.Once
+}
+
+func (cpa *cpaInstance) closeLogFile() {
+	cpa.logClose.Do(func() {
+		_ = cpa.logFile.Close()
+	})
 }
 
 func newMockUpstream(t *testing.T) *mockUpstream {
@@ -139,13 +362,9 @@ func acceptedUpstreamPath(path string) bool {
 func startCPA(t *testing.T, upstreamURL string, pluginsEnabled bool, censorshipYAML string) *cpaInstance {
 	t.Helper()
 
-	binary := os.Getenv("CPA_INTEGRATION_BIN")
-	if binary == "" {
-		t.Fatal("CPA_INTEGRATION_BIN is required")
-	}
-	pluginDir := os.Getenv("CENSORSHIP_PLUGIN_DIR")
-	if pluginDir == "" {
-		t.Fatal("CENSORSHIP_PLUGIN_DIR is required")
+	paths, err := resolveCPAPaths(os.Getenv("CPA_INTEGRATION_BIN"), os.Getenv("CENSORSHIP_PLUGIN_DIR"))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -175,7 +394,7 @@ plugins:
   enabled: %t
   dir: %q
   configs:
-`, port, downstreamKey, upstreamURL, modelName, modelName, pluginsEnabled, pluginDir)
+`, port, downstreamKey, upstreamURL, modelName, modelName, pluginsEnabled, paths.pluginDir)
 	if err := os.WriteFile(configPath, []byte(baseConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +405,7 @@ plugins:
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(binary, "--config", configPath, "--no-browser")
+	cmd := exec.Command(paths.binary, "--config", configPath, "--no-browser")
 	cmd.Dir = runDir
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -202,14 +421,16 @@ plugins:
 		wsURL:    fmt.Sprintf("ws://127.0.0.1:%d/v1/responses", port),
 		waitDone: make(chan error, 1),
 		logPath:  logPath,
+		logFile:  logFile,
 	}
 	go func() {
-		cpa.waitDone <- cmd.Wait()
+		waitErr := cmd.Wait()
+		cpa.closeLogFile()
+		cpa.waitDone <- waitErr
 		close(cpa.waitDone)
 	}()
 	t.Cleanup(func() {
 		stopCPA(t, cpa)
-		_ = logFile.Close()
 	})
 
 	waitForCPA(t, cpa)
@@ -247,23 +468,20 @@ func writePluginConfig(t *testing.T, path, censorshipYAML string) {
 func waitForCPA(t *testing.T, cpa *cpaInstance) {
 	t.Helper()
 
-	client := &http.Client{Timeout: 250 * time.Millisecond}
 	deadline := time.Now().Add(20 * time.Second)
-	httpReady := false
 	for time.Now().Before(deadline) {
 		request, err := http.NewRequest(http.MethodGet, cpa.baseURL+"/v1/models", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+downstreamKey)
-		response, err := client.Do(request)
+		response, err := integrationHTTPClient.Do(request)
 		if err == nil {
 			_, _ = io.Copy(io.Discard, response.Body)
 			_ = response.Body.Close()
-			httpReady = httpReady || response.StatusCode == http.StatusOK
-		}
-		if httpReady && strings.Contains(readCPALog(cpa.logPath), "file watcher started for config and auth directory changes") {
-			return
+			if response.StatusCode == http.StatusOK {
+				return
+			}
 		}
 		select {
 		case waitErr := <-cpa.waitDone:
@@ -282,6 +500,17 @@ func stopCPA(t *testing.T, cpa *cpaInstance) {
 	case <-cpa.waitDone:
 		return
 	default:
+	}
+	if runtime.GOOS == "windows" {
+		_ = terminateCPA(cpa.cmd.Process.Pid)
+		if waitForProcess(cpa.waitDone, 2*time.Second) {
+			return
+		}
+		_ = cpa.cmd.Process.Kill()
+		if !waitForProcess(cpa.waitDone, 2*time.Second) {
+			t.Errorf("CPA did not exit after kill\n%s", readCPALog(cpa.logPath))
+		}
+		return
 	}
 	_ = cpa.cmd.Process.Signal(os.Interrupt)
 	if waitForProcess(cpa.waitDone, 2*time.Second) {
@@ -332,7 +561,7 @@ func postJSON(t *testing.T, target string, body []byte) (int, http.Header, []byt
 	}
 	request.Header.Set("Authorization", "Bearer "+downstreamKey)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
+	response, err := integrationHTTPClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,11 +598,14 @@ func captureHTTP11Trace(t *testing.T, target, key string, body []byte) responseT
 	if endpoint.Port() == "" {
 		address = net.JoinHostPort(endpoint.Hostname(), "80")
 	}
-	connection, err := net.DialTimeout("tcp", address, 5*time.Second)
+	connection, err := net.DialTimeout("tcp", address, integrationIOTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer connection.Close()
+	if err := setIntegrationDeadline(connection); err != nil {
+		t.Fatal(err)
+	}
 
 	request, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
@@ -495,5 +727,13 @@ func dialResponsesWebSocket(t *testing.T, target, key string) *websocket.Conn {
 	if err != nil {
 		t.Fatalf("dial Responses WebSocket: %v", err)
 	}
+	if err := setIntegrationDeadline(connection.UnderlyingConn()); err != nil {
+		_ = connection.Close()
+		t.Fatal(err)
+	}
 	return connection
+}
+
+func setIntegrationDeadline(connection net.Conn) error {
+	return connection.SetDeadline(time.Now().Add(integrationIOTimeout))
 }

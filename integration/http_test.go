@@ -52,10 +52,31 @@ func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [alpha-only]\n")
+	status, _, body := postChat(t, cpa, "alpha-only")
+	if status != 400 || gjson.GetBytes(body, "error.term").String() != "alpha-only" {
+		t.Fatalf("snapshot A did not block alpha-only: status=%d body=%s", status, body)
+	}
+	if upstream.requestCount() != 0 {
+		t.Fatal("snapshot A block reached upstream")
+	}
+
+	watcherDeadline := time.Now().Add(20 * time.Second)
+	for {
+		writePluginConfig(t, cpa.config, "mode: block\nwords: [alpha-only, watcher-ready-only]\n")
+		status, _, body = postChat(t, cpa, "watcher-ready-only")
+		if status == 400 && gjson.GetBytes(body, "error.term").String() == "watcher-ready-only" {
+			break
+		}
+		if time.Now().After(watcherDeadline) {
+			t.Fatalf("config watcher not observed, last status=%d body=%s\n%s", status, body, readCPALog(cpa.logPath))
+		}
+		time.Sleep(time.Second)
+	}
+
 	writePluginConfig(t, cpa.config, "mode: block\nignore_case: true\nwords: [beta-only]\n")
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		status, _, body := postChat(t, cpa, "BETA-ONLY")
+		status, _, body = postChat(t, cpa, "BETA-ONLY")
 		if status == 400 && gjson.GetBytes(body, "error.term").String() == "beta-only" {
 			break
 		}
@@ -64,11 +85,52 @@ func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	for i := 0; i < 50; i++ {
-		status, _, body := postChat(t, cpa, "BETA-ONLY")
-		if status != 400 || gjson.GetBytes(body, "error.term").String() != "beta-only" {
-			t.Fatalf("post-linearization request %d saw non-B config: %d %s", i, status, body)
-		}
+	requestsBeforeAlpha := upstream.requestCount()
+	status, _, body = postChat(t, cpa, "alpha-only")
+	if status != 200 {
+		t.Fatalf("snapshot B still blocked alpha-only: status=%d body=%s", status, body)
+	}
+	if got, want := upstream.requestCount(), requestsBeforeAlpha+1; got != want {
+		t.Fatalf("snapshot B alpha-only request count = %d, want %d", got, want)
+	}
+}
+
+func TestHTTPResponsesBlockStringInput(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\n")
+	status, _, body := postJSON(t, cpa.baseURL+"/v1/responses", []byte(`{"model":"censorship-integration-model","input":"SECRET"}`))
+	if status != 400 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if upstream.requestCount() != 0 {
+		t.Fatal("blocked Responses input reached upstream")
+	}
+}
+
+func TestHTTPResponsesTransformsStringInput(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
+	status, _, body := postJSON(t, cpa.baseURL+"/v1/responses", []byte(`{"model":"censorship-integration-model","input":"SECRET input"}`))
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	captured := upstream.lastRequest()
+	if got := gjson.GetBytes(captured, "messages.0.content").String(); got != " input" {
+		t.Fatalf("upstream input = %q, body = %s", got, captured)
+	}
+}
+
+func TestHTTPResponsesTransformsStructuredInputText(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
+	body := []byte(`{"model":"censorship-integration-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"SECRET input"}]}]}`)
+	status, _, response := postJSON(t, cpa.baseURL+"/v1/responses", body)
+	if status != 200 {
+		t.Fatalf("status=%d body=%s", status, response)
+	}
+	captured := upstream.lastRequest()
+	if got := gjson.GetBytes(captured, "messages.0.content.0.text").String(); got != " input" {
+		t.Fatalf("upstream input text = %q, body = %s", got, captured)
 	}
 }
 
