@@ -124,7 +124,60 @@ func requireContained(root, path string) error {
 	if rel == "." || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("path %q escapes integration root %q", path, root)
 	}
+	for ancestor := path; ; ancestor = filepath.Dir(ancestor) {
+		info, err := os.Lstat(ancestor)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("inspect path %q: %w", ancestor, err)
+		}
+		if err == nil && info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return fmt.Errorf("path %q escapes integration root %q through a link", path, root)
+		}
+		if ancestor == root {
+			break
+		}
+	}
+	canonicalRoot, err := canonicalExistingPath(root)
+	if err != nil {
+		return err
+	}
+	canonicalPath, err := canonicalExistingPath(path)
+	if err != nil {
+		return err
+	}
+	canonicalRel, err := filepath.Rel(canonicalRoot, canonicalPath)
+	if err != nil {
+		return fmt.Errorf("resolve %q relative to %q: %w", canonicalPath, canonicalRoot, err)
+	}
+	if canonicalRel == "." || canonicalRel == ".." || filepath.IsAbs(canonicalRel) || strings.HasPrefix(canonicalRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q escapes integration root %q", path, root)
+	}
 	return nil
+}
+
+func canonicalExistingPath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("make path absolute %q: %w", path, err)
+	}
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			for _, component := range missing {
+				resolved = filepath.Join(resolved, component)
+			}
+			return resolved, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve path %q: %w", path, err)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", fmt.Errorf("resolve path %q: no existing ancestor", path)
+		}
+		missing = append([]string{filepath.Base(path)}, missing...)
+		path = parent
+	}
 }
 
 func removeContained(root, path string) error {

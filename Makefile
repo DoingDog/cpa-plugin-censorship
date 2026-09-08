@@ -31,9 +31,9 @@ integration:
 	$(GO) run ./.github/scripts/integration-runner.go
 
 validate-version:
-	@test -n "$(NORMALIZED_VERSION)" || { echo "VERSION must not normalize to an empty release version"; exit 2; }
+	@version="$(NORMALIZED_VERSION)"; case "$$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) echo "VERSION must normalize to a safe non-empty release version"; exit 2;; esac
 
-build-platform:
+build-platform: validate-version
 	@test -n "$(GOOS)" && test -n "$(GOARCH)" || { echo "GOOS and GOARCH are required"; exit 2; }
 	@mkdir -p "$(DIST_DIR)"
 	CGO_ENABLED=1 $(if $(strip $(BUILD_CC)),CC="$(BUILD_CC)") GOOS="$(GOOS)" GOARCH="$(GOARCH)" $(GO) build -trimpath -buildmode=c-shared -ldflags='-s -w -X main.pluginVersion=$(NORMALIZED_VERSION)' -o "$(LIBRARY)" .

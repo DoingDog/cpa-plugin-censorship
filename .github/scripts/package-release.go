@@ -227,21 +227,42 @@ func pathsAlias(firstPath, secondPath string) (bool, error) {
 	if firstPath == secondPath || runtime.GOOS == "windows" && strings.EqualFold(firstPath, secondPath) {
 		return true, nil
 	}
-	firstInfo, err := os.Stat(firstPath)
+	firstInfo, firstSuffix, err := existingPathAncestor(firstPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		return false, err
+	}
+	secondInfo, secondSuffix, err := existingPathAncestor(secondPath)
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(firstInfo, secondInfo) || len(firstSuffix) != len(secondSuffix) {
+		return false, nil
+	}
+	for i := range firstSuffix {
+		if firstSuffix[i] != secondSuffix[i] && (runtime.GOOS != "windows" || !strings.EqualFold(firstSuffix[i], secondSuffix[i])) {
 			return false, nil
 		}
-		return false, fmt.Errorf("stat path %s: %w", filepath.ToSlash(firstPath), err)
 	}
-	secondInfo, err := os.Stat(secondPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
+	return true, nil
+}
+
+func existingPathAncestor(path string) (os.FileInfo, []string, error) {
+	var suffix []string
+	for {
+		info, err := os.Stat(path)
+		if err == nil {
+			return info, suffix, nil
 		}
-		return false, fmt.Errorf("stat path %s: %w", filepath.ToSlash(secondPath), err)
+		if !os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("stat path %s: %w", filepath.ToSlash(path), err)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return nil, nil, fmt.Errorf("find existing ancestor for %s", filepath.ToSlash(path))
+		}
+		suffix = append([]string{filepath.Base(path)}, suffix...)
+		path = parent
 	}
-	return os.SameFile(firstInfo, secondInfo), nil
 }
 
 func packageLibrary(libraryPath, archivePath string) error {

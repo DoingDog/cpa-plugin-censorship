@@ -129,6 +129,49 @@ func TestPrepareCheckoutReusesCheckoutAfterRemovingGeneratedTests(t *testing.T) 
 	}
 }
 
+func TestPrepareCheckoutRejectsSymlinkedCheckoutBeforeRemovingGeneratedTests(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	runGitTest(t, outside, "init")
+	runGitTest(t, outside, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
+	head := strings.TrimSpace(runGitOutput(t, outside, "rev-parse", "HEAD"))
+	generated := filepath.Join(outside, "integration", "censorshipplugin", "generated_test.go")
+	if err := os.MkdirAll(filepath.Dir(generated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(generated, []byte("package censorshipplugin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.integrationRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDirectory(t, outside, paths.checkout)
+
+	if err := prepareCheckout(paths, head); err == nil {
+		t.Fatal("symlinked checkout accepted")
+	}
+	if _, err := os.Stat(generated); err != nil {
+		t.Fatalf("generated test outside integration root was removed: %v", err)
+	}
+}
+
+func linkDirectory(t *testing.T, target, link string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if output, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+			t.Fatalf("create junction: %v\n%s", err, output)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCopyIntegrationFilesCopiesBenchmarkFixture(t *testing.T) {
 	root := t.TempDir()
 	paths, err := resolveRunnerPaths(root)

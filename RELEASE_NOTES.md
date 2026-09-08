@@ -75,20 +75,20 @@ There is no Unicode normalization and no full case folding. `strip` removes the 
 
 Selectors enter only documented text leaves; there is no recursive fallback string walker.
 
-- OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, and documented `tool` and legacy `function` result text; Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, plus documented function/custom-tool result-output text. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Responses `output_text` and `refusal` use canonical `assistant`; documented tool/function result text uses canonical `tool`.
-- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, and only typed-text entries nested in a user `tool_result`. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
+- OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, and documented `tool` and legacy `function` result text; Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, plus documented `function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Responses `output_text` and `refusal` use canonical `assistant`; documented tool/function result text uses canonical `tool`.
+- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
 - Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role.
 - Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content.
 
 OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Gemini `model` maps to `assistant`.
 
-assistant is inspected only when explicitly listed in scope.roles. It applies to assistant history carried in a later request and never enables live output filtering. tool is inspected only for documented OpenAI and Claude result-text paths, including OpenAI string tool content and Claude typed text tool_result content.
+assistant is inspected only when explicitly listed in scope.roles. It applies to assistant history carried in a later request and never enables live output filtering. tool is inspected only for documented OpenAI and Claude result-text paths, including OpenAI string tool content and Claude selected tool_result text.
 
 ## Machine exclusions
 
 Machine exclusions: tool calls, tool schemas, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed. Text result fields listed above are the only tool/function result exception.
 
-Tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude non-typed-text tool results, Gemini `functionResponse`, Interactions function/tool data, and every model response remain excluded. Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers.
+Tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude unselected tool-result fields, Gemini `functionResponse`, Interactions function/tool data, and every model response remain excluded. Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers.
 
 Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Unknown SourceFormat, roles, item types, content blocks, and future protocol shapes are left unchanged. Enabled known formats reject JSON objects with duplicate member names at any nesting depth. JSON text inside a string remains ordinary text rather than a nested request object.
 
@@ -128,4 +128,4 @@ censorship_<version>_<goos>_<goarch>.zip.sha256
 
 Supported tuples are `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`, and `freebsd/amd64`. One lowercase ASCII `v` is removed from tag, `VERSION`, and packager `-version` inputs.
 
-Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. This repository does not add a license file. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.
+Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.
