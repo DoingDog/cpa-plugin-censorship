@@ -558,6 +558,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
 		for _, token := range required {
 			if !bytes.Contains(raw, []byte(token)) {
 				t.Errorf("%s missing %q", name, token)
