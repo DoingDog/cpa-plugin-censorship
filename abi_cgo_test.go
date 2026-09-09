@@ -238,3 +238,71 @@ func TestBorrowedABIResponseSurvivesHostRequestPoison(t *testing.T) {
 		t.Fatal("response contains poisoned host request bytes")
 	}
 }
+
+func BenchmarkPluginRequestOwnership(b *testing.B) {
+	for _, size := range []struct {
+		name string
+		len  int
+	}{
+		{name: "1KiB", len: 1 << 10},
+		{name: "1MiB", len: 1 << 20},
+		{name: "20MiB", len: 20 << 20},
+	} {
+		input := bytes.Repeat([]byte{0xa5}, size.len)
+		input[0] = 0x7f
+		input[len(input)-1] = 0x2a
+		requestPtr := unsafe.Pointer(&input[0])
+
+		for _, impl := range []struct {
+			name    string
+			request func(unsafe.Pointer, uint64) ([]byte, error)
+		}{
+			{name: "copy", request: copyPluginRequest},
+			{name: "borrow", request: borrowedRequest},
+		} {
+			impl := impl
+			b.Run("impl="+impl.name+"/body="+size.name+"/serial", func(b *testing.B) {
+				var result []byte
+				b.ReportAllocs()
+				b.SetBytes(int64(len(input)))
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					var err error
+					result, err = impl.request(requestPtr, uint64(len(input)))
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+				b.StopTimer()
+				if len(result) != len(input) || result[0] != input[0] || result[len(result)-1] != input[len(input)-1] {
+					b.Fatal("request result does not match input")
+				}
+			})
+			b.Run("impl="+impl.name+"/body="+size.name+"/parallel", func(b *testing.B) {
+				b.ReportAllocs()
+				b.SetBytes(int64(len(input)))
+				b.ResetTimer()
+				b.RunParallel(func(pb *testing.PB) {
+					var result []byte
+					ran := false
+					for pb.Next() {
+						var err error
+						result, err = impl.request(requestPtr, uint64(len(input)))
+						if err != nil {
+							b.Error(err)
+							return
+						}
+						ran = true
+					}
+					if !ran {
+						return
+					}
+					if len(result) != len(input) || result[0] != input[0] || result[len(result)-1] != input[len(input)-1] {
+						b.Error("request result does not match input")
+					}
+				})
+				b.StopTimer()
+			})
+		}
+	}
+}

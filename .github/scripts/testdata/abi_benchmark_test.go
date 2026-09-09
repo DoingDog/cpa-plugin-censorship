@@ -17,8 +17,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var benchmarkDynamicABIResponseSink pluginapi.RequestInterceptResponse
-
 func TestDynamicABIResponseOracle(t *testing.T) {
 	input := dynamicABIBody(1024)
 	stripped := bytes.ReplaceAll(input, []byte("BLOCKME"), nil)
@@ -69,9 +67,6 @@ func BenchmarkDynamicABIRequestInterceptors(b *testing.B) {
 	for _, size := range []int{1 << 10, 1 << 20, 20 << 20} {
 		input := dynamicABIBody(size)
 		stripped := bytes.ReplaceAll(input, []byte("BLOCKME"), nil)
-		newRequest := func() pluginapi.RequestInterceptRequest {
-			return pluginapi.RequestInterceptRequest{RequestID: "abi-benchmark", SourceFormat: "openai", Body: bytes.Clone(input)}
-		}
 		cases := []struct {
 			phase    string
 			expected []byte
@@ -87,8 +82,8 @@ func BenchmarkDynamicABIRequestInterceptors(b *testing.B) {
 		for _, tc := range cases {
 			tc := tc
 			name := fmt.Sprintf("GOOS=%s/loader=%s/phase=%s/calls=1/body=%d", runtime.GOOS, loader, tc.phase, size)
-			b.Run(name, func(b *testing.B) {
-				request := newRequest()
+			b.Run(name+"/serial", func(b *testing.B) {
+				request := pluginapi.RequestInterceptRequest{RequestID: "abi-benchmark", SourceFormat: "openai", Body: bytes.Clone(input)}
 				response := tc.call(request)
 				if err := validateDynamicABIResponse(tc.phase, input, request.Body, response, tc.expected); err != nil {
 					b.Fatal(err)
@@ -97,9 +92,37 @@ func BenchmarkDynamicABIRequestInterceptors(b *testing.B) {
 				b.SetBytes(int64(len(input)))
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					request := newRequest()
-					benchmarkDynamicABIResponseSink = tc.call(request)
+					response = tc.call(request)
 				}
+				b.StopTimer()
+				if err := validateDynamicABIResponse(tc.phase, input, request.Body, response, tc.expected); err != nil {
+					b.Fatal(err)
+				}
+			})
+			b.Run(name+"/parallel", func(b *testing.B) {
+				request := pluginapi.RequestInterceptRequest{RequestID: "abi-benchmark", SourceFormat: "openai", Body: bytes.Clone(input)}
+				response := tc.call(request)
+				if err := validateDynamicABIResponse(tc.phase, input, request.Body, response, tc.expected); err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs() // Host Go runtime allocations only.
+				b.SetBytes(int64(len(input)))
+				b.ResetTimer()
+				b.RunParallel(func(pb *testing.PB) {
+					var response pluginapi.RequestInterceptResponse
+					ran := false
+					for pb.Next() {
+						response = tc.call(request)
+						ran = true
+					}
+					if !ran {
+						return
+					}
+					if err := validateDynamicABIResponse(tc.phase, input, request.Body, response, tc.expected); err != nil {
+						b.Error(err)
+					}
+				})
+				b.StopTimer()
 			})
 		}
 	}

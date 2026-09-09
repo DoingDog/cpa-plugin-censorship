@@ -1782,4 +1782,106 @@ Artifacts：
 
 初始 scoped review 报告 2 项 Important 和 4 项 Minor finding。fix round 1 保存删除前的 KMP source snapshot，修正 retry method 与全部 KMP ranges，并区分 construction 和 dispatch。parent 将保留项重建为 source-only commit `d07a8f3`，再单独加入这段修正后的 TDD evidence。
 
+## Task 9：native ABI input ownership measurement
+
+### Corrected dynamic benchmark harness
+
+`.github/scripts/testdata/abi_benchmark_test.go` 现在为每个 subbenchmark 在计时前创建一个 immutable request，并以值重复传给 interceptor。serial 在计时前和停止计时后验证 final response 及原 request；`RunParallel` 只共享 immutable request，每个 worker 保存并验证自己的 final response，不再写 shared sink。两处 `ReportAllocs` 均标注只统计 host Go runtime allocations。
+
+harness mutation oracle 使用最终 post-loop validator。暂时在计时后执行 `request.Body[0] = '!'` 时，以下命令按预期失败并报告 `before request body was mutated` 与 `after request body was mutated`：
+
+```powershell
+go run ./.github/scripts/integration-runner.go -bench-abi
+```
+
+删除 mutation 后，同一命令通过全部 12 个 1 KiB、1 MiB、20 MiB、before/after、serial/parallel subbenchmark，耗时 `25.830s`。`TestDynamicABIResponseOracle` 永久覆盖 successful strip、terminated response、empty response 和 mutated request。
+
+### Plugin-local copy versus borrow
+
+`BenchmarkPluginRequestOwnership` 直接调用 production `copyPluginRequest` 和 test-only `borrowedRequest`，覆盖 1 KiB、1 MiB、20 MiB 的 serial 与 `RunParallel`。输入及首尾 sentinel 在计时前构造；serial 和每个实际执行 iteration 的 parallel worker 在计时后验证长度、首字节和尾字节。
+
+每个 `go test` 都是独立 process。对 `-cpu=1,16` 分别执行 forward `copy -> borrow` 与 reverse `borrow -> copy`，每轮两个 implementation，各 10 轮。四份 raw series 对每个 implementation、每个 benchmark key 均有 `n=10`，并分别运行 `benchstat -col /impl`。首次把未展开的 `-cpu=$cpu` 传给 Go 的失败文件没有产生 sample，未纳入统计。
+
+`benchstat` 的 `sec/op` 中位数如下：
+
+| CPU | 顺序 | body | serial copy | serial borrow | parallel copy | parallel borrow |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | forward | 1 KiB | 107.050 ns | 2.034 ns | 108.300 ns | 2.261 ns |
+| 1 | forward | 1 MiB | 70.364 µs | 2.031 ns | 69.235 µs | 2.268 ns |
+| 1 | forward | 20 MiB | 921.882 µs | 2.032 ns | 940.834 µs | 2.264 ns |
+| 1 | reverse | 1 KiB | 107.900 ns | 2.028 ns | 107.800 ns | 2.271 ns |
+| 1 | reverse | 1 MiB | 67.530 µs | 2.032 ns | 68.905 µs | 2.272 ns |
+| 1 | reverse | 20 MiB | 935.067 µs | 2.038 ns | 925.646 µs | 2.263 ns |
+| 16 | forward | 1 KiB | 206.250 ns | 2.049 ns | 231.350 ns | 0.3426 ns |
+| 16 | forward | 1 MiB | 92.019 µs | 2.061 ns | 33.071 µs | 0.3527 ns |
+| 16 | forward | 20 MiB | 808.993 µs | 2.050 ns | 455.062 µs | 0.3558 ns |
+| 16 | reverse | 1 KiB | 202.450 ns | 2.067 ns | 235.550 ns | 0.3667 ns |
+| 16 | reverse | 1 MiB | 137.445 µs | 2.055 ns | 33.967 µs | 0.3482 ns |
+| 16 | reverse | 20 MiB | 795.096 µs | 2.062 ns | 454.150 µs | 0.3600 ns |
+
+全部 copy rows 为一个 input-sized allocation 和 `1 allocs/op`；全部 borrow rows 为 `0 B/op` 和 `0 allocs/op`。CPU 16 parallel 的 testing harness 只带来少量摊销字节差异。CPU 1 的 120 个 parallel rows 最小 `b.N=1148 > GOMAXPROCS(1)`；CPU 16 的 120 个 parallel rows 最小 `b.N=2340 > GOMAXPROCS(16)`。
+
+该结果只证明 ownership primitive 的局部时间和 allocation 特征，不是 copied-production versus borrowed-production 对照，也不证明 borrowed view 在 native ABI 中安全。
+
+### Dynamic copied baseline blocker
+
+按计划启动 copied production 的 10-process dynamic baseline：
+
+```powershell
+$baseline = Join-Path $env:TEMP 'cpa-v021-dynamic-abi-baseline-20260909-141807-cce76e46bc83436f882abbe175048035.txt'
+1..10 | ForEach-Object {
+  go run ./.github/scripts/integration-runner.go -bench-abi | Add-Content $baseline
+}
+```
+
+第 1 个 process 完成全部 12 个 subbenchmark。它只是单个 process sample，不用于统计：
+
+| body | phase | mode | sec/op | B/op | allocs/op |
+| ---: | --- | --- | ---: | ---: | ---: |
+| 1 KiB | before | serial | 55.227 µs | 11,157 | 31 |
+| 1 KiB | before | parallel | 14.835 µs | 11,169 | 31 |
+| 1 KiB | after | serial | 20.912 µs | 6,300 | 29 |
+| 1 KiB | after | parallel | 4.136 µs | 6,286 | 29 |
+| 1 MiB | before | serial | 27.151 ms | 10,002,358 | 37 |
+| 1 MiB | before | parallel | 5.403 ms | 10,698,921 | 38 |
+| 1 MiB | after | serial | 1.348 ms | 4,145,213 | 31 |
+| 1 MiB | after | parallel | 281.688 µs | 4,279,593 | 31 |
+| 20 MiB | before | serial | 505.482 ms | 223,729,700 | 42 |
+| 20 MiB | before | parallel | 106.029 ms | 223,726,736 | 42 |
+| 20 MiB | after | serial | 17.774 ms | 94,434,084 | 33 |
+| 20 MiB | after | parallel | 4.672 ms | 84,447,530 | 31 |
+
+第 2 个 process 在 `before/1024/parallel-16` 的 copied path 发生 Windows access violation：
+
+```plaintext
+unexpected fault address 0x3ad8c1816c9a
+fatal error: fault
+runtime.gobytes(0x3ad8c1816700, 0x61a)
+main.copyPluginRequest(0x3ad8c1816700, 0x61a)
+    github.com/DoingDog/cpa-plugin-censorship/abi_cgo.go:94
+main.cliproxyPluginCall(..., 0x3ad8c1816700, 0x61a, ...)
+    github.com/DoingDog/cpa-plugin-censorship/abi_cgo.go:175
+```
+
+因此没有形成完整的 10-sample dynamic baseline，不能对该系列运行有效的 end-to-end `benchstat`，也没有构建 production borrowed candidate。
+
+首个 process 的 `before/20MiB/parallel-16` 为 `b.N=12 < GOMAXPROCS(16)`。只对该 subset 运行 10 个独立 process 的固定 `-benchtime=17x` replacement；全部 rows 为 `b.N=17 > 16`。结果为 `111.2 ms/op ±4%`、`179.8 MiB/s ±4%`、`210.2 MiB/op ±0%` 和 `45.00 allocs/op ±2%`。这只替换一个无效 row，不补足其余九个缺失 process samples。
+
+动态 `B/op` 包含 host、serialization 和 request processing 的 Go allocations。它不观察 native allocator，不能单独归因给 plugin 的 `C.GoBytes`。
+
+### Windows loader liveness gate and decision
+
+Pinned dependency `github.com/router-for-me/CLIProxyAPI/v7 v7.2.152` 的 `internal/pluginhost/loader_windows.go:269-292` 先把 `&request[0]` 转成 `uintptr`，再把整数传给 `syscall.SyscallN`。native call 后没有 `runtime.KeepAlive(request)`，也没有其他可见的 backing-slice liveness 保证。`uintptr` 不供 Go GC 跟踪。
+
+动态 fault 发生在 plugin `C.GoBytes` 读取 host 交付的 request pointer 时，与该缺失保证一致。这是 pinned CLIProxyAPI Windows loader 的 core defect，不在本 plugin 的允许修改范围。`C.GoBytes` 无法修复已经失效的 host pointer；production borrowed view 会继续依赖同一 host memory，correctness gate 因而失败。
+
+决策为 `KEEP_COPY_REJECT_BORROW`：
+
+- `abi_cgo.go` 不修改，production before-auth path 继续由 `copyPluginRequest` 调用 `C.GoBytes`。
+- 不把保留 copy 表述为 host pointer handoff 已安全。
+- 保留 corrected dynamic harness 和 `BenchmarkPluginRequestOwnership`，供 upstream dependency 提供 liveness 保证后重新采样。
+- 不提交 raw benchmark、`.integration/` 或 `dist/` artifacts。
+
+验证结果：focused correctness PASS（`0.058s`），focused race 和 `checkptr=2` PASS（`1.082s`），harness RED 按预期失败，harness GREEN PASS，80-process plugin-local series PASS，`make integration` PASS，`git diff --check` PASS。
+
 ## Final verification
