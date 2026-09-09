@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -297,15 +298,21 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 }
 
 func TestCompileSnapshotBuildsOnlyActiveDerivedData(t *testing.T) {
+	exactBlockConfig := func(ruleCount int) string {
+		return "mode: block\nwords:\n" + strings.Repeat("  - K\n", ruleCount)
+	}
 	tests := []struct {
-		name               string
-		raw                string
-		wantRunes          bool
-		wantBlockMatcher   bool
-		wantRewriteMatcher bool
-		wantExact          string
+		name                  string
+		raw                   string
+		wantRunes             bool
+		wantBlockMatcher      bool
+		wantRewriteMatcher    bool
+		wantExactBlockMatcher bool
+		wantExact             string
 	}{
 		{name: "exact block", raw: "mode: block\nwords: [K]\n"},
+		{name: "exact block below matcher threshold", raw: exactBlockConfig(254)},
+		{name: "exact block at matcher threshold", raw: exactBlockConfig(255), wantExactBlockMatcher: true},
 		{name: "exact strip", raw: "mode: strip\nwords: [K]\n"},
 		{name: "exact obfs", raw: "mode: obfs\nwords: [éx]\n", wantExact: "é​x"},
 		{name: "folded block", raw: "mode: block\nignore_case: true\nwords: [K]\n", wantRunes: true, wantBlockMatcher: true},
@@ -322,6 +329,9 @@ func TestCompileSnapshotBuildsOnlyActiveDerivedData(t *testing.T) {
 			}
 			if got := cfg.RewriteMatcher != nil; got != test.wantRewriteMatcher {
 				t.Fatalf("RewriteMatcher present = %t, want %t", got, test.wantRewriteMatcher)
+			}
+			if got := cfg.ExactBlockMatcher != nil; got != test.wantExactBlockMatcher {
+				t.Fatalf("ExactBlockMatcher present = %t, want %t", got, test.wantExactBlockMatcher)
 			}
 			for i, rule := range cfg.Rules {
 				if got := rule.Runes != nil; got != test.wantRunes {

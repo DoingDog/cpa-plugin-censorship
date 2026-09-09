@@ -19,7 +19,7 @@ type textSpan struct {
 const (
 	foldRewritePreflightMinRules     = 8
 	foldRewritePreflightMinTextBytes = 4 << 10
-	exactByteMatcherMinRules         = 256
+	exactByteMatcherMinRules         = 255
 	exactByteMatcherMinTextBytes     = 16 << 10
 	exactByteMatcherPrefixRules      = 4
 	foldKMPMinPatternScalars         = 4

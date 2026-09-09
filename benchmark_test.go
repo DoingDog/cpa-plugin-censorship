@@ -438,6 +438,14 @@ func BenchmarkExactBlockStrategies(b *testing.B) {
 	runBenchmarkExactBlockStrategies(b)
 }
 
+func BenchmarkExactBlockThreshold(b *testing.B) {
+	runBenchmarkExactBlockThreshold(b)
+}
+
+func BenchmarkExactBlockMatcherBuild(b *testing.B) {
+	runBenchmarkExactBlockMatcherBuild(b)
+}
+
 func BenchmarkFoldedRewriteStrategies(b *testing.B) {
 	runBenchmarkFoldedRewriteStrategies(b)
 }
@@ -467,14 +475,15 @@ func BenchmarkMixedTransformScenario(b *testing.B) {
 }
 
 var (
-	benchmarkBoolSink      bool
-	benchmarkBytesSink     []byte
-	benchmarkEnvelopeSink  []byte
-	benchmarkErrorSink     error
-	benchmarkFoldRuleSink  int
-	benchmarkSpansSink     []textSpan
-	benchmarkStringSink    string
-	benchmarkTransformSink transformResult
+	benchmarkBoolSink        bool
+	benchmarkByteMatcherSink *byteMatcher
+	benchmarkBytesSink       []byte
+	benchmarkEnvelopeSink    []byte
+	benchmarkErrorSink       error
+	benchmarkFoldRuleSink    int
+	benchmarkSpansSink       []textSpan
+	benchmarkStringSink      string
+	benchmarkTransformSink   transformResult
 )
 
 func runBenchmarkDuplicateValidation(b *testing.B) {
@@ -1231,4 +1240,130 @@ func benchmarkSizedText(size int, match string) string {
 		panic("benchmark match exceeds text size")
 	}
 	return strings.Repeat("x", size-len(match)) + match
+}
+
+type benchmarkExactBlockThresholdCase struct {
+	rules, textBytes, target int
+	match                    string
+}
+
+func benchmarkExactBlockThresholdCases() []benchmarkExactBlockThresholdCase {
+	cases := make([]benchmarkExactBlockThresholdCase, 0, 24)
+	for _, ruleCount := range []int{128, 192, 255} {
+		for _, textBytes := range []int{64 << 10, 1 << 20} {
+			for _, match := range []string{"none", "first", "middle", "last"} {
+				target := -1
+				switch match {
+				case "first":
+					target = 0
+				case "middle":
+					target = ruleCount / 2
+				case "last":
+					target = ruleCount - 1
+				}
+				cases = append(cases, benchmarkExactBlockThresholdCase{
+					rules: ruleCount, textBytes: textBytes, target: target, match: match,
+				})
+			}
+		}
+	}
+	return cases
+}
+
+func benchmarkExactBlockThresholdFixture(tc benchmarkExactBlockThresholdCase) ([]compiledRule, string) {
+	rules := benchmarkRules(tc.rules, "")
+	if tc.target < 0 {
+		return rules, strings.Repeat("x", tc.textBytes)
+	}
+	target := fmt.Sprintf("BLOCK-%03d", tc.target)
+	rules[tc.target] = compiledRule{Term: target}
+	return rules, benchmarkPositionedText(tc.textBytes, target, tc.match)
+}
+
+func TestBenchmarkExactBlockThresholdMatchesOracle(t *testing.T) {
+	for _, tc := range benchmarkExactBlockThresholdCases() {
+		rules, text := benchmarkExactBlockThresholdFixture(tc)
+		wantIndex, wantMatched := benchmarkExactBlockStrategy(text, rules, -1, nil)
+		if wantIndex != tc.target || wantMatched != (tc.target >= 0) {
+			t.Fatalf("ordered rules=%d text=%d match=%s: got %d, %t; want %d, %t", tc.rules, tc.textBytes, tc.match, wantIndex, wantMatched, tc.target, tc.target >= 0)
+		}
+		matcher := newByteMatcher(rules[exactByteMatcherPrefixRules:], exactByteMatcherPrefixRules)
+		gotIndex, gotMatched := benchmarkExactBlockStrategy(text, rules, exactByteMatcherPrefixRules, matcher)
+		if gotIndex != wantIndex || gotMatched != wantMatched {
+			t.Fatalf("matcher rules=%d text=%d match=%s: got %d, %t; want %d, %t", tc.rules, tc.textBytes, tc.match, gotIndex, gotMatched, wantIndex, wantMatched)
+		}
+	}
+}
+
+func runBenchmarkExactBlockThreshold(b *testing.B) {
+	for _, tc := range benchmarkExactBlockThresholdCases() {
+		tc := tc
+		rules, text := benchmarkExactBlockThresholdFixture(tc)
+		wantIndex, wantMatched := benchmarkExactBlockStrategy(text, rules, -1, nil)
+		for _, impl := range []string{"ordered", "matcher"} {
+			impl := impl
+			for _, parallel := range []bool{false, true} {
+				parallel := parallel
+				execution := "serial"
+				if parallel {
+					execution = "parallel"
+				}
+				name := fmt.Sprintf("impl=%s/mode=block/rules=%d/text=%d/pattern=literal/match=%s/set=required/execution=%s", impl, tc.rules, tc.textBytes, tc.match, execution)
+				b.Run(name, func(b *testing.B) {
+					var matcher *byteMatcher
+					if impl == "matcher" {
+						matcher = newByteMatcher(rules[exactByteMatcherPrefixRules:], exactByteMatcherPrefixRules)
+					}
+					run := func() (int, bool) {
+						if impl == "matcher" {
+							return benchmarkExactBlockStrategy(text, rules, exactByteMatcherPrefixRules, matcher)
+						}
+						return benchmarkExactBlockStrategy(text, rules, -1, nil)
+					}
+					if gotIndex, gotMatched := run(); gotIndex != wantIndex || gotMatched != wantMatched {
+						b.Fatalf("strategy = %d, %t; want %d, %t", gotIndex, gotMatched, wantIndex, wantMatched)
+					}
+					b.ReportAllocs()
+					b.SetBytes(int64(len(text)))
+					b.ResetTimer()
+					if parallel {
+						b.RunParallel(func(pb *testing.PB) {
+							for pb.Next() {
+								gotIndex, gotMatched := run()
+								runtime.KeepAlive(gotIndex)
+								runtime.KeepAlive(gotMatched)
+							}
+						})
+						return
+					}
+					for i := 0; i < b.N; i++ {
+						benchmarkFoldRuleSink, benchmarkBoolSink = run()
+					}
+				})
+			}
+		}
+	}
+}
+
+func runBenchmarkExactBlockMatcherBuild(b *testing.B) {
+	for _, ruleCount := range []int{128, 192, 255, 256} {
+		ruleCount := ruleCount
+		rules := benchmarkRules(ruleCount, "")
+		b.Run(fmt.Sprintf("rules=%d", ruleCount), func(b *testing.B) {
+			probe := newByteMatcher(rules[exactByteMatcherPrefixRules:], exactByteMatcherPrefixRules)
+			if len(probe.nodes) == 0 {
+				b.Fatal("newByteMatcher() returned no nodes")
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchmarkByteMatcherSink = newByteMatcher(
+					rules[exactByteMatcherPrefixRules:],
+					exactByteMatcherPrefixRules,
+				)
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(len(probe.nodes)), "nodes/op")
+		})
+	}
 }
