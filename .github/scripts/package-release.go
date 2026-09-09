@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
+	"time"
 )
 
 const pluginName = "censorship"
+
+var zipModifiedTime = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 type artifactSpec struct {
 	osName string
@@ -139,7 +141,7 @@ func resolveVersion(versionFlag string) (string, error) {
 	cmd := exec.Command("git", "describe", "--tags", "--exact-match")
 	output, err := cmd.Output()
 	if err == nil {
-		version := normalizeReleaseVersion(string(output))
+		version := normalizeReleaseVersion(strings.TrimRight(string(output), "\r\n"))
 		if err := validateReleaseVersion(version); err != nil {
 			return "", err
 		}
@@ -149,7 +151,6 @@ func resolveVersion(versionFlag string) (string, error) {
 }
 
 func normalizeReleaseVersion(version string) string {
-	version = strings.TrimSpace(version)
 	return strings.TrimPrefix(version, "v")
 }
 
@@ -181,6 +182,13 @@ func isASCIIDigit(c byte) bool {
 }
 
 func validateDirectPackagePaths(libraryPath, archivePath, checksumPath string) (string, string, string, error) {
+	if err := rejectOutputSymlink(archivePath, "archive"); err != nil {
+		return "", "", "", err
+	}
+	if err := rejectOutputSymlink(checksumPath, "checksum"); err != nil {
+		return "", "", "", err
+	}
+
 	library, err := canonicalPath(libraryPath)
 	if err != nil {
 		return "", "", "", err
@@ -212,7 +220,52 @@ func validateDirectPackagePaths(libraryPath, archivePath, checksumPath string) (
 			return "", "", "", fmt.Errorf("%s and %s must refer to different files", pair.firstName, pair.secondName)
 		}
 	}
+
+	if _, err := os.Lstat("LICENSE"); err == nil {
+		if _, err := os.Stat("LICENSE"); err != nil {
+			if os.IsNotExist(err) {
+				return "", "", "", fmt.Errorf("LICENSE must not be a dangling symlink")
+			}
+			return "", "", "", fmt.Errorf("inspect LICENSE: %w", err)
+		}
+		license, err := canonicalPath("LICENSE")
+		if err != nil {
+			return "", "", "", err
+		}
+		for _, output := range []struct {
+			name string
+			path string
+		}{
+			{"archive", archive},
+			{"checksum", checksum},
+		} {
+			same, err := pathsAlias(license, output.path)
+			if err != nil {
+				return "", "", "", err
+			}
+			if same {
+				return "", "", "", fmt.Errorf("LICENSE and %s must refer to different files", output.name)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return "", "", "", fmt.Errorf("inspect LICENSE: %w", err)
+	}
+
 	return library, archive, checksum, nil
+}
+
+func rejectOutputSymlink(path, name string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect %s %s: %w", name, filepath.ToSlash(path), err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s must not be a symlink: %s", name, filepath.ToSlash(path))
+	}
+	return nil
 }
 
 func canonicalPath(path string) (string, error) {
@@ -224,7 +277,7 @@ func canonicalPath(path string) (string, error) {
 }
 
 func pathsAlias(firstPath, secondPath string) (bool, error) {
-	if firstPath == secondPath || runtime.GOOS == "windows" && strings.EqualFold(firstPath, secondPath) {
+	if firstPath == secondPath {
 		return true, nil
 	}
 	firstInfo, firstSuffix, err := existingPathAncestor(firstPath)
@@ -239,11 +292,31 @@ func pathsAlias(firstPath, secondPath string) (bool, error) {
 		return false, nil
 	}
 	for i := range firstSuffix {
-		if firstSuffix[i] != secondSuffix[i] && (runtime.GOOS != "windows" || !strings.EqualFold(firstSuffix[i], secondSuffix[i])) {
+		if !asciiEqualFold(firstSuffix[i], secondSuffix[i]) {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+func asciiEqualFold(first, second string) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for i := 0; i < len(first); i++ {
+		if first[i] == second[i] {
+			continue
+		}
+		if first[i] >= 'A' && first[i] <= 'Z' {
+			if first[i]+'a'-'A' == second[i] {
+				continue
+			}
+		} else if first[i] >= 'a' && first[i] <= 'z' && first[i]-'a'+'A' == second[i] {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func existingPathAncestor(path string) (os.FileInfo, []string, error) {
@@ -295,6 +368,7 @@ func packageLibrary(libraryPath, archivePath string) error {
 	if err != nil {
 		return fmt.Errorf("create zip header: %w", err)
 	}
+	header.Modified = zipModifiedTime
 	header.Name = filepath.Base(libraryPath)
 	header.Method = zip.Deflate
 	header.SetMode(0o755)
@@ -336,6 +410,7 @@ func addOptionalFile(writer *zip.Writer, path string) error {
 	if err != nil {
 		return fmt.Errorf("create optional zip header %s: %w", path, err)
 	}
+	header.Modified = zipModifiedTime
 	header.Name = filepath.Base(path)
 	header.Method = zip.Deflate
 	entry, err := writer.CreateHeader(header)

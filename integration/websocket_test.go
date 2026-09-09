@@ -222,7 +222,7 @@ func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
 	if err := waitForWebSocketPeerClose(conn); err != nil {
 		t.Fatalf("terminal 400 was not followed by peer closure: %v", err)
 	}
-	if upstream.requestCount() != 0 {
+	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked WebSocket turn reached upstream")
 	}
 }

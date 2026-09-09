@@ -139,14 +139,11 @@ func scanTextPart(part gjson.Result, requireTextType bool) (text gjson.Result, a
 			partType = value
 		case "thought":
 			thought = value.Type == gjson.True
-		case "functionCall", "function_call":
+		case "functionCall", "function_call", "functionResponse", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
 			machinePart = machinePart || value.Type != gjson.Null
-		case "functionResponse", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
-			machinePart = true
 		case "extra_content":
-			if value.Get("google.thought_signature").Exists() {
-				machinePart = true
-			}
+			signature := value.Get("google.thought_signature")
+			machinePart = machinePart || signature.Type != gjson.Null
 		}
 		return true
 	})

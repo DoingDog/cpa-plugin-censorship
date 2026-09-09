@@ -234,27 +234,40 @@ func TestScanTextPartPreservesProtocolRules(t *testing.T) {
 		{name: "snake nested functionCall thought signature", part: `{"text":"accepted","functionCall":{"thought_signature":null}}`, allowed: false},
 		{name: "camel nested functionResponse thought signature", part: `{"text":"accepted","functionResponse":{"thoughtSignature":null}}`, allowed: false},
 		{name: "snake nested functionResponse thought signature", part: `{"text":"accepted","functionResponse":{"thought_signature":null}}`, allowed: false},
-		{name: "extra content Google thought signature", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":null}}}`, allowed: false},
+		{name: "extra content Google thought signature null", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":null}}}`, allowed: true},
+		{name: "extra content Google thought signature non-null", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":"sig"}}}`, allowed: false},
 		{name: "ordinary extra content", part: `{"text":"accepted","extra_content":{"google":{"note":"value"}}}`, requireTextType: true, allowed: true},
 		{name: "escaped machine key", part: `{"text":"accepted","\u0066unctionCall":null}`, requireTextType: true, allowed: true},
 	}
 	machineKeys := []string{
-		"functionCall", "functionResponse", "function_call", "function_response",
+		"functionCall", "function_call", "functionResponse", "function_response",
 		"inlineData", "inline_data", "fileData", "file_data",
 		"executableCode", "executable_code", "codeExecutionResult", "code_execution_result",
 		"thoughtSignature", "thought_signature",
 	}
 	for _, key := range machineKeys {
-		cases = append(cases, struct {
-			name, part      string
-			requireTextType bool
-			allowed         bool
-		}{
-			name:            "machine key " + key + " is present when null",
-			part:            `{"text":"accepted","` + key + `":null}`,
-			requireTextType: true,
-			allowed:         key == "functionCall" || key == "function_call",
-		})
+		cases = append(cases,
+			struct {
+				name, part      string
+				requireTextType bool
+				allowed         bool
+			}{
+				name:            "machine key " + key + " is null",
+				part:            `{"text":"accepted","` + key + `":null}`,
+				requireTextType: true,
+				allowed:         true,
+			},
+			struct {
+				name, part      string
+				requireTextType bool
+				allowed         bool
+			}{
+				name:            "machine key " + key + " is non-null",
+				part:            `{"text":"accepted","` + key + `":{}}`,
+				requireTextType: true,
+				allowed:         false,
+			},
+		)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

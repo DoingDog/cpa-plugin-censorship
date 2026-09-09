@@ -1,7 +1,10 @@
 PLUGIN_NAME := censorship
 GO ?= go
-VERSION ?=
-NORMALIZED_VERSION := $(if $(strip $(VERSION)),$(patsubst v%,%,$(strip $(VERSION))),0.0.0-dev)
+unexport VERSION
+RAW_VERSION := $(value VERSION)
+PACKAGER_VERSION := $(if $(filter undefined,$(origin VERSION)),0.0.0-dev,$(RAW_VERSION))
+NORMALIZED_VERSION = $(patsubst v%,%,$(PACKAGER_VERSION))
+export PACKAGER_VERSION NORMALIZED_VERSION
 
 LIB_EXTENSION := .so
 ifeq ($(GOOS),windows)
@@ -31,33 +34,33 @@ integration:
 	$(GO) run ./.github/scripts/integration-runner.go
 
 validate-version:
-	@version="$(NORMALIZED_VERSION)"; case "$$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) echo "VERSION must normalize to a safe non-empty release version"; exit 2;; esac
+	@version="$$PACKAGER_VERSION"; case "$$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) echo "VERSION must normalize to a safe non-empty release version"; exit 2;; esac; version="$${version#v}"; case "$$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) echo "VERSION must normalize to a safe non-empty release version"; exit 2;; esac
 
 build-platform: validate-version
 	@test -n "$(GOOS)" && test -n "$(GOARCH)" || { echo "GOOS and GOARCH are required"; exit 2; }
 	@mkdir -p "$(DIST_DIR)"
-	CGO_ENABLED=1 $(if $(strip $(BUILD_CC)),CC="$(BUILD_CC)") GOOS="$(GOOS)" GOARCH="$(GOARCH)" $(GO) build -trimpath -buildmode=c-shared -ldflags='-s -w -X main.pluginVersion=$(NORMALIZED_VERSION)' -o "$(LIBRARY)" .
+	CGO_ENABLED=1 $(if $(strip $(BUILD_CC)),CC="$(BUILD_CC)") GOOS="$(GOOS)" GOARCH="$(GOARCH)" $(GO) build -trimpath -buildmode=c-shared -ldflags="-s -w -X main.pluginVersion=$$NORMALIZED_VERSION" -o "$(LIBRARY)" .
 
 build:
 	@echo "build is host-specific; use build-platform for a selected GOOS/GOARCH target."
-	$(MAKE) build-platform GOOS="$(shell $(GO) env GOHOSTOS)" GOARCH="$(shell $(GO) env GOHOSTARCH)" VERSION="$(VERSION)" BUILD_CC="$(BUILD_CC)"
+	$(MAKE) build-platform GOOS="$(shell $(GO) env GOHOSTOS)" GOARCH="$(shell $(GO) env GOHOSTARCH)" VERSION="$${PACKAGER_VERSION}" BUILD_CC="$(BUILD_CC)"
 
 package-platform: validate-version
-	$(MAKE) build-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$(VERSION)" BUILD_CC="$(BUILD_CC)"
-	$(GO) run ./.github/scripts/package-release.go -version "$(NORMALIZED_VERSION)" -library "$(LIBRARY)" -archive "$(ARCHIVE)" -checksum "$(CHECKSUM)"
+	$(MAKE) build-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$${PACKAGER_VERSION}" BUILD_CC="$(BUILD_CC)"
+	$(GO) run ./.github/scripts/package-release.go -version "$$PACKAGER_VERSION" -library "$(LIBRARY)" -archive "$(ARCHIVE)" -checksum "$(CHECKSUM)"
 
 package: validate-version
 ifeq ($(strip $(GOOS)),)
 ifeq ($(strip $(GOARCH)),)
 package:
-	$(GO) run ./.github/scripts/package-release.go -dist dist -out dist -version "$(NORMALIZED_VERSION)"
+	$(GO) run ./.github/scripts/package-release.go -dist dist -out dist -version "$$PACKAGER_VERSION"
 else
 package:
-	$(MAKE) package-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$(VERSION)" BUILD_CC="$(BUILD_CC)"
+	$(MAKE) package-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$${PACKAGER_VERSION}" BUILD_CC="$(BUILD_CC)"
 endif
 else
 package:
-	$(MAKE) package-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$(VERSION)" BUILD_CC="$(BUILD_CC)"
+	$(MAKE) package-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$${PACKAGER_VERSION}" BUILD_CC="$(BUILD_CC)"
 endif
 
 clean:

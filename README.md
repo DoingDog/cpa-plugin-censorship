@@ -20,7 +20,7 @@ Copy the native library to the CPA platform plugin directory, then start or rest
 
 Linux release libraries require glibc 2.34+.
 
-v0.2.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.2.1 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Configuration
 
@@ -106,8 +106,8 @@ There is no Unicode normalization and no full case folding. `strip` removes the 
 Selectors enter only the explicit text leaves listed here. There is no recursive fallback string walker.
 
 - OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, and documented `tool` and legacy `function` result text; Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, plus documented `function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Responses `output_text` and `refusal` use canonical `assistant`; documented tool/function result text uses canonical `tool`.
-- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
-- Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role.
+- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, including the `document` text path when `source.type == "content"`, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
+- Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role. A JSON `null` machine discriminator is treated as unset.
 - Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content.
 
 OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Gemini `model` maps to `assistant`.
@@ -134,7 +134,7 @@ If B is malformed, it is logged and invalid reconfiguration keeps the last-known
 
 ## Build, ABI, and integration
 
-Go 1.26 and a working native or cross CGO compiler for the selected target are required. `make integration` builds against the fixed CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`; it covers HTTP, SSE, watcher reload, Responses WebSocket, and ABI scenarios.
+Go 1.26 and a working native or cross CGO compiler for the selected target are required. `make integration` builds against the fixed CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`; its harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling, exact provider paths, SSE, watcher reload, Responses WebSocket, and ABI scenarios.
 
 ```bash
 make test
@@ -143,7 +143,7 @@ make vet
 make integration
 ```
 
-The ABI boundary remains v1. `cliproxyPluginCall` retains `C.GoBytes` for input requests: the allocation gate failed because the borrowed candidate did not remove the input-sized before-auth allocation. After-auth has no input read. The retained copy has no claimed no-copy performance benefit.
+The ABI boundary remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input.
 
 Integration changes: Task 12 writes the watched configuration path in place and uses a bounded marker write/probe handshake; Task 13 reuses the CPA integration checkout; Task 14 hardens release packaging. Tagged CPA integration, runner, and package checks passed for those changes.
 
@@ -161,11 +161,11 @@ Integration changes: Task 12 writes the watched configuration path in place and 
 10. Home mode does not watch local YAML. Use a configuration path that CPA watches or another host-supported reconfiguration mechanism.
 11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA.
 12. Known SourceFormat JSON objects accept at most 1024 simultaneously open object or array levels, including the top-level object. Deeper requests return `censorship_invalid_request`.
-13. The C ABI rejects request lengths that exceed `C.int` with a non-zero ABI return code and rejects oversized host callback responses with a plugin error. Neither path truncates the length before conversion.
+13. Methods that read or copy request input reject lengths that exceed `C.int` with a non-zero ABI return code. After-auth intentionally does not read input and may accept a coherent non-nil oversized descriptor. Oversized host callback responses return a plugin error.
 14. The Responses WebSocket integration test fails after 20 seconds without `response.completed`; it does not wait indefinitely.
 
 ## Release artifacts
 
-Releases contain `censorship_<version>_<goos>_<goarch>.zip` and `censorship_<version>_<goos>_<goarch>.zip.sha256` for each supported tuple. One lowercase ASCII `v` is removed from a tag, `VERSION`, or packager `-version` input. The normalized version must be a safe ASCII filename component.
+Releases contain `censorship_<version>_<goos>_<goarch>.zip` and `censorship_<version>_<goos>_<goarch>.zip.sha256` for each supported tuple. Raw tag, `VERSION`, and packager `-version` inputs must be safe ASCII filename components. One lowercase ASCII `v` is then removed exactly once.
 
-Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates the seven per-platform checksum lines.
+Direct `-library`/`-archive`/`-checksum` mode rejects output/input aliases, archive/checksum symlinks, hard links, junctions, and ASCII case aliases. Packaging produces deterministic ZIP archives. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates the seven per-platform checksum lines.

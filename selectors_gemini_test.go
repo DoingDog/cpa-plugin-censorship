@@ -178,24 +178,24 @@ func TestGeminiSelectorCanonicalRoles(t *testing.T) {
 }
 
 func TestGeminiNullMachineDiscriminatorsRemainSelectable(t *testing.T) {
-	cases := []struct {
-		name, part string
-	}{
-		{name: "camel text before", part: `{"text":"before\nvalue","functionCall":null}`},
-		{name: "camel text after", part: `{"functionCall":null,"text":"after \u2603"}`},
-		{name: "snake text before", part: `{"text":"before\nvalue","function_call":null}`},
-		{name: "snake text after", part: `{"function_call":null,"text":"after \u2603"}`},
+	keys := []string{
+		"functionCall", "function_call", "functionResponse", "function_response",
+		"inlineData", "inline_data", "fileData", "file_data",
+		"executableCode", "executable_code", "codeExecutionResult", "code_execution_result",
+		"thoughtSignature", "thought_signature",
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			part := gjson.Parse(tc.part)
-			wantText := part.Get("text")
-			gotText, allowed := scanTextPart(part, false)
-			if !allowed {
-				t.Fatal("allowed = false, want true")
+	for _, key := range keys {
+		t.Run(key+" null", func(t *testing.T) {
+			part := gjson.Parse(`{"text":"SECRET","` + key + `":null}`)
+			text, allowed := scanTextPart(part, false)
+			if !allowed || text.Str != "SECRET" {
+				t.Fatalf("scanTextPart() = %q, %t", text.Str, allowed)
 			}
-			if gotText.Raw != wantText.Raw || gotText.Str != wantText.Str || gotText.Index != wantText.Index {
-				t.Fatalf("text = {Raw:%q Str:%q Index:%d}, want {Raw:%q Str:%q Index:%d}", gotText.Raw, gotText.Str, gotText.Index, wantText.Raw, wantText.Str, wantText.Index)
+		})
+		t.Run(key+" object", func(t *testing.T) {
+			_, allowed := scanTextPart(gjson.Parse(`{"text":"SECRET","`+key+`":{}}`), false)
+			if allowed {
+				t.Fatal("non-null machine member remained selectable")
 			}
 		})
 	}

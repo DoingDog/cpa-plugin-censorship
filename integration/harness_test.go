@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -344,9 +345,49 @@ func TestTCPTimeoutAfterConnection(t *testing.T) {
 	}
 }
 
+func TestUpstreamCaptureCountsArrivalBeforeTruncatedBody(t *testing.T) {
+	upstream := newMockUpstream(t)
+	connection, err := net.Dial("tcp", upstream.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := setIntegrationDeadline(connection); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(connection, "POST /v1/chat/completions HTTP/1.1\r\nHost: fixture\r\nContent-Length: 3\r\nConnection: close\r\n\r\n{}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, connection); err != nil {
+		t.Fatal(err)
+	}
+	if got := upstream.arrivalCount(); got != 1 {
+		t.Fatalf("upstream arrival count = %d, want 1", got)
+	}
+	if got := upstream.requestCount(); got != 0 {
+		t.Fatalf("upstream request count = %d, want 0", got)
+	}
+}
+
 type upstreamCapture struct {
 	mu       sync.Mutex
+	arrivals int
 	requests [][]byte
+}
+
+func (c *upstreamCapture) arrive() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.arrivals++
+}
+
+func (c *upstreamCapture) arrivalCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.arrivals
 }
 
 func (c *upstreamCapture) record(body []byte) {
@@ -401,6 +442,7 @@ func newMockUpstream(t *testing.T) *mockUpstream {
 			http.NotFound(w, r)
 			return
 		}
+		capture.arrive()
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -675,9 +717,64 @@ func postChat(t *testing.T, cpa *cpaInstance, text string) (int, http.Header, []
 }
 
 type responseTrace struct {
-	Status  int
-	Headers http.Header
-	Chunks  [][]byte
+	Status   int
+	Headers  http.Header
+	Chunks   [][]byte
+	Trailers http.Header
+}
+
+func TestReadHTTP11Trace(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		raw          string
+		wantChunks   [][]byte
+		wantTrailers http.Header
+		wantErr      bool
+	}{
+		{
+			name:       "fixed length",
+			raw:        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+			wantChunks: [][]byte{[]byte("hello")},
+		},
+		{
+			name:    "fixed length surplus",
+			raw:     "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloX",
+			wantErr: true,
+		},
+		{
+			name:         "chunked trailers",
+			raw:          "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-Test\r\n\r\n3\r\none\r\n3\r\ntwo\r\n0\r\nX-Test: value\r\n\r\n",
+			wantChunks:   [][]byte{[]byte("one"), []byte("two")},
+			wantTrailers: http.Header{"X-Test": []string{"value"}},
+		},
+		{
+			name:    "chunked trailers surplus",
+			raw:     "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-Test\r\n\r\n3\r\none\r\n0\r\nX-Test: value\r\n\r\nX",
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			trace, err := readHTTP11Trace(bufio.NewReader(strings.NewReader(tc.raw)))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("readHTTP11Trace unexpectedly accepted surplus bytes")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := trace.Status, 200; got != want {
+				t.Fatalf("response status = %d, want %d", got, want)
+			}
+			if !reflect.DeepEqual(trace.Chunks, tc.wantChunks) {
+				t.Fatalf("response chunks = %#v, want %#v", trace.Chunks, tc.wantChunks)
+			}
+			if !reflect.DeepEqual(trace.Trailers, tc.wantTrailers) {
+				t.Fatalf("response trailers = %#v, want %#v", trace.Trailers, tc.wantTrailers)
+			}
+		})
+	}
 }
 
 func captureHTTP11Trace(t *testing.T, target, key string, body []byte) responseTrace {
@@ -715,22 +812,29 @@ func captureHTTP11Trace(t *testing.T, target, key string, body []byte) responseT
 		t.Fatal(err)
 	}
 
-	reader := bufio.NewReader(connection)
-	statusLine, err := reader.ReadString('\n')
+	trace, err := readHTTP11Trace(bufio.NewReader(connection))
 	if err != nil {
 		t.Fatal(err)
+	}
+	return trace
+}
+
+func readHTTP11Trace(reader *bufio.Reader) (responseTrace, error) {
+	statusLine, err := reader.ReadString('\n')
+	if err != nil {
+		return responseTrace{}, err
 	}
 	statusParts := strings.SplitN(strings.TrimRight(statusLine, "\r\n"), " ", 3)
 	if len(statusParts) < 2 {
-		t.Fatalf("invalid HTTP status line %q", statusLine)
+		return responseTrace{}, fmt.Errorf("invalid HTTP status line %q", statusLine)
 	}
 	status, err := strconv.Atoi(statusParts[1])
 	if err != nil {
-		t.Fatal(err)
+		return responseTrace{}, fmt.Errorf("parse HTTP status %q: %w", statusParts[1], err)
 	}
 	mimeHeader, err := textproto.NewReader(reader).ReadMIMEHeader()
 	if err != nil {
-		t.Fatal(err)
+		return responseTrace{}, err
 	}
 	headers := http.Header(mimeHeader).Clone()
 	for _, key := range []string{"Date", "X-CPA-TRACE-ID"} {
@@ -741,55 +845,63 @@ func captureHTTP11Trace(t *testing.T, target, key string, body []byte) responseT
 	trace := responseTrace{Status: status, Headers: headers}
 
 	if strings.EqualFold(headers.Get("Transfer-Encoding"), "chunked") {
-		trace.Chunks = readHTTP11Chunks(t, reader)
-		return trace
+		trace.Chunks, trace.Trailers, err = readHTTP11Chunks(reader)
+		if err != nil {
+			return responseTrace{}, err
+		}
+	} else {
+		contentLength := headers.Get("Content-Length")
+		if contentLength == "" {
+			return responseTrace{}, errors.New("response has neither chunked transfer encoding nor Content-Length")
+		}
+		length, err := strconv.ParseInt(contentLength, 10, 64)
+		if err != nil || length < 0 {
+			return responseTrace{}, fmt.Errorf("invalid Content-Length %q", contentLength)
+		}
+		payload := make([]byte, length)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return responseTrace{}, err
+		}
+		trace.Chunks = [][]byte{payload}
 	}
-	contentLength := headers.Get("Content-Length")
-	if contentLength == "" {
-		t.Fatal("response has neither chunked transfer encoding nor Content-Length")
+	if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return responseTrace{}, errors.New("HTTP response contains surplus bytes")
+		}
+		return responseTrace{}, fmt.Errorf("read after HTTP response: %w", err)
 	}
-	length, err := strconv.ParseInt(contentLength, 10, 64)
-	if err != nil || length < 0 {
-		t.Fatalf("invalid Content-Length %q", contentLength)
-	}
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(reader, payload); err != nil {
-		t.Fatal(err)
-	}
-	trace.Chunks = [][]byte{payload}
-	return trace
+	return trace, nil
 }
 
-func readHTTP11Chunks(t *testing.T, reader *bufio.Reader) [][]byte {
-	t.Helper()
-
+func readHTTP11Chunks(reader *bufio.Reader) ([][]byte, http.Header, error) {
 	var chunks [][]byte
 	for {
 		sizeLine, err := reader.ReadString('\n')
 		if err != nil {
-			t.Fatal(err)
+			return nil, nil, err
 		}
 		sizeText, _, _ := strings.Cut(strings.TrimSpace(sizeLine), ";")
 		size, err := strconv.ParseInt(sizeText, 16, 64)
 		if err != nil || size < 0 {
-			t.Fatalf("invalid HTTP chunk size %q", sizeLine)
+			return nil, nil, fmt.Errorf("invalid HTTP chunk size %q", sizeLine)
 		}
 		if size == 0 {
-			if _, err := textproto.NewReader(reader).ReadMIMEHeader(); err != nil {
-				t.Fatal(err)
+			trailers, err := textproto.NewReader(reader).ReadMIMEHeader()
+			if err != nil {
+				return nil, nil, err
 			}
-			return chunks
+			return chunks, http.Header(trailers).Clone(), nil
 		}
 		payload := make([]byte, size)
 		if _, err := io.ReadFull(reader, payload); err != nil {
-			t.Fatal(err)
+			return nil, nil, err
 		}
 		ending := make([]byte, 2)
 		if _, err := io.ReadFull(reader, ending); err != nil {
-			t.Fatal(err)
+			return nil, nil, err
 		}
 		if !bytes.Equal(ending, []byte("\r\n")) {
-			t.Fatalf("invalid HTTP chunk ending %q", ending)
+			return nil, nil, fmt.Errorf("invalid HTTP chunk ending %q", ending)
 		}
 		chunks = append(chunks, payload)
 	}

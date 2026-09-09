@@ -1,12 +1,12 @@
-# Censorship v0.2.0
+# Censorship v0.2.1
 
-v0.2.0 adds action-bucket configuration, explicit provider text paths, updated CPA compatibility, integration tooling, and hardened packaging. Claims below are limited to verified behavior.
+v0.2.1 fixes Gemini null union semantics, Claude custom-content documents, native ABI descriptor validation, safe one-time VERSION normalization, packaging alias protection with deterministic archives, and integration coverage. Claims below are limited to verified behavior.
 
 Censorship remains a pure CLIProxyAPI `RequestInterceptor`: it is request-only; never inspects or changes model output, response bodies, SSE chunks, or server WebSocket events. It has no custom panel, menu, or Management API.
 
 ## Compatibility
 
-v0.2.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.2.1 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Object configuration panel
 
@@ -76,8 +76,8 @@ There is no Unicode normalization and no full case folding. `strip` removes the 
 Selectors enter only documented text leaves; there is no recursive fallback string walker.
 
 - OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, and documented `tool` and legacy `function` result text; Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, plus documented `function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Responses `output_text` and `refusal` use canonical `assistant`; documented tool/function result text uses canonical `tool`.
-- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
-- Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role.
+- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, including the `document` text path when `source.type == "content"`, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
+- Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role. A JSON `null` machine discriminator is treated as unset.
 - Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content.
 
 OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Gemini `model` maps to `assistant`.
@@ -96,9 +96,9 @@ Interactions accepts camel-case `systemInstruction` when snake-case `system_inst
 
 A non-Home CPA YAML update calls `plugin.reconfigure`, which publishes one complete immutable snapshot atomically. Poll a request containing a unique B-only term until it blocks. Therefore: valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel. An invalid reconfiguration keeps the last-known-good snapshot. Home mode does not watch local YAML.
 
-The native ABI remains v1. `cliproxyPluginCall` retains `C.GoBytes` for input requests. The allocation gate failed because a borrowed-input candidate did not remove the input-sized before-auth allocation; this release makes no no-copy performance claim. After-auth does not read its input.
+The native ABI remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input.
 
-Integration changes: Task 12 writes the watched configuration path in place and waits through a bounded marker write/probe handshake; Task 13 reuses the CPA integration checkout; Task 14 hardens release packaging. Tagged CPA integration, runner, and package checks passed.
+The integration harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling, and exact provider paths. Task 12 writes the watched configuration path in place and waits through a bounded marker write/probe handshake; Task 13 reuses the CPA integration checkout; Task 14 hardens release packaging. Tagged CPA integration, runner, and package checks passed.
 
 ## Accepted pure-plugin limits
 
@@ -114,7 +114,7 @@ Integration changes: Task 12 writes the watched configuration path in place and 
 10. Home mode does not watch local YAML.
 11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA.
 12. Known SourceFormat JSON objects accept at most 1024 simultaneously open object or array levels, including the top-level object. Deeper requests return `censorship_invalid_request`.
-13. The C ABI rejects request lengths that exceed `C.int` with a non-zero ABI return code and rejects oversized host callback responses with a plugin error. Neither path truncates the length before conversion.
+13. Methods that read or copy request input reject lengths that exceed `C.int` with a non-zero ABI return code. After-auth intentionally does not read input and may accept a coherent non-nil oversized descriptor. Oversized host callback responses return a plugin error.
 14. The Responses WebSocket integration test fails after 20 seconds without `response.completed`; it does not wait indefinitely.
 
 ## Artifacts
@@ -126,6 +126,6 @@ censorship_<version>_<goos>_<goarch>.zip
 censorship_<version>_<goos>_<goarch>.zip.sha256
 ```
 
-Supported tuples are `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`, and `freebsd/amd64`. One lowercase ASCII `v` is removed from tag, `VERSION`, and packager `-version` inputs.
+Supported tuples are `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`, and `freebsd/amd64`. Raw tag, `VERSION`, and packager `-version` inputs must be safe ASCII filename components. One lowercase ASCII `v` is then removed exactly once.
 
-Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.
+Direct `-library`/`-archive`/`-checksum` mode rejects output/input aliases, archive/checksum symlinks, hard links, junctions, and ASCII case aliases. Packaging produces deterministic ZIP archives. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.
