@@ -891,4 +891,717 @@ geomean                                                                         
 ¹ all samples are equal
 ```
 
+### B. Fused UTF-8 and nesting validation
+
+#### Decision
+
+`REJECT`。候选将 `jsonNestingWithin` 与 `utf8.Valid` 合并为一次扫描，但 long ASCII、`ordinary-1k`、边界输入和 multibyte `parallel-16` 均违反性能 gate。`selectors.go` 保持原有两次独立校验。
+
+#### Correctness oracle
+
+先对 fused oracle 注入未闭合 string 处理错误，focused test 按预期失败：
+
+```plaintext
+--- FAIL: TestJSONNestingAndUTF8WithinMatchesCurrentValidation (0.02s)
+    selectors_gemini_test.go:267: corpus-6-byte-0: fused validation = true, current validation = false for bytes 7a 22 75 6e 74 65 72 6d 69 6e 61 74 65 64 22 3a 22 76 61 6c 75 65 7d
+FAIL
+FAIL    github.com/DoingDog/cpa-plugin-censorship    0.079s
+FAIL
+```
+
+恢复候选后运行：
+
+```powershell
+go test . -run '^TestJSONNestingAndUTF8WithinMatchesCurrentValidation$' -count=1
+```
+
+结果：
+
+```plaintext
+ok   github.com/DoingDog/cpa-plugin-censorship  0.135s
+```
+
+oracle 将候选与 `jsonNestingWithin(body, maxJSONNestingDepth) && utf8.Valid(body)` 逐项比较。corpus 覆盖 ASCII、有效 multibyte、转义 string、混合 scalar/object/array、1023/1024/1025 层、1 KiB、closure 错误和 invalid UTF-8 tail，并对每个 corpus body 的每个 byte 执行确定性单字节 mutation。
+
+#### Measurement
+
+- workload：20 MiB ASCII、20 MiB multibyte、invalid UTF-8 tail、depth boundary、escaped strings 和 1 KiB ordinary body。
+- execution：serial、parallel、serial-16 和 parallel-16。
+- 每种实现按 forward 和 reverse 两种相反顺序各采集 10 个独立 process sample。
+- calibrated raw data 中每个统计 `RunParallel` sample 都满足 `b.N > active GOMAXPROCS`；smoke 的 `b.N=1` 未进入统计。
+- 所有 serial rows 都是 `0 B/op, 0 allocs/op`。parallel `B/op` 差异来自 `RunParallel` 固定启动 allocation 按不同 `b.N` 摊销，不作为 candidate allocation 证据。
+
+完整 `benchstat -col /impl` 输出：
+
+```plaintext
+FORWARD: baseline then fused
+goos: windows
+goarch: amd64
+pkg: github.com/DoingDog/cpa-plugin-censorship
+cpu: AMD Ryzen 7 7840H with Radeon 780M Graphics
+                                                                │   baseline   │                 fused                 │
+                                                                │    sec/op    │    sec/op      vs base                │
+SelectorValidation/body=ascii-20m/execution=serial                19.93m ±  1%    24.09m ±  2%  +20.87% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=serial-16             19.92m ±  2%    23.90m ±  1%  +20.01% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel              19.93m ±  1%    23.71m ±  1%  +18.98% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel-16           2.607m ± 10%    3.310m ± 19%  +26.98% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial            30.14m ±  1%    27.33m ±  1%   -9.33% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial-16         30.18m ±  0%    27.57m ±  3%   -8.65% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel          30.32m ±  2%    27.50m ±  1%   -9.30% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel-16       4.191m ± 11%    4.589m ±  5%   +9.50% (p=0.029 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial        955.0n ±  1%   1202.0n ±  3%  +25.87% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     954.6n ±  1%   1204.0n ±  2%  +26.13% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      954.0n ±  2%   1195.5n ±  2%  +25.31% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16   138.9n ±  8%    171.0n ±  9%  +23.11% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial           1.912µ ±  2%    2.331µ ±  2%  +21.95% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial-16        1.903µ ±  1%    2.327µ ±  2%  +22.28% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel         1.898µ ±  1%    2.344µ ±  1%  +23.47% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel-16      268.4n ± 10%    331.4n ±  5%  +23.51% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial         944.4n ±  2%   1165.5n ±  1%  +23.41% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial-16      936.7n ±  2%   1164.5n ±  2%  +24.32% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel       929.4n ±  1%   1170.5n ±  2%  +25.95% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel-16    127.8n ±  8%    172.5n ±  6%  +35.03% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial          40.60n ±  3%    58.53n ±  2%  +44.16% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial-16       40.23n ±  1%    58.77n ±  2%  +46.07% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel        40.35n ±  3%    57.88n ±  1%  +43.46% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel-16     5.836n ± 11%    8.412n ± 12%  +44.14% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial              946.5n ±  1%   1191.0n ±  2%  +25.83% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial-16           949.1n ±  1%   1194.5n ±  1%  +25.86% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel            956.2n ±  1%   1206.0n ±  1%  +26.12% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel-16         135.6n ±  5%    175.4n ± 12%  +29.39% (p=0.000 n=10)
+geomean                                                           7.437µ          9.112µ        +22.52%
+
+                                                                │    baseline    │                 fused                 │
+                                                                │      B/s       │      B/s       vs base                │
+SelectorValidation/body=ascii-20m/execution=serial                1003.6Mi ±  1%   830.3Mi ±  2%  -17.26% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=serial-16             1004.2Mi ±  2%   836.8Mi ±  1%  -16.67% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel              1003.7Mi ±  1%   843.6Mi ±  1%  -15.95% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel-16            7.493Gi ±  9%   5.902Gi ± 16%  -21.23% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial             663.6Mi ±  1%   731.9Mi ±  1%  +10.29% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial-16          662.7Mi ±  0%   725.5Mi ±  3%   +9.47% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel           659.6Mi ±  2%   727.3Mi ±  1%  +10.26% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel-16        4.661Gi ± 10%   4.257Gi ±  5%   -8.66% (p=0.029 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial        1023.6Mi ±  1%   813.1Mi ±  3%  -20.57% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     1024.1Mi ±  1%   811.8Mi ±  2%  -20.73% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      1024.7Mi ±  2%   817.7Mi ±  2%  -20.20% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16    6.874Gi ±  8%   5.587Gi ±  9%  -18.73% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial           1022.4Mi ±  2%   838.3Mi ±  2%  -18.01% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial-16        1027.0Mi ±  1%   839.8Mi ±  2%  -18.22% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel         1029.6Mi ±  1%   833.9Mi ±  1%  -19.01% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel-16       7.112Gi ±  9%   5.757Gi ±  4%  -19.06% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial          2.023Gi ±  2%   1.639Gi ±  1%  -18.97% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial-16       2.039Gi ±  2%   1.640Gi ±  2%  -19.60% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel        2.055Gi ±  1%   1.632Gi ±  2%  -20.60% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel-16     14.96Gi ±  7%   11.07Gi ±  6%  -25.95% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial           869.1Mi ±  3%   602.9Mi ±  2%  -30.63% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial-16        877.2Mi ±  1%   600.5Mi ±  2%  -31.54% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel         874.6Mi ±  3%   609.6Mi ±  1%  -30.30% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel-16      5.905Gi ± 10%   4.096Gi ± 11%  -30.62% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial              1031.7Mi ±  1%   820.0Mi ±  2%  -20.52% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial-16           1028.9Mi ±  1%   817.6Mi ±  1%  -20.54% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel            1021.3Mi ±  1%   809.7Mi ±  1%  -20.72% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel-16          7.033Gi ±  6%   5.435Gi ± 11%  -22.72% (p=0.000 n=10)
+geomean                                                            1.660Gi         1.355Gi        -18.38%
+
+                                                                │    baseline    │                 fused                  │
+                                                                │      B/op      │     B/op      vs base                  │
+SelectorValidation/body=ascii-20m/execution=serial                0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=serial-16             0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel              9.500 ±  16%     12.000 ±  8%  +26.32% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel-16           38.50 ±   6%      52.00 ± 27%  +35.06% (p=0.008 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial            0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=serial-16         0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=parallel          16.00 ±   0%      14.00 ±  7%  -12.50% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel-16       30.50 ± 130%      63.50 ± 51%        ~ (p=0.183 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial        0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16   0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial           0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial-16        0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel         0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel-16      0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial         0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial-16      0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel       0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel-16    0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial          0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial-16       0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel        0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel-16     0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial              0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial-16           0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel            0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel-16         0.000 ±   0%      0.000 ±  0%        ~ (p=1.000 n=10) ¹
+geomean                                                                        ²                  +4.13%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                                                                │   baseline   │                fused                │
+                                                                │  allocs/op   │ allocs/op   vs base                 │
+SelectorValidation/body=ascii-20m/execution=serial                0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=serial-16             0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=parallel              0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=parallel-16           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=serial            0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=serial-16         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=parallel          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=parallel-16       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=serial        0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial-16        0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel-16      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial-16      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel-16    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial-16       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel        0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel-16     0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial              0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial-16           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel            0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel-16         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                                                      ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+REVERSE: fused then baseline
+goos: windows
+goarch: amd64
+pkg: github.com/DoingDog/cpa-plugin-censorship
+cpu: AMD Ryzen 7 7840H with Radeon 780M Graphics
+                                                                │     fused     │               baseline               │
+                                                                │    sec/op     │    sec/op     vs base                │
+SelectorValidation/body=ascii-20m/execution=serial                 23.74m ±  2%   19.98m ±  2%  -15.84% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=serial-16              23.62m ±  2%   20.02m ±  1%  -15.22% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel               23.86m ±  1%   19.96m ±  2%  -16.35% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel-16            3.467m ± 10%   2.808m ±  7%  -19.01% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial             27.68m ±  1%   30.25m ±  1%   +9.28% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial-16          27.66m ±  1%   30.19m ±  1%   +9.17% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel           27.56m ±  1%   30.17m ±  1%   +9.45% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel-16        4.902m ± 12%   4.361m ±  9%  -11.03% (p=0.019 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial        1209.0n ±  2%   961.8n ±  2%  -20.45% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     1196.0n ±  1%   961.0n ±  1%  -19.64% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      1205.0n ±  1%   956.8n ±  1%  -20.60% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16    174.7n ±  8%   136.8n ±  6%  -21.69% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial            2.339µ ±  1%   1.908µ ±  1%  -18.43% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial-16         2.325µ ±  1%   1.909µ ±  1%  -17.93% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel          2.315µ ±  1%   1.895µ ±  1%  -18.14% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel-16       366.6n ± 12%   273.2n ±  8%  -25.47% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial         1176.5n ±  1%   940.4n ±  1%  -20.07% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial-16      1162.5n ±  1%   939.3n ±  1%  -19.20% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel       1171.0n ±  1%   940.5n ±  1%  -19.68% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel-16     174.7n ± 10%   139.5n ±  8%  -20.15% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial           58.45n ±  1%   40.21n ±  3%  -31.20% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial-16        58.45n ±  1%   40.14n ±  2%  -31.33% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel         58.20n ±  2%   39.92n ±  3%  -31.41% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel-16      9.133n ± 10%   6.472n ± 10%  -29.14% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial              1198.5n ±  2%   961.6n ±  1%  -19.77% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial-16           1195.5n ±  1%   951.1n ±  1%  -20.45% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel            1206.5n ±  2%   949.3n ±  1%  -21.32% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel-16          178.2n ±  7%   131.2n ±  8%  -26.33% (p=0.000 n=10)
+geomean                                                            9.228µ         7.517µ        -18.54%
+
+                                                                │     fused     │                baseline                │
+                                                                │      B/s      │      B/s        vs base                │
+SelectorValidation/body=ascii-20m/execution=serial                842.4Mi ±  2%   1001.0Mi ±  2%  +18.82% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=serial-16             846.8Mi ±  2%    998.8Mi ±  1%  +17.95% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel              838.3Mi ±  1%   1002.2Mi ±  2%  +19.55% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel-16           5.633Gi ±  9%    6.957Gi ±  7%  +23.49% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial            722.5Mi ±  1%    661.1Mi ±  1%   -8.49% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial-16         723.2Mi ±  1%    662.5Mi ±  1%   -8.40% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel          725.6Mi ±  1%    662.9Mi ±  1%   -8.64% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel-16       3.984Gi ± 13%    4.480Gi ± 10%  +12.44% (p=0.019 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial        808.3Mi ±  2%   1016.4Mi ±  2%  +25.74% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     817.5Mi ±  1%   1017.1Mi ±  1%  +24.42% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      811.3Mi ±  2%   1021.7Mi ±  1%  +25.93% (p=0.000 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16   5.466Gi ±  8%    6.978Gi ±  6%  +27.67% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial           835.5Mi ±  1%   1024.2Mi ±  1%  +22.59% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=serial-16        840.2Mi ±  1%   1023.8Mi ±  1%  +21.85% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel         844.1Mi ±  1%   1031.2Mi ±  1%  +22.15% (p=0.000 n=10)
+SelectorValidation/body=depth-at-limit/execution=parallel-16      5.206Gi ± 14%    6.990Gi ±  8%  +34.26% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial         1.623Gi ±  1%    2.031Gi ±  2%  +25.15% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=serial-16      1.643Gi ±  1%    2.034Gi ±  1%  +23.81% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel       1.631Gi ±  1%    2.031Gi ±  1%  +24.49% (p=0.000 n=10)
+SelectorValidation/body=depth-over-limit/execution=parallel-16    10.94Gi ± 11%    13.70Gi ±  9%  +25.20% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial          603.7Mi ±  1%    877.4Mi ±  2%  +45.34% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=serial-16       603.6Mi ±  1%    879.1Mi ±  3%  +45.64% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel        606.3Mi ±  2%    883.9Mi ±  3%  +45.80% (p=0.000 n=10)
+SelectorValidation/body=escaped-strings/execution=parallel-16     3.774Gi ± 11%    5.325Gi ± 11%  +41.08% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial              815.0Mi ±  2%   1015.6Mi ±  1%  +24.61% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=serial-16           816.8Mi ±  1%   1026.8Mi ±  1%  +25.71% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel            809.7Mi ±  2%   1028.7Mi ±  1%  +27.05% (p=0.000 n=10)
+SelectorValidation/body=ordinary-1k/execution=parallel-16         5.353Gi ±  8%    7.266Gi ±  8%  +35.74% (p=0.000 n=10)
+geomean                                                           1.337Gi          1.642Gi        +22.76%
+
+                                                                │     fused      │               baseline                │
+                                                                │      B/op      │    B/op      vs base                  │
+SelectorValidation/body=ascii-20m/execution=serial                0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=serial-16             0.000 ±   0%     0.000 ±   ?        ~ (p=0.582 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel              12.00 ±   8%     10.00 ± 10%  -16.67% (p=0.000 n=10)
+SelectorValidation/body=ascii-20m/execution=parallel-16           53.00 ±   6%     40.00 ± 15%  -24.53% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=serial            0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=serial-16         0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=parallel          15.00 ±   7%     16.00 ±  0%   +6.67% (p=0.000 n=10)
+SelectorValidation/body=multibyte-20m/execution=parallel-16       16.00 ± 331%     39.50 ± 80%        ~ (p=0.540 n=10)
+SelectorValidation/body=invalid-utf8-tail/execution=serial        0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16   0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial           0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial-16        0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel         0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel-16      0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial         0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial-16      0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel       0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel-16    0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial          0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial-16       0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel        0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel-16     0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial              0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial-16           0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel            0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel-16         0.000 ±   0%     0.000 ±  0%        ~ (p=1.000 n=10) ¹
+geomean                                                                        ²                 +1.82%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                                                                │    fused     │              baseline               │
+                                                                │  allocs/op   │ allocs/op   vs base                 │
+SelectorValidation/body=ascii-20m/execution=serial                0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=serial-16             0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=parallel              0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ascii-20m/execution=parallel-16           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=serial            0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=serial-16         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=parallel          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=multibyte-20m/execution=parallel-16       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=serial        0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=serial-16     0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=invalid-utf8-tail/execution=parallel-16   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=serial-16        0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-at-limit/execution=parallel-16      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=serial-16      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=depth-over-limit/execution=parallel-16    0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=serial-16       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel        0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=escaped-strings/execution=parallel-16     0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial              0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=serial-16           0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel            0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+SelectorValidation/body=ordinary-1k/execution=parallel-16         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                                                      ²               +0.00%                ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+```
+
+#### Rejection gate
+
+- forward long ASCII 四种模式慢约 19% 到 27%，均为 `p=0.000`；reverse 方向一致。
+- multibyte serial、serial-16 和 parallel 改善约 9%，但 `parallel-16` forward 慢 9.50%（`p=0.029`），reverse 方向一致。
+- 1 KiB 四种模式 forward 慢约 25.8% 到 29.4%，reverse 方向一致。
+- invalid UTF-8、depth boundary 和 escaped-string holdout 也出现显著回退。
+
+候选及 benchmark-only oracle 已删除，没有 production 或 test diff。
+
+### C. Inline duplicate-name storage
+
+#### Decision
+
+`REJECT`。`[4]string` 加 overflow map 在部分 many-small-object timing 上有局部收益，但 many-small allocation 没有改善，wide object 和 nested tool schema 明确增加 allocation，并违反 5% holdout gate。`hasDuplicateJSONMembers` 保持 object-local map。
+
+#### Correctness oracle
+
+普通 duplicate mutation 能被 oracle 捕获：
+
+```plaintext
+--- FAIL: TestInlineDuplicateWalkerMatchesMapWalker (0.00s)
+    selectors_gemini_test.go:540: duplicate member: inline walker = false, production map walker = true
+FAIL
+FAIL    github.com/DoingDog/cpa-plugin-censorship    0.053s
+FAIL
+```
+
+旧 benchmark 的 raw string 使用两个反斜杠，`case=escaped-equivalent-duplicate` 实际不是 Unicode-escaped equivalent key。下方原始完整 `benchstat` 中该 case 的历史 rows 只为保留审计记录，不参与任何 gate。
+
+修正 fixture 后，第二个 member name bytes 为一个 `0x5C` 后接 ASCII `u0078`，JSON 解码后与第一个 key `x` 重复。clean oracle 覆盖该 key、普通与嵌套 duplicate、arrays、root/nested early termination、1023/1024/1025 深度 fixture，以及 10,000 个确定性 generated object/array input：
+
+```powershell
+go test . -run '^TestInlineDuplicateWalkerMatchesMapWalker$' -count=1
+```
+
+结果：
+
+```plaintext
+ok   github.com/DoingDog/cpa-plugin-censorship  0.155s
+```
+
+#### Original measurement
+
+每种实现按 forward 和 reverse 两种相反顺序各采集 10 个独立 process sample，覆盖 serial、parallel、serial-16 和 parallel-16。除已明确排除的旧 escaped-equivalent rows 外，其余结果用于 gate。完整原始 `benchstat -col /impl` 输出：
+
+```plaintext
+goos: windows
+goarch: amd64
+pkg: github.com/DoingDog/cpa-plugin-censorship
+cpu: AMD Ryzen 7 7840H with Radeon 780M Graphics
+                                                                             │     map      │                inline                │
+                                                                             │    sec/op    │    sec/op     vs base                │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                    18.78m ± 18%   16.68m ± 18%  -11.17% (p=0.023 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                 18.67m ±  9%   16.29m ± 12%  -12.78% (p=0.011 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                  18.22m ± 14%   16.55m ± 10%   -9.17% (p=0.023 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16               3.494m ± 24%   2.999m ± 27%        ~ (p=0.247 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial                   31.92m ±  9%   27.50m ± 14%  -13.85% (p=0.005 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                32.83m ±  9%   28.30m ±  9%  -13.81% (p=0.002 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                 31.22m ± 17%   29.30m ± 12%   -6.15% (p=0.035 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16              6.598m ± 31%   5.671m ± 27%        ~ (p=0.143 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial                         17.14µ ± 13%   18.29µ ± 24%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      17.40µ ± 11%   17.59µ ± 12%        ~ (p=0.529 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       18.63µ ± 15%   20.18µ ± 21%        ~ (p=0.353 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    5.507µ ± 29%   5.584µ ± 23%        ~ (p=0.912 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                 150.6µ ±  9%   142.1µ ± 10%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16              146.6µ ± 14%   142.6µ ± 14%        ~ (p=0.436 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel               146.4µ ± 19%   158.3µ ± 12%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16            30.59µ ± 23%   34.87µ ± 21%        ~ (p=0.123 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        415.2n ± 13%   360.1n ±  7%  -13.27% (p=0.003 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     424.2n ± 14%   405.5n ± 11%        ~ (p=0.393 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      393.9n ± 14%   362.0n ± 18%        ~ (p=0.631 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   118.8n ± 25%   108.1n ± 19%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      17.91µ ± 11%   18.79µ ± 11%        ~ (p=0.631 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   20.17µ ± 16%   22.16µ ± 22%        ~ (p=0.165 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    18.06µ ± 12%   17.93µ ± 14%        ~ (p=1.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 5.395µ ± 23%   5.431µ ± 23%        ~ (p=0.739 n=10)
+geomean                                                                        106.2µ         102.1µ         -3.88%
+
+                                                                             │      map      │                inline                 │
+                                                                             │      B/s      │      B/s       vs base                │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                    71.12Mi ± 15%   80.04Mi ± 15%  +12.54% (p=0.023 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                 71.51Mi ±  9%   81.99Mi ± 11%  +14.66% (p=0.011 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                  73.29Mi ± 12%   80.71Mi ± 11%  +10.12% (p=0.023 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16               382.5Mi ± 31%   446.3Mi ± 36%        ~ (p=0.247 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial                   77.68Mi ±  8%   90.17Mi ± 12%  +16.08% (p=0.005 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                75.52Mi ± 10%   87.62Mi ± 10%  +16.02% (p=0.002 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                 79.52Mi ± 15%   84.62Mi ± 14%   +6.42% (p=0.035 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16              375.8Mi ± 44%   437.4Mi ± 38%        ~ (p=0.143 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial                         66.17Mi ± 12%   61.98Mi ± 20%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      65.18Mi ± 12%   64.48Mi ± 11%        ~ (p=0.529 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       60.98Mi ± 18%   56.20Mi ± 26%        ~ (p=0.353 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    206.0Mi ± 41%   203.1Mi ± 29%        ~ (p=0.912 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                 135.8Mi ± 10%   143.9Mi ±  9%        ~ (p=0.494 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16              139.5Mi ± 12%   143.4Mi ± 12%        ~ (p=0.436 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel               139.7Mi ± 16%   129.2Mi ± 14%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16            668.4Mi ± 25%   586.6Mi ± 26%        ~ (p=0.123 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        43.66Mi ± 15%   50.33Mi ±  8%  +15.29% (p=0.003 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     42.73Mi ± 16%   44.68Mi ± 13%        ~ (p=0.393 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      46.03Mi ± 16%   50.05Mi ± 15%        ~ (p=0.631 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   152.4Mi ± 34%   167.7Mi ± 23%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      63.89Mi ± 10%   60.92Mi ± 12%        ~ (p=0.631 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   56.76Mi ± 20%   51.64Mi ± 29%        ~ (p=0.165 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    63.37Mi ± 11%   63.85Mi ± 13%        ~ (p=1.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 212.2Mi ± 29%   210.8Mi ± 29%        ~ (p=0.739 n=10)
+geomean                                                                        101.8Mi         105.9Mi         +4.02%
+
+                                                                             │       map        │                 inline                  │
+                                                                             │       B/op       │      B/op       vs base                 │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                      0.000 ±   0%       0.000 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                   0.000 ±   0%       0.000 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                   10.000 ±  20%       9.000 ±  11%       ~ (p=0.207 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16                 42.50 ±  27%       35.00 ±  66%       ~ (p=0.184 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial                     0.000 ±   0%       0.000 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                  0.000 ±   0%       0.000 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                   17.00 ±  24%       15.50 ±  16%       ~ (p=0.108 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16                24.50 ± 320%       17.00 ± 371%       ~ (p=0.423 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial                         12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                  0.00Ki ±   0%     16.00Ki ±   0%       ? (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16               0.00Ki ±   0%     16.00Ki ±   0%       ? (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel                0.00Ki ±   0%     16.00Ki ±   0%       ? (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16             0.00Ki ±   0%     16.00Ki ±   0%       ? (p=0.000 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial          208.0 ±   0%       208.0 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16       208.0 ±   0%       208.0 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel        208.0 ±   0%       208.0 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16     208.0 ±   0%       208.0 ±   0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 12.95Ki ±   0%     13.20Ki ±   0%  +1.93% (p=0.000 n=10)
+geomean                                                                                       ²                   ?                     ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                                                                             │     map      │                inline                │
+                                                                             │  allocs/op   │ allocs/op   vs base                  │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                    0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                 0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                  0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16               0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=serial                   0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                 0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16              0.000 ± 0%     0.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=wide-object/execution=serial                         11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                   0.0 ± 0%     128.0 ± 0%        ? (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16                0.0 ± 0%     128.0 ± 0%        ? (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel                 0.0 ± 0%     128.0 ± 0%        ? (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16              0.0 ± 0%     128.0 ± 0%        ? (p=0.000 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        6.000 ± 0%     6.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     6.000 ± 0%     6.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      6.000 ± 0%     6.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   6.000 ± 0%     6.000 ± 0%        ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 11.00 ± 0%     13.00 ± 0%  +18.18% (p=0.000 n=10)
+geomean                                                                                   ²               ?                      ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+Reverse order: inline first, map second
+
+goos: windows
+goarch: amd64
+pkg: github.com/DoingDog/cpa-plugin-censorship
+cpu: AMD Ryzen 7 7840H with Radeon 780M Graphics
+                                                                             │    inline    │                 map                  │
+                                                                             │    sec/op    │    sec/op     vs base                │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                    16.40m ± 13%   19.91m ± 12%  +21.41% (p=0.001 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                 16.32m ± 11%   19.56m ±  8%  +19.84% (p=0.001 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                  16.37m ±  8%   19.07m ±  9%  +16.53% (p=0.002 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16               3.025m ± 14%   3.552m ± 32%        ~ (p=0.089 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial                   30.78m ± 14%   31.73m ± 20%        ~ (p=0.052 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                29.35m ±  8%   34.15m ± 11%  +16.36% (p=0.000 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                 28.00m ±  5%   32.62m ±  9%  +16.53% (p=0.000 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16              6.072m ± 20%   6.841m ± 37%        ~ (p=0.105 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial                         18.28µ ± 10%   17.70µ ± 15%        ~ (p=0.631 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      18.52µ ±  7%   17.96µ ±  9%        ~ (p=0.436 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       18.93µ ± 11%   19.50µ ± 20%        ~ (p=0.971 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    5.843µ ± 16%   5.936µ ± 29%        ~ (p=0.796 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                 152.5µ ± 16%   156.5µ ± 21%        ~ (p=0.853 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16              153.4µ ±  8%   154.8µ ± 10%        ~ (p=0.853 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel               153.1µ ±  8%   157.2µ ± 11%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16            39.39µ ± 21%   33.19µ ± 11%  -15.75% (p=0.029 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        373.1n ±  6%   414.7n ± 10%  +11.15% (p=0.002 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     398.9n ±  9%   416.7n ±  9%        ~ (p=0.393 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      394.3n ± 16%   426.4n ± 14%   +8.13% (p=0.043 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   122.3n ± 17%   123.6n ±  8%        ~ (p=0.280 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      18.53µ ±  6%   18.74µ ±  9%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   22.29µ ± 10%   21.52µ ± 14%        ~ (p=0.393 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    19.89µ ±  9%   19.27µ ± 11%        ~ (p=0.353 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 5.926µ ± 27%   5.466µ ± 10%        ~ (p=0.165 n=10)
+geomean                                                                        105.7µ         110.7µ         +4.77%
+
+                                                                             │    inline     │                  map                  │
+                                                                             │      B/s      │      B/s       vs base                │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                    81.41Mi ± 11%   67.05Mi ± 11%  -17.64% (p=0.001 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                 81.83Mi ± 10%   68.27Mi ±  8%  -16.57% (p=0.001 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                  81.66Mi ±  7%   70.00Mi ± 10%  -14.28% (p=0.002 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16               441.6Mi ± 13%   376.2Mi ± 47%        ~ (p=0.089 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial                   80.55Mi ± 16%   78.14Mi ± 17%        ~ (p=0.052 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                84.49Mi ±  8%   72.63Mi ± 12%  -14.04% (p=0.000 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                 88.57Mi ±  5%   76.01Mi ± 10%  -14.18% (p=0.000 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16              408.8Mi ± 25%   362.9Mi ± 57%        ~ (p=0.105 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial                         62.07Mi ±  9%   64.07Mi ± 15%        ~ (p=0.631 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      61.23Mi ±  7%   63.15Mi ±  9%        ~ (p=0.436 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       59.91Mi ± 10%   58.22Mi ± 25%        ~ (p=0.971 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    194.1Mi ± 19%   191.0Mi ± 41%        ~ (p=0.796 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                 134.1Mi ± 14%   130.8Mi ± 17%        ~ (p=0.853 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16              133.3Mi ±  8%   132.2Mi ± 11%        ~ (p=0.853 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel               133.6Mi ±  8%   130.1Mi ± 13%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16            519.1Mi ± 27%   616.2Mi ± 13%  +18.70% (p=0.029 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        48.57Mi ±  6%   43.71Mi ±  9%  -10.01% (p=0.002 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     45.43Mi ±  9%   43.49Mi ± 10%        ~ (p=0.393 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      45.95Mi ± 19%   42.51Mi ± 17%   -7.49% (p=0.043 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   148.2Mi ± 21%   146.5Mi ±  7%        ~ (p=0.280 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      61.76Mi ±  5%   61.08Mi ±  8%        ~ (p=0.481 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   51.41Mi ±  9%   53.22Mi ± 16%        ~ (p=0.393 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    57.54Mi ± 10%   59.38Mi ± 13%        ~ (p=0.325 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 193.1Mi ± 36%   209.4Mi ±  9%        ~ (p=0.165 n=10)
+geomean                                                                        102.3Mi         97.64Mi         -4.54%
+
+                                                                             │     inline      │                    map                     │
+                                                                             │      B/op       │     B/op       vs base                     │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                      0.000 ±  0%       0.000 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                   0.000 ±  0%       0.000 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                    9.000 ± 11%      10.000 ± 20%   +11.11% (p=0.042 n=10)
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16                 40.50 ± 19%       52.00 ± 44%         ~ (p=0.086 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=serial                     0.000 ±  0%       0.000 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                  0.000 ±  0%       0.000 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                   16.00 ± 38%       17.50 ± 20%    +9.38% (p=0.035 n=10)
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16                79.50 ± 80%       78.00 ± 76%         ~ (p=0.684 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial                         13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                 16.00Ki ±  0%      0.00Ki ±  0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16              16.00Ki ±  0%      0.00Ki ±  0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel               16.00Ki ±  0%      0.00Ki ±  0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16            16.00Ki ±  0%      0.00Ki ±  0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial          208.0 ±  0%       208.0 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16       208.0 ±  0%       208.0 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel        208.0 ±  0%       208.0 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16     208.0 ±  0%       208.0 ±  0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 13.20Ki ±  0%     12.95Ki ±  0%    -1.89% (p=0.000 n=10)
+geomean                                                                                      ²                  ?                       ² ³
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+³ ratios must be >0 to compute geomean
+
+                                                                             │    inline    │                   map                   │
+                                                                             │  allocs/op   │ allocs/op   vs base                     │
+DuplicateJSONMembers/case=two-field-100000/execution=serial                    0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=serial-16                 0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=parallel                  0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=two-field-100000/execution=parallel-16               0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=serial                   0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=serial-16                0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=parallel                 0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=four-field-100000/execution=parallel-16              0.000 ± 0%     0.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=wide-object/execution=serial                         13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=serial-16                      13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel                       13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+DuplicateJSONMembers/case=wide-object/execution=parallel-16                    13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial                 128.0 ± 0%       0.0 ± 0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=serial-16              128.0 ± 0%       0.0 ± 0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel               128.0 ± 0%       0.0 ± 0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=nested-tool-schemas/execution=parallel-16            128.0 ± 0%       0.0 ± 0%  -100.00% (p=0.000 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        6.000 ± 0%     6.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     6.000 ± 0%     6.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      6.000 ± 0%     6.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   6.000 ± 0%     6.000 ± 0%         ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=late-duplicate/execution=serial                      13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=serial-16                   13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel                    13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+DuplicateJSONMembers/case=late-duplicate/execution=parallel-16                 13.00 ± 0%     11.00 ± 0%   -15.38% (p=0.000 n=10)
+geomean                                                                                   ²               ?                       ² ³
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+³ ratios must be >0 to compute geomean
+```
+
+#### Corrected escaped-equivalent measurement
+
+只重跑已证明无效的 escaped-equivalent workload。forward 的 10 个 process pair 都是 `map` 后 `inline`；reverse 的 10 个 process pair 都是 `inline` 后 `map`。每个 process 使用 `-cpu=1,16`。80 条统计 parallel row 全部满足 `b.N > active GOMAXPROCS`。
+
+Forward：
+
+```plaintext
+order: map then inline
+command: go test . -run '^$' -bench '^BenchmarkDuplicateJSONMembers/impl=<impl>/' -benchtime=1s -count=1 -cpu=1,16
+goos: windows
+goarch: amd64
+pkg: github.com/DoingDog/cpa-plugin-censorship
+cpu: AMD Ryzen 7 7840H with Radeon 780M Graphics
+                                                                             │     map      │                inline                │
+                                                                             │    sec/op    │    sec/op     vs base                │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        747.6n ± 17%   646.7n ± 25%        ~ (p=0.165 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     781.3n ± 18%   686.3n ± 13%        ~ (p=0.063 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      809.6n ± 19%   733.8n ± 26%        ~ (p=0.165 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   223.4n ± 15%   208.5n ± 14%   -6.65% (p=0.015 n=10)
+geomean                                                                        570.1n         510.5n        -10.46%
+
+                                                                             │      map      │                inline                 │
+                                                                             │      B/s      │      B/s       vs base                │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        22.97Mi ± 21%   26.55Mi ± 20%        ~ (p=0.165 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     22.07Mi ± 21%   25.01Mi ± 11%        ~ (p=0.063 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      21.22Mi ± 23%   23.40Mi ± 35%        ~ (p=0.165 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   76.84Mi ± 18%   82.31Mi ± 17%   +7.11% (p=0.015 n=10)
+geomean                                                                        30.15Mi         33.63Mi        +11.51%
+
+                                                                             │    map     │               inline                │
+                                                                             │    B/op    │    B/op     vs base                 │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                                                        200.0        200.0       +0.00%
+¹ all samples are equal
+
+                                                                             │    map     │               inline                │
+                                                                             │ allocs/op  │ allocs/op   vs base                 │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                                                        5.000        5.000       +0.00%
+¹ all samples are equal
+```
+
+Reverse：
+
+```plaintext
+order: inline then map
+command: go test . -run '^$' -bench '^BenchmarkDuplicateJSONMembers/impl=<impl>/' -benchtime=1s -count=1 -cpu=1,16
+goos: windows
+goarch: amd64
+pkg: github.com/DoingDog/cpa-plugin-censorship
+cpu: AMD Ryzen 7 7840H with Radeon 780M Graphics
+                                                                             │    inline    │                 map                 │
+                                                                             │    sec/op    │    sec/op     vs base               │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        736.1n ± 54%   761.0n ± 53%       ~ (p=0.739 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     731.9n ± 57%   659.9n ± 50%       ~ (p=0.353 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      742.1n ± 57%   652.4n ± 51%       ~ (p=0.684 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   210.5n ± 50%   220.6n ± 50%       ~ (p=0.184 n=10)
+geomean                                                                        538.6n         518.5n        -3.74%
+
+                                                                             │     inline     │                  map                  │
+                                                                             │      B/s       │      B/s        vs base               │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        23.46Mi ± 117%   22.56Mi ± 111%       ~ (p=0.739 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     23.56Mi ± 133%   26.10Mi ± 100%       ~ (p=0.353 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      23.17Mi ± 130%   26.38Mi ± 101%       ~ (p=0.684 n=10)
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   81.54Mi ± 100%   77.82Mi ± 102%       ~ (p=0.184 n=10)
+geomean                                                                        31.96Mi          33.16Mi         +3.74%
+
+                                                                             │   inline   │                 map                 │
+                                                                             │    B/op    │    B/op     vs base                 │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   200.0 ± 0%   200.0 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                                                        200.0        200.0       +0.00%
+¹ all samples are equal
+
+                                                                             │   inline   │                 map                 │
+                                                                             │ allocs/op  │ allocs/op   vs base                 │
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial        5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=serial-16     5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel      5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+DuplicateJSONMembers/case=escaped-equivalent-duplicate/execution=parallel-16   5.000 ± 0%   5.000 ± 0%       ~ (p=1.000 n=10) ¹
+geomean                                                                        5.000        5.000       +0.00%
+¹ all samples are equal
+```
+
+corrected workload 只有 forward `parallel-16` 显著改善，reverse 四种模式均不显著；两种顺序所有模式都是 `200 B/op, 5 allocs/op`。该结果不改变 `REJECT`。
+
+#### Rejection gate
+
+1. many-small-object timing 没有在全部执行方式和两个顺序中显著改善。two-field 与 four-field 的 `parallel-16` 均不显著，four-field reverse serial 为 `p=0.052`。
+2. many-small-object allocation 没有改善。two-field 与 four-field 的全部执行方式均为 `0 -> 0 allocs/op`。
+3. memory gate 失败。wide object 约为 `12.95 KiB -> 13.20 KiB`、`11 -> 13 allocs/op`；nested tool schemas 为 `0 B/op, 0 allocs/op -> 16 KiB/op, 128 allocs/op`。这些回退出现在 serial rows。
+4. 5% holdout gate 失败。forward wide serial 约回退 6.7%，forward wide parallel 约回退 8.3%。
+
+#### Review and cleanup
+
+初始 scoped review 的两项 Important 和两项 Minor finding 已在 fix round 1 中处理。Opus xhigh scoped re-review 的 spec verdict 和 quality verdict 均为 `PASS`。临时 candidate、oracle、fixture helper 和 benchmark 均已删除；Task 7 没有保留 production 或 test change。
+
 ## Final verification
