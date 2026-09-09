@@ -1604,4 +1604,182 @@ corrected workload 只有 forward `parallel-16` 显著改善，reverse 四种模
 
 初始 scoped review 的两项 Important 和两项 Minor finding 已在 fix round 1 中处理。Opus xhigh scoped re-review 的 spec verdict 和 quality verdict 均为 `PASS`。临时 candidate、oracle、fixture helper 和 benchmark 均已删除；Task 7 没有保留 production 或 test change。
 
+### D. Continuous folded KMP dispatch
+
+#### Decision
+
+`REJECT`。候选移除 `rewriteFoldedKMP` 在开头相邻命中时转回 `rewriteFolded` 的四行 fallback。required hybrid 明显加速，但 dense 和 overlap holdout 在两个 mode、两个 size、所有 execution variants 中均回退超过 5%。production fallback 保留，candidate、benchmark 和 oracle 均已删除。
+
+#### Correctness oracle
+
+删除前的只读 candidate/oracle snapshot 保存在本次 SDD workspace 的 `task-8-kmp-candidate-snapshot.patch`。snapshot 证明 candidate 只省略指定 fallback，并保留其余 `rewriteFoldedKMP` 语句。oracle 对所有 benchmark cases 和 10,000 个确定性生成输入比较 candidate 与 `rewriteFolded` 的 output bytes 和 match flag，覆盖 strip、obfs、dense、sparse、none、hybrid、Unicode `SimpleFold`、invalid UTF-8 和 overlap。
+
+注入 mutation 后，以下 focused test 在 `mode=strip`、64 KiB、ASCII hybrid case 按预期失败：
+
+```powershell
+go test . -run '^TestBenchmarkRewriteFoldedKMPContinuousMatchesOracle$' -count=1
+```
+
+mutation 输出保存在 `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-oracle-mutation.txt`。恢复 candidate 后，同一命令通过：
+
+```plaintext
+ok   github.com/DoingDog/cpa-plugin-censorship  1.300s
+```
+
+clean 输出保存在 `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-oracle-clean.txt`。
+
+#### Measurement validity
+
+initial forward 顺序为 `fallback -> continuous`，reverse 顺序为 `continuous -> fallback`。每个 implementation、每个 order 各采集 10 个独立 process sample，使用 `-benchmem -benchtime=1s -cpu=1,16`。initial series 有 41 个无效 `parallel-16` sample：forward 21 个、reverse 20 个，均因 `b.N <= 16` 被排除。
+
+无效 rows 属于三个 1 MiB workload：strip hybrid、obfs hybrid、strip invalid-UTF8 sparse。每个 workload、每个 order、每个 implementation 重新采集 10 个 process sample：
+
+```powershell
+go test . -run '^$' -bench '^BenchmarkFoldedKMPHybrid/impl=<implementation>/<one retry workload>$' -benchmem -benchtime=17x -count=1 -cpu=16
+```
+
+六个 retry raw file 各含两种 implementation 的 10 个 row，全部 `b.N=17 > GOMAXPROCS(16)`。固定 `17x` 只满足有效并发 operation 数要求，不描述成 1-second sample。未重试的 initial statistical rows 也逐项满足 `b.N > active GOMAXPROCS`。
+
+主要 artifacts：
+
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-forward-cpu1-16-benchstat.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-reverse-cpu1-16-benchstat.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-bn-validity.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-fixed-forward-cpu16-retry-benchstat.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-fixed-reverse-cpu16-retry-benchstat.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-folded-kmp-fixed-retry-bn-validity.txt`
+
+#### Required hybrid results
+
+排除 initial invalid rows，并以同 workload retry 替换 1 MiB `parallel-16` 后：
+
+| Order | Effective required-hybrid result |
+|---|---|
+| forward，fallback -> continuous | continuous 快 79.04% 至 84.52%；1 MiB strip/obfs `parallel-16` 来自 `17x` retry。 |
+| reverse，continuous -> fallback | fallback 慢 407.42% 至 549.19%；1 MiB strip/obfs `parallel-16` 来自 `17x` retry。 |
+
+所有 required rows 均为显著改善，allocation 没有显著回退。
+
+#### Complete holdout violations
+
+下表统一使用 `(continuous sec/op / fallback sec/op - 1) * 100`。每组包括 serial、serial-16、parallel、parallel-16，所有 listed comparisons 都为 `p=0.000`。
+
+Forward，fallback -> continuous：
+
+| Mode | Holdout | Text | Continuous relative to fallback |
+|---|---|---:|---:|
+| strip | dense | 64 KiB | +79.39% 至 +91.94% |
+| strip | dense | 1 MiB | +88.84% 至 +92.88% |
+| obfs | dense | 64 KiB | +52.59% 至 +73.91% |
+| obfs | dense | 1 MiB | +71.00% 至 +81.06% |
+| strip | overlap | 64 KiB | +60.66% 至 +89.95% |
+| strip | overlap | 1 MiB | +89.67% 至 +94.73% |
+| obfs | overlap | 64 KiB | +52.04% 至 +77.37% |
+| obfs | overlap | 1 MiB | +76.57% 至 +78.95% |
+
+Reverse，continuous -> fallback：
+
+| Mode | Holdout | Text | Continuous relative to fallback |
+|---|---|---:|---:|
+| strip | dense | 64 KiB | +74.20% 至 +92.08% |
+| strip | dense | 1 MiB | +79.42% 至 +90.52% |
+| obfs | dense | 64 KiB | +54.63% 至 +78.66% |
+| obfs | dense | 1 MiB | +68.92% 至 +79.77% |
+| strip | overlap | 64 KiB | +61.10% 至 +90.98% |
+| strip | overlap | 1 MiB | +89.53% 至 +93.55% |
+| obfs | overlap | 64 KiB | +64.98% 至 +77.18% |
+| obfs | overlap | 1 MiB | +73.83% 至 +81.84% |
+
+任一 row 已足以拒绝 candidate；这里所有 dense/overlap groups 都违反 5% hard cap。KMP `REJECT` 不依赖 targeted retry。
+
+### E. Exact block matcher threshold
+
+#### Decision
+
+`RETAIN exactByteMatcherMinRules = 255`。128 rules 和 192 rules 都因 64 KiB holdout 超过 5% 被拒绝；255 是最低满足所有 request 和 construction gates 的实测 threshold。
+
+#### TDD and oracle
+
+`TestBenchmarkExactBlockThresholdMatchesOracle` 比较 ordered strategy 与前四条 ordered checks 加 prebuilt matcher strategy，覆盖 128、192、255 rules，64 KiB、1 MiB，none、first、middle、last。no-hit 必须为 `-1,false`，hit 必须返回 fixture 指定的 exact ordered rule index 和 `true`。
+
+注入 mutation 后运行：
+
+```powershell
+go test . -run '^TestBenchmarkExactBlockThresholdMatchesOracle$' -count=1
+```
+
+按预期失败：
+
+```plaintext
+--- FAIL: TestBenchmarkExactBlockThresholdMatchesOracle (0.00s)
+    benchmark_test.go:1475: matcher rules=128 text=65536 match=middle: got -1, false; want 64, true
+FAIL
+```
+
+恢复后同一命令通过：
+
+```plaintext
+ok   github.com/DoingDog/cpa-plugin-censorship  0.086s
+```
+
+边界 RED 把 expected threshold 改为 255 时，原 production constant 256 使 `useExactByteMatcher(255, 16384)` 返回 false，且 255-rule snapshot 的 `ExactBlockMatcher` 为 nil。production constant 改为 255 后，254/255 boundary tests 通过。
+
+#### Measurement validity
+
+request benchmark 的 fixture、ordered oracle、matcher construction 和 correctness probe 均在 `b.ResetTimer` 前；timed loop 只执行 strategy。forward 为 `ordered -> matcher`，reverse 为 `matcher -> ordered`。每个 implementation、每个 order 各 10 个独立 process sample，使用 `-benchmem -benchtime=1s -cpu=1,16`。
+
+全部 1,920 个 `RunParallel` samples 有效：forward 的 cpu=1 最小 `b.N=10`、cpu=16 最小 `b.N=51`；reverse 的 cpu=1 最小 `b.N=12`、cpu=16 最小 `b.N=85`。build benchmark 含 10 个独立 process samples。
+
+Artifacts：
+
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-exact-block-threshold-forward-cpu1-16-benchstat.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-exact-block-threshold-reverse-cpu1-16-benchstat.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-exact-block-threshold-build-cpu1-benchstat.txt`
+- `C:\Users\user\AppData\Local\Temp\cpa-v021-exact-block-threshold-bn-validity.txt`
+
+#### Threshold gate
+
+| Rules | Required 1 MiB no/last | 64 KiB max regression | Early-hit max regression | Build cost | Decision |
+|---:|---|---:|---:|---|---|
+| 128 | 至少 cpu=16 parallel rows 不显著。 | +68.52% | +3.39% | 26.76 µs，145 nodes，18.45 KiB，86 allocs | REJECT |
+| 192 | 全部 required rows 显著改善。 | +21.68% | +2.87% | 39.80 µs，216 nodes，30.82 KiB，125 allocs | REJECT |
+| 255 | 两个 order 的全部 required rows 显著改善。 | +1.90% | +3.73% | 52.74 µs，286 nodes，34.55 KiB，157 allocs | RETAIN |
+| 256 | 未测 request strategy。 | 不适用 | 不适用 | 52.53 µs，287 nodes，34.55 KiB，157 allocs | construction reference |
+
+255 的 required 1 MiB results：
+
+| Order | Workload | Ordered | Matcher | Matcher delta | p |
+|---|---|---:|---:|---:|---:|
+| forward | none serial | 3.201 ms | 1.290 ms | -59.72% | 0.000 |
+| forward | none serial-16 | 3.182 ms | 1.292 ms | -59.42% | 0.002 |
+| forward | none parallel | 3.179 ms | 1.288 ms | -59.47% | 0.000 |
+| forward | none parallel-16 | 471.3 µs | 220.5 µs | -53.22% | 0.000 |
+| forward | last serial | 3.308 ms | 1.284 ms | -61.18% | 0.000 |
+| forward | last serial-16 | 3.174 ms | 1.290 ms | -59.36% | 0.000 |
+| forward | last parallel | 3.169 ms | 1.279 ms | -59.65% | 0.000 |
+| forward | last parallel-16 | 489.2 µs | 202.6 µs | -58.59% | 0.000 |
+| reverse | none serial | 3.160 ms | 1.275 ms | -59.65% | 0.000 |
+| reverse | none serial-16 | 3.198 ms | 1.257 ms | -60.69% | 0.000 |
+| reverse | none parallel | 3.093 ms | 1.272 ms | -58.86% | 0.000 |
+| reverse | none parallel-16 | 499.7 µs | 190.3 µs | -61.88% | 0.000 |
+| reverse | last serial | 3.241 ms | 1.281 ms | -60.48% | 0.000 |
+| reverse | last serial-16 | 3.113 ms | 1.280 ms | -58.89% | 0.000 |
+| reverse | last parallel | 3.117 ms | 1.282 ms | -58.87% | 0.000 |
+| reverse | last parallel-16 | 466.9 µs | 197.2 µs | -57.76% | 0.000 |
+
+254/255 决定 `compileSnapshot` 是否构建 `ExactBlockMatcher`；16 KiB 决定请求是否调用预建 matcher。threshold 降低后，每个 exact-block 255-rule snapshot 都新增 52.74 µs、286 nodes、34.55 KiB/op 和 157 allocs/op 的绝对构建成本，即使请求文本小于 16 KiB。相对 brief 指定的 256-rule construction reference，255 的构建时间回退约 0.40%，B/op 和 allocs/op 不变，三项都低于 5% cap。
+
+#### Retained change and verification
+
+保留的文件：
+
+- `transform.go`：`exactByteMatcherMinRules` 从 256 改为 255。
+- `matcher_test.go`：覆盖 254/255 和 16 KiB dispatch boundary。
+- `config_test.go`：覆盖 254/255 compiled matcher presence。
+- `benchmark_test.go`：保留 `BenchmarkExactBlockThreshold`、`BenchmarkExactBlockMatcherBuild` 和 `TestBenchmarkExactBlockThresholdMatchesOracle`。
+
+被拒绝的 KMP candidate 没有留下 production 或 test code。focused unit、race、fuzz-seed commands 通过；使用显式用户级 Go cache 和 temp 路径运行的 `make test` 与 `make race` 也通过。
+
+初始 scoped review 报告 2 项 Important 和 4 项 Minor finding。fix round 1 保存删除前的 KMP source snapshot，修正 retry method 与全部 KMP ranges，并区分 construction 和 dispatch。parent 将保留项重建为 source-only commit `d07a8f3`，再单独加入这段修正后的 TDD evidence。
+
 ## Final verification
