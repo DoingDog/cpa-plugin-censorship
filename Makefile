@@ -1,10 +1,9 @@
 PLUGIN_NAME := censorship
 GO ?= go
-VERSION ?=
 unexport VERSION
 RAW_VERSION := $(value VERSION)
-PACKAGER_VERSION := $(if $(strip $(RAW_VERSION)),$(strip $(RAW_VERSION)),0.0.0-dev)
-NORMALIZED_VERSION := $(patsubst v%,%,$(PACKAGER_VERSION))
+PACKAGER_VERSION := $(if $(filter undefined,$(origin VERSION)),0.0.0-dev,$(RAW_VERSION))
+NORMALIZED_VERSION = $(patsubst v%,%,$(PACKAGER_VERSION))
 export PACKAGER_VERSION NORMALIZED_VERSION
 
 LIB_EXTENSION := .so
@@ -35,7 +34,7 @@ integration:
 	$(GO) run ./.github/scripts/integration-runner.go
 
 validate-version:
-	@version="$$NORMALIZED_VERSION"; case "$$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) echo "VERSION must normalize to a safe non-empty release version"; exit 2;; esac
+	@version="$$PACKAGER_VERSION"; case "$$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) echo "VERSION must normalize to a safe non-empty release version"; exit 2;; esac; version="$${version#v}"; case "$$version" in ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._+-]*) echo "VERSION must normalize to a safe non-empty release version"; exit 2;; esac
 
 build-platform: validate-version
 	@test -n "$(GOOS)" && test -n "$(GOARCH)" || { echo "GOOS and GOARCH are required"; exit 2; }

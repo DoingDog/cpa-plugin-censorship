@@ -129,7 +129,7 @@ jobs:
       - name: Package artifact
         run: |
           go run ./.github/scripts/package-release.go \
-            -version "${VERSION}" \
+            -version "${MAKE_VERSION}" \
             -library "dist/windows_arm64/censorship.dll" \
             -archive "dist/censorship_${VERSION}_windows_arm64.zip" \
             -checksum "dist/censorship_${VERSION}_windows_arm64.zip.sha256"
@@ -178,7 +178,7 @@ jobs:
       - name: Package artifact
         run: |
           go run ./.github/scripts/package-release.go \
-            -version "${VERSION}" \
+            -version "${MAKE_VERSION}" \
             -library "dist/freebsd_amd64/censorship.so" \
             -archive "dist/censorship_${VERSION}_freebsd_amd64.zip" \
             -checksum "dist/censorship_${VERSION}_freebsd_amd64.zip.sha256"

@@ -3,12 +3,14 @@
 package censorshipintegration
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func TestHTTPBlockIncludesTermAndRole(t *testing.T) {
@@ -140,12 +142,35 @@ func TestCapturedChatContentValidatorRejectsTransformedDecoy(t *testing.T) {
 	}
 }
 
+func TestCapturedChatRequestValidatorRejectsChangedNonTargetField(t *testing.T) {
+	disabled := []byte(`{"model":"censorship-integration-model","messages":[{"role":"user","content":"before SECRET after"}]}`)
+	enabled := []byte(`{"model":"censorship-integration-model","messages":[{"role":"assistant","content":"before  after"}]}`)
+	if err := validateCapturedChatRequest(enabled, disabled, "before SECRET after", "before  after"); err == nil {
+		t.Fatal("validator accepted a changed non-target field")
+	}
+}
+
 func validateCapturedChatContent(captured []byte, input, transformed string) error {
-	if got := gjson.GetBytes(captured, "messages.0.content").String(); got != transformed {
+	got := gjson.GetBytes(captured, "messages.0.content").String()
+	if got != transformed {
 		return fmt.Errorf("upstream message content = %q, want %q; body = %s", got, transformed, captured)
 	}
-	if got := gjson.GetBytes(captured, "messages.0.content").String(); got == input {
+	if got == input {
 		return fmt.Errorf("upstream message content remained input %q; body = %s", got, captured)
+	}
+	return nil
+}
+
+func validateCapturedChatRequest(enabled, disabled []byte, input, transformed string) error {
+	if err := validateCapturedChatContent(enabled, input, transformed); err != nil {
+		return err
+	}
+	normalized, err := sjson.SetBytes(enabled, "messages.0.content", input)
+	if err != nil {
+		return fmt.Errorf("restore upstream message content: %w", err)
+	}
+	if !bytes.Equal(normalized, disabled) {
+		return fmt.Errorf("non-target upstream request fields differ: enabled = %s, disabled = %s", enabled, disabled)
 	}
 	return nil
 }
@@ -180,7 +205,9 @@ func TestHTTPAndSSEOutputTraceUnaffected(t *testing.T) {
 			body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}],"stream":true,"decoy":%q}`, modelName, tc.input, tc.transformed))
 			disabledTrace := captureHTTP11Trace(t, disabled.baseURL+"/v1/chat/completions", downstreamKey, body)
 			enabledTrace := captureHTTP11Trace(t, enabled.baseURL+"/v1/chat/completions", downstreamKey, body)
-			if err := validateCapturedChatContent(enabledUpstream.lastRequest(), tc.input, tc.transformed); err != nil {
+			enabledRequest := enabledUpstream.lastRequest()
+			disabledRequest := disabledUpstream.lastRequest()
+			if err := validateCapturedChatRequest(enabledRequest, disabledRequest, tc.input, tc.transformed); err != nil {
 				t.Fatal(err)
 			}
 			if !reflect.DeepEqual(enabledTrace, disabledTrace) {

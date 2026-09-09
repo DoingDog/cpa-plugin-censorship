@@ -311,8 +311,8 @@ func TestCompileSnapshotBuildsOnlyActiveDerivedData(t *testing.T) {
 		wantExact             string
 	}{
 		{name: "exact block", raw: "mode: block\nwords: [K]\n"},
-		{name: "exact block below matcher threshold", raw: exactBlockConfig(254)},
-		{name: "exact block at matcher threshold", raw: exactBlockConfig(255), wantExactBlockMatcher: true},
+		{name: "exact block below matcher threshold", raw: exactBlockConfig(255)},
+		{name: "exact block at matcher threshold", raw: exactBlockConfig(256), wantExactBlockMatcher: true},
 		{name: "exact strip", raw: "mode: strip\nwords: [K]\n"},
 		{name: "exact obfs", raw: "mode: obfs\nwords: [éx]\n", wantExact: "é​x"},
 		{name: "folded block", raw: "mode: block\nignore_case: true\nwords: [K]\n", wantRunes: true, wantBlockMatcher: true},

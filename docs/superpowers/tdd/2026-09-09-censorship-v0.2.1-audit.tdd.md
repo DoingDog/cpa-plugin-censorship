@@ -1696,7 +1696,7 @@ Reverse，continuous -> fallback：
 
 #### Decision
 
-`RETAIN exactByteMatcherMinRules = 255`。128 rules 和 192 rules 都因 64 KiB holdout 超过 5% 被拒绝；255 是最低满足所有 request 和 construction gates 的实测 threshold。
+`FINAL REJECT`。初始 scoped decision 曾将 `exactByteMatcherMinRules = 255` 标为 `RETAIN`：128 rules 和 192 rules 因 64 KiB holdout 超过 5% 被拒绝，255 的 request throughput 和 holdout rows 通过。但 whole-branch review 发现 255 的 construction comparator 无效，production threshold 最终恢复为 256。
 
 #### TDD and oracle
 
@@ -1743,8 +1743,8 @@ Artifacts：
 |---:|---|---:|---:|---|---|
 | 128 | 至少 cpu=16 parallel rows 不显著。 | +68.52% | +3.39% | 26.76 µs，145 nodes，18.45 KiB，86 allocs | REJECT |
 | 192 | 全部 required rows 显著改善。 | +21.68% | +2.87% | 39.80 µs，216 nodes，30.82 KiB，125 allocs | REJECT |
-| 255 | 两个 order 的全部 required rows 显著改善。 | +1.90% | +3.73% | 52.74 µs，286 nodes，34.55 KiB，157 allocs | RETAIN |
-| 256 | 未测 request strategy。 | 不适用 | 不适用 | 52.53 µs，287 nodes，34.55 KiB，157 allocs | construction reference |
+| 255 | 两个 order 的全部 required rows 显著改善。 | +1.90% | +3.73% | 52.74 µs，286 nodes，34.55 KiB，157 allocs | 初始 RETAIN，whole-branch review 后 REJECT |
+| 256 | 未测 request strategy。 | 不适用 | 不适用 | 52.53 µs，287 nodes，34.55 KiB，157 allocs | built-matcher reference，不是 255 production baseline |
 
 255 的 required 1 MiB results：
 
@@ -1767,20 +1767,18 @@ Artifacts：
 | reverse | last parallel | 3.117 ms | 1.282 ms | -58.87% | 0.000 |
 | reverse | last parallel-16 | 466.9 µs | 197.2 µs | -57.76% | 0.000 |
 
-254/255 决定 `compileSnapshot` 是否构建 `ExactBlockMatcher`；16 KiB 决定请求是否调用预建 matcher。threshold 降低后，每个 exact-block 255-rule snapshot 都新增 52.74 µs、286 nodes、34.55 KiB/op 和 157 allocs/op 的绝对构建成本，即使请求文本小于 16 KiB。相对 brief 指定的 256-rule construction reference，255 的构建时间回退约 0.40%，B/op 和 allocs/op 不变，三项都低于 5% cap。
+初始 254/255 boundary 决定 `compileSnapshot` 是否构建 `ExactBlockMatcher`；16 KiB 决定请求是否调用预建 matcher。threshold 降低时，每个 exact-block 255-rule snapshot 都新增 matcher construction 和 memory cost，即使请求文本小于 16 KiB。记录的 52.74 µs、286 nodes、34.55 KiB/op 和 157 allocs/op 是 255-rule `newByteMatcher` 的绝对成本。将它与同样构建 matcher 的 256-rule `newByteMatcher` 比较，只能说明两种已构建 matcher 的成本接近，不能证明 production 255-rule `compileSnapshot` 从不构建到构建的 before/after construction time、B/op 和 allocs/op 回退低于 5%。因此 construction gate 缺失。
 
-#### Retained change and verification
+#### Final source disposition and verification
 
-保留的文件：
-
-- `transform.go`：`exactByteMatcherMinRules` 从 256 改为 255。
-- `matcher_test.go`：覆盖 254/255 和 16 KiB dispatch boundary。
-- `config_test.go`：覆盖 254/255 compiled matcher presence。
-- `benchmark_test.go`：保留 `BenchmarkExactBlockThreshold`、`BenchmarkExactBlockMatcherBuild` 和 `TestBenchmarkExactBlockThresholdMatchesOracle`。
+- `transform.go`：whole-branch fix round 将 `exactByteMatcherMinRules` 恢复为 256。
+- `matcher_test.go`：最终覆盖 255 rules 不 dispatch、256 rules 小于 16 KiB 不 dispatch、256 rules 达到 16 KiB 才 dispatch。
+- `config_test.go`：最终覆盖 255-rule snapshot 不构建 matcher、256-rule snapshot 构建 matcher。
+- `benchmark_test.go`：保留 `BenchmarkExactBlockThreshold`、`BenchmarkExactBlockMatcherBuild` 和 `TestBenchmarkExactBlockThresholdMatchesOracle` 作为历史 measurement tooling；这些 benchmark 不再作为 production 255 winner proof。
 
 被拒绝的 KMP candidate 没有留下 production 或 test code。focused unit、race、fuzz-seed commands 通过；使用显式用户级 Go cache 和 temp 路径运行的 `make test` 与 `make race` 也通过。
 
-初始 scoped review 报告 2 项 Important 和 4 项 Minor finding。fix round 1 保存删除前的 KMP source snapshot，修正 retry method 与全部 KMP ranges，并区分 construction 和 dispatch。parent 将保留项重建为 source-only commit `d07a8f3`，再单独加入这段修正后的 TDD evidence。
+Task 8 初始 scoped review 报告 2 项 Important 和 4 项 Minor finding。其 fix round 1 保存删除前的 KMP source snapshot，修正 retry method 与全部 KMP ranges，并区分 construction 和 dispatch；当时 parent 将初始 255 decision 重建为 source-only commit `d07a8f3`。Task 10 whole-branch review 随后发现上述 construction comparator 不能证明 spec gate，最终 fix round 以新 RED/GREEN 恢复 256，并由后续 source commit supersede `d07a8f3` 的 production threshold change。
 
 ## Task 9：native ABI input ownership measurement
 
@@ -1884,4 +1882,221 @@ Pinned dependency `github.com/router-for-me/CLIProxyAPI/v7 v7.2.152` 的 `intern
 
 验证结果：focused correctness PASS（`0.058s`），focused race 和 `checkptr=2` PASS（`1.082s`），harness RED 按预期失败，harness GREEN PASS，80-process plugin-local series PASS，`make integration` PASS，`git diff --check` PASS。
 
+## Task 10：whole-branch review and final fix round
+
+### Review disposition
+
+Opus 5 1M xhigh 对 `1085eee..HEAD` 加 Task 10 documentation working diff 进行一次完整 review，没有重复初始 repository scan，也没有运行命令。初始结果为 Critical 0、Important 5、Minor 3，`Ready to merge: With fixes`。八项 finding 均有 concrete failure scenario，全部进入唯一 final fix round：
+
+1. 两个 direct cross-build jobs 将 normalized `${VERSION}` 传给 Go packager，tag `vv` 会被第二次 normalize 成 empty。
+2. Make 与 Go packager 会 trim raw version whitespace，而 spec 要求拒绝。
+3. 255-rule threshold 将 built 255 matcher 与 built 256 matcher 比较，没有 production 255 snapshot before/after construction gate。
+4. public ABI 文档错误声称 borrowed path 没有移除 input-sized allocation。
+5. packaging 文档把 direct-mode alias protection 错误写成 aggregate mode 也具备。
+6. Chat integration 没有把 non-target request bytes 与 disabled baseline 比较。
+7. whole-path Unicode `strings.EqualFold` 在 case-sensitive filesystem 上拒绝合法 existing case-distinct paths，也超出 absent ASCII case-only spec。
+8. public ABI 文档把 oversized request rejection 错误扩展到不读取 input 的 after-auth method。
+
+初始 Sonnet Agent 因连续三次 autocompact thrashing 在首个 RED 期间终止。按恢复规则使用 `claude -p --model claude-sonnet-5[1m] --effort xhigh --autocompact 1M` 保留 partial test/docs edits并继续；恢复后的 worker 重新运行已有 test expectation，确保 RED provenance 完整。
+
+### Raw workflow version
+
+先把 `TestBuildWorkflowContract` 的两个 direct jobs expectation 改为 `-version "${MAKE_VERSION}"`，运行：
+
+```powershell
+go test .github/scripts/package-release.go .github/scripts/package-release_test.go -run '^TestBuildWorkflowContract$' -count=1
+```
+
+RED：`build-freebsd-amd64` 的 package command 仍包含 `-version "${VERSION}"`；`build-windows-arm64` 有同一 source defect。随后仅将两处 direct `package-release.go` invocation 改传 raw `${MAKE_VERSION}`；normalized `${VERSION}` 继续用于 linker、archive/checksum basename、upload 和 workflow output。相同 focused command GREEN，完整 package-script suite 也通过。五个 matrix targets 继续把 `${MAKE_VERSION}` 传给 Make，因此七个平台的 tag `vv` 数据流都只 normalize 一次。
+
+### Raw VERSION whitespace rejection
+
+新增 direct packager flag/environment 和 Make executable fixtures，覆盖 leading space、trailing space、whitespace-only、leading/trailing newline 和 newline-only，并要求 failure 发生在 output creation/mutation 前。focused RED：
+
+```powershell
+go test .github/scripts/package-release.go .github/scripts/package-release_test.go -run '^(TestPackagerRejectsWhitespaceVersionsBeforeChangingOutputs|TestMakeVersionValidationContract)$' -count=1
+```
+
+RED 同时证明 flag、environment 和 Make whitespace inputs 被旧 `strings.TrimSpace` 或 `$(strip ...)` 接受。
+
+最小实现：
+
+- `normalizeReleaseVersion` 只移除一个 lowercase ASCII `v`。
+- 只有 `git describe` stdout call site 删除 command-produced trailing CR/LF。
+- Make 使用 `$(origin VERSION)` 区分 undefined input 与显式 supplied value；只有 undefined 才使用 `0.0.0-dev`。
+- `PACKAGER_VERSION` 保留 raw data；`validate-version` 先验证 raw value，再验证移除一个 `v` 后的 normalized value。raw data 始终经 environment 进入 shell，不展开进 recipe source。
+- GNU Make command-line assignment 本身会丢弃 boundary whitespace，所以相关可观察 whitespace contract fixture 使用 environment `VERSION`；command-line quote、semicolon、`$(shell ...)`、newline、slash 和 unsafe-character fixtures继续通过且不创建 sentinel。
+
+同一 focused command GREEN；现有 `VERSION=vv` recursive Make 和 aggregate/direct packager contract 保持通过。
+
+### Exact matcher threshold correction
+
+先更新 boundary tests，使 255 rules 不 dispatch 且 snapshot 不构建 matcher，256 rules 小于 16 KiB 不 dispatch，256 rules 达到 16 KiB 才 dispatch并构建。运行：
+
+```powershell
+go test . -run '^(TestAdaptiveExactBlockBoundary|TestCompileSnapshotBuildsOnlyActiveDerivedData)$' -count=1
+```
+
+RED：`useExactByteMatcher(255, 1048576) = true, want false`，且 255-rule snapshot 仍有 `ExactBlockMatcher`。将 `exactByteMatcherMinRules` 恢复为 256 后同一命令 GREEN。没有重跑或修改 benchmark；Experiment E 最终为 `REJECT`，public docs 删除 255 winner claim，本 release 没有 retained production runtime optimization。
+
+### Chat non-target baseline comparison
+
+先增加 `TestCapturedChatRequestValidatorRejectsChangedNonTargetField`：enabled target content 正确 transformed，但 `messages[0].role` 从 `user` 变为 `assistant` 时必须拒绝。运行：
+
+```powershell
+go test -tags=integration ./integration -run '^TestCapturedChatRequestValidatorRejectsChangedNonTargetField$' -count=1
+```
+
+RED 为 `undefined: validateCapturedChatRequest`。实现 helper 后，它先调用 retained exact target validator，再只用 `sjson.SetBytes` 将 enabled captured bytes 的 `messages.0.content` 恢复为原 input，最后用 `bytes.Equal` 与 disabled captured request 比较。`TestHTTPAndSSEOutputTraceUnaffected` 的 strip 和 obfs cases 现在读取两个 upstream captures并调用该 helper。没有 generic JSON decode/re-encode，也没有 recursive walker。focused command和完整 integration runner GREEN。code-simplifier 随后缓存 helper 内 `messages.0.content` 的单次 `gjson` result，focused validator tests继续通过。
+
+### Direct path alias scope
+
+新增 `TestPathsAliasCaseRules`，覆盖：case-sensitive filesystem 上 existing `Artifact`/`artifact` 不是 alias；同一 existing ancestor 下 absent `Archive.zip`/`archive.zip` 是 ASCII case alias；Unicode fold-equivalent absent suffixes不是 ASCII case alias。focused RED：
+
+```powershell
+go test .github/scripts/package-release.go .github/scripts/package-release_test.go -run '^TestPathsAliasCaseRules$' -count=1
+```
+
+RED 为 Unicode fold-equivalent suffix被旧 `strings.EqualFold` 判为 alias。第一轮实现删除 unconditional whole-path `strings.EqualFold`：existing paths只由 `os.SameFile` 判断；共享 existing ancestor 的 absent suffix components 使用小型 `asciiEqualFold`。初次 re-review 发现 helper 使用 `for i := range first`，只访问 UTF-8 rune 的起始 byte，可能把同长度且共享 lead byte 的 `é.zip` 与 `è.zip` 误判为 alias。
+
+增加这对同长度 multibyte absent suffix 后，同一 focused command按预期 RED：`same-length multibyte absent suffixes were treated as aliases`。将循环改为访问 `0..len(first)-1` 的每个 byte 后 focused GREEN，完整 package-script suite通过（`15.547s`），diff-check无 whitespace error。原 hardlink、symlink、junction、exact-path 和 absent ASCII case collision tests继续通过。本机 case-insensitive filesystem 只跳过 `os.SameFile` 已证明同一文件的 existing case-distinct subcase；case-sensitive filesystem会执行该 assertion。
+
+### Public documentation corrections
+
+README 和 RELEASE_NOTES 最终只声明实际行为：
+
+- v0.2.1 selector、ABI descriptor、raw VERSION、direct packaging和integration evidence保留。
+- production 保留 `C.GoBytes`，不宣称 no-copy performance benefit，也不宣称 pinned Windows host request-pointer liveness已被证明；不再把 rejection理由写成 allocation未移除。
+- oversized request rejection只适用于读取或复制 input 的 methods；after-auth 不读取 input。
+- alias、symlink、hardlink、junction 和 ASCII case-alias rejection限定为 direct `-library/-archive/-checksum` mode；deterministic ZIP 是 general behavior。
+- 删除全部 255-rule production winner claim，不把其他 rejected experiment写成优化。
+
+### Fix-round verification
+
+Implementer final commands均通过：
+
+```powershell
+gofmt -w .github/scripts/package-release.go .github/scripts/package-release_test.go transform.go matcher_test.go config_test.go integration/http_test.go
+go test . -run '^(TestAdaptiveExactBlockBoundary|TestCompileSnapshotBuildsOnlyActiveDerivedData)$' -count=1
+go test .github/scripts/package-release.go .github/scripts/package-release_test.go -count=1
+go run ./.github/scripts/integration-runner.go
+git diff --check
+```
+
+code-simplifier按文件逐一检查 `1085eee` 以来的 15 个 changed Go files，未读取大型 docs/TDD diff。唯一等价简化位于 `integration/http_test.go`，其 focused tests和 diff-check通过；其余 14 个文件无明确可删复杂度。
+
 ## Final verification
+
+### Review closure
+
+Whole-branch review的 5 Important 和 3 Minor finding最终全部 `RESOLVED`。第一次 scoped re-review关闭 7 项并保留 1 项 path-comparison Minor；同一 fix round补 `é.zip`/`è.zip` continuation-byte RED/GREEN后，residual re-review给出 spec PASS、quality PASS、new Critical 0、new Important 0、Ready for final verification Yes。final verification发现并修正两个 stale documentation contract tokens后，同一 Opus reviewer的极小 scoped re-review为 PASS，new Critical 0、Important 0。
+
+### Formatting and static gates
+
+在 final fix/source稳定后运行：
+
+```powershell
+$files = @(git diff --name-only 1085eee -- '*.go')
+gofmt -w $files
+git diff --check
+make vet
+```
+
+结果：`git diff --check` exit 0，仅有 Git 的 LF 到 CRLF working-copy warning；`go vet ./...` exit 0，无 diagnostic。
+
+### Repository gates
+
+第一次串行 gate在 `make test` 停止：`TestDocumentationListsConfigAndLimits` 仍要求 superseded `allocation gate failed`，并要求只存在于 README 的 `Integration changes:`。该 failure作为 documentation contract correction的 RED。只将 required tokens改为两份文档共同且准确的：
+
+- `does not claim pinned Windows host request-pointer liveness has been proven`
+- `harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling`
+
+focused test GREEN并经 scoped re-review PASS。然后从 `make test` 重新执行完整串行 chain：
+
+```powershell
+make test
+make race
+make integration
+make build VERSION=v0.2.1
+make package VERSION=v0.2.1
+```
+
+| Gate | Fresh result |
+|---|---|
+| `make test` | PASS，root package `1.295s` |
+| `make race` | PASS，root package `11.420s` |
+| integration runner tests | PASS，`2.183s` |
+| pinned CPA dynamic integration | PASS，`17.082s`；HTTP、SSE、watcher、WebSocket、ABI oracle及新的 Chat non-target baseline cases全部通过 |
+| `make build VERSION=v0.2.1` | PASS，CGO shared build生成 `dist/windows_amd64/censorship.dll`，linker version使用 normalized `0.2.1` |
+| `make package VERSION=v0.2.1` | PASS，aggregate packager使用 raw `v0.2.1`并生成 normalized `0.2.1` artifacts |
+
+最后在全部 source/test变更后再次运行 `git diff --check` 和 `make vet`，两者均 PASS。
+
+### Package script and local artifact verification
+
+显式 package-script gate：
+
+```powershell
+go test .github/scripts/package-release.go .github/scripts/package-release_test.go -count=1
+```
+
+最终 PASS，`15.631s`。首次独立 checksum enumeration发现 ignored `dist/` 中还留有先前 v0.2.0 ZIP，而新 `checksums.txt` 只列 v0.2.1，因此按“所有 local ZIP”检查正确失败。检查目标后使用 official target清理并重建：
+
+```powershell
+make clean
+make build VERSION=v0.2.1
+make package VERSION=v0.2.1
+```
+
+三项均 PASS。重新独立计算 SHA-256并校验 sidecar basename、lowercase hex、aggregate唯一性和完整性后：
+
+```plaintext
+verified local packages: zips=1 sidecars=1 aggregateLines=1
+```
+
+本地 artifact：
+
+```plaintext
+dea07a79c3b20dd3ffffe717ec6bdf187f44dcb2dad9a5b8984bbc14e9edc663  censorship_0.2.1_windows_amd64.zip
+```
+
+sidecar与 `checksums.txt` byte-for-byte使用同一行。ZIP含 `censorship.dll` 和 `LICENSE` 两项；两项 stored timestamp均为 `1980-01-01T00:00:00`。第一次 PowerShell timestamp probe错误地把 timezone-less ZIP DOS timestamp当 UTC比较而失败；改为比较 stored local fields后通过，Go package test也独立按 archive metadata验证确定性 timestamp。
+
+### Active fuzz gates
+
+六个 target以六个独立 process并行运行，每个 `-fuzztime=30s -parallel=1`：
+
+| Target | Result | Executions | Final corpus count |
+|---|---|---:|---:|
+| `FuzzRuleEngineAgainstOracle` | PASS，`30.221s` | 571,859 | 528 |
+| `FuzzFoldKMPAgainstOracle` | PASS，`30.244s` | 65,326 | 349 |
+| `FuzzDuplicateWalkerAgainstOracle` | PASS，`30.246s` | 626,167 | 341 |
+| `FuzzProtocolTransform` | PASS，`31.255s` | 199,405 | 829 |
+| `FuzzRebuildBodyAgainstMarshalOracle` | PASS，`30.113s` | 719,917 | 139 |
+| `FuzzByteMatcherAgainstOrderedContains` | PASS，`31.096s` | 121,046 | 98 |
+
+没有 crash corpus或 test failure。部分 process发现新的 interesting inputs并写入 Go fuzz cache，不是 tracked repository artifact。
+
+### Final performance disposition
+
+本次六项 experiment没有 retained production runtime optimization，因此 Task 10 Step 8没有可重跑的 winner holdout：
+
+| Experiment | Final disposition |
+|---|---|
+| A，exact rewrite total-miss preflight | REJECT，hit/cascade holdout超过 5% |
+| B，fused UTF-8 plus nesting validation | REJECT，ASCII/ordinary/parallel holdout回退 |
+| C，inline duplicate-name storage | REJECT，wide/nested allocation与 throughput回退 |
+| D，continuous folded KMP | REJECT，dense/overlap holdout大幅超过 5% |
+| E，exact block matcher threshold 255 | FINAL REJECT，request throughput改善但缺少正确的 255-rule snapshot construction before/after gate；production恢复 256 |
+| F，native borrowed input | REJECT production borrow；保留 `C.GoBytes` 与 corrected measurement harness，pinned Windows host pointer liveness未证明 |
+
+### Generated-artifact and tree gate
+
+`git ls-files -- dist .integration` 无输出，证明两目录没有 tracked files；`git status --short --ignored -- dist .integration` 只显示：
+
+```plaintext
+!! .integration/
+!! dist/
+```
+
+最终 tracked diff只包含本 spec/plan、13 项功能修复及其 tests、benchmark evidence/harness、Task 10 docs和final review corrections。没有修改 CLIProxyAPI core，没有保留 rejected production candidate，也没有手工编辑 generated artifact。

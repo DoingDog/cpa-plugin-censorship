@@ -325,6 +325,70 @@ func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
 	}
 }
 
+func TestPackagerRejectsWhitespaceVersionsBeforeChangingOutputs(t *testing.T) {
+	script, err := filepath.Abs("package-release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{name: "leading space", value: " v1.2.3"},
+		{name: "trailing space", value: "v1.2.3 "},
+		{name: "whitespace only", value: " "},
+		{name: "leading newline", value: "\nv1.2.3"},
+		{name: "trailing newline", value: "v1.2.3\n"},
+		{name: "newline only", value: "\n"},
+	} {
+		t.Run("flag/"+tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			library := filepath.Join(tmp, "censorship.so")
+			archive := filepath.Join(tmp, "censorship.zip")
+			checksum := archive + ".sha256"
+			for path, contents := range map[string]string{
+				library:  "library contents",
+				archive:  "archive contents",
+				checksum: "checksum contents",
+			} {
+				if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := snapshotFiles(t, library, archive, checksum)
+
+			cmd := exec.Command("go", "run", script, "-version", tc.value, "-library", library, "-archive", archive, "-checksum", checksum)
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("packager accepted %q:\n%s", tc.value, output)
+			}
+			assertFilesUnchanged(t, before)
+		})
+
+		t.Run("environment/"+tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			dist := filepath.Join(tmp, "dist")
+			library := filepath.Join(dist, "linux_amd64", "censorship.so")
+			if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(library, []byte("library contents"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(tmp, "out")
+
+			cmd := exec.Command("go", "run", script, "-dist", dist, "-out", out)
+			cmd.Env = withEnvironment(os.Environ(), "VERSION", tc.value)
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("packager accepted %q:\n%s", tc.value, output)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Fatalf("whitespace VERSION created output %s: %v", out, err)
+			}
+		})
+	}
+}
+
 func TestPackagerRejectsMissingOrBareVersionBeforeChangingOutputs(t *testing.T) {
 	script, err := filepath.Abs("package-release.go")
 	if err != nil {
@@ -562,6 +626,65 @@ func TestValidateDirectPackagePathsRejectsAbsentOutputAliasesThroughJunction(t *
 	}
 }
 
+func TestPathsAliasCaseRules(t *testing.T) {
+	t.Run("existing case-distinct files", func(t *testing.T) {
+		dir := t.TempDir()
+		first := filepath.Join(dir, "Artifact")
+		second := filepath.Join(dir, "artifact")
+		for _, path := range []string{first, second} {
+			if err := os.WriteFile(path, []byte(path), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		firstInfo, err := os.Stat(first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		secondInfo, err := os.Stat(second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if os.SameFile(firstInfo, secondInfo) {
+			t.Skip("filesystem treats case-distinct paths as one file")
+		}
+		same, err := pathsAlias(first, second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if same {
+			t.Fatal("case-distinct existing files were treated as aliases")
+		}
+	})
+
+	dir := t.TempDir()
+	asciiFirst := filepath.Join(dir, "Archive.zip")
+	asciiSecond := filepath.Join(dir, "archive.zip")
+	if same, err := pathsAlias(asciiFirst, asciiSecond); err != nil {
+		t.Fatal(err)
+	} else if !same {
+		t.Fatal("absent ASCII case-only suffixes were not treated as aliases")
+	}
+
+	multibyteFirst := filepath.Join(dir, "é.zip")
+	multibyteSecond := filepath.Join(dir, "è.zip")
+	if same, err := pathsAlias(multibyteFirst, multibyteSecond); err != nil {
+		t.Fatal(err)
+	} else if same {
+		t.Fatal("same-length multibyte absent suffixes were treated as aliases")
+	}
+
+	unicodeFirst := filepath.Join(dir, "Kelvin.zip")
+	unicodeSecond := filepath.Join(dir, "Kelvin.zip")
+	if !strings.EqualFold(filepath.Base(unicodeFirst), filepath.Base(unicodeSecond)) {
+		t.Fatal("Unicode case-fold fixture is not equivalent")
+	}
+	if same, err := pathsAlias(unicodeFirst, unicodeSecond); err != nil {
+		t.Fatal(err)
+	} else if same {
+		t.Fatal("Unicode fold-equivalent absent suffixes were treated as aliases")
+	}
+}
+
 func linkPackageDirectory(t *testing.T, target, link string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -778,19 +901,33 @@ func TestMakeVersionValidationContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		value    string
-		sentinel string
+		value       string
+		sentinel    string
+		environment bool
 	}{
 		{value: `v1";touch VERSION_INJECTION_SENTINEL;version="1`, sentinel: "VERSION_INJECTION_SENTINEL"},
 		{value: `$(shell touch VERSION_MAKE_SENTINEL)`, sentinel: "VERSION_MAKE_SENTINEL"},
+		{value: " v1.2.3", environment: true},
+		{value: "v1.2.3 ", environment: true},
+		{value: " ", environment: true},
+		{value: "\nv1.2.3", environment: true},
+		{value: "v1.2.3\n", environment: true},
+		{value: "\n", environment: true},
 		{value: "v1\nprintf injected", sentinel: ""},
 		{value: "v1 whitespace", sentinel: ""},
 		{value: "v1/path", sentinel: ""},
 	} {
 		t.Run("rejects unsafe VERSION", func(t *testing.T) {
 			tmp := t.TempDir()
-			cmd := exec.Command("make", "-f", makefile, "validate-version", "VERSION="+tc.value)
+			args := []string{"-f", makefile, "validate-version"}
+			if !tc.environment {
+				args = append(args, "VERSION="+tc.value)
+			}
+			cmd := exec.Command("make", args...)
 			cmd.Dir = tmp
+			if tc.environment {
+				cmd.Env = withEnvironment(os.Environ(), "VERSION", tc.value)
+			}
 			if output, err := cmd.CombinedOutput(); err == nil {
 				t.Fatalf("make validate-version accepted %q:\n%s", tc.value, output)
 			}
@@ -999,7 +1136,7 @@ func TestBuildWorkflowContract(t *testing.T) {
 			jobActionWith(job, crossAction, "output") != tc.library ||
 			jobActionWith(job, crossAction, "flags") != "-ldflags=-s -w" ||
 			jobActionWith(job, crossAction, "x-flags") != "main.pluginVersion=${{ steps.release_metadata.outputs.version }}" ||
-			!jobRunContains(job, "-version \"${VERSION}\"") ||
+			!jobRunContains(job, "-version \"${MAKE_VERSION}\"") ||
 			!jobRunContains(job, "go run ./.github/scripts/package-release.go") ||
 			!jobRunContains(job, "-library \""+libraryPath+"\"") ||
 			!jobRunContains(job, "-archive \"dist/"+tc.archive+"\"") ||

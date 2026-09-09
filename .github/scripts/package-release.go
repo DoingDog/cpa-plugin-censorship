@@ -141,7 +141,7 @@ func resolveVersion(versionFlag string) (string, error) {
 	cmd := exec.Command("git", "describe", "--tags", "--exact-match")
 	output, err := cmd.Output()
 	if err == nil {
-		version := normalizeReleaseVersion(string(output))
+		version := normalizeReleaseVersion(strings.TrimRight(string(output), "\r\n"))
 		if err := validateReleaseVersion(version); err != nil {
 			return "", err
 		}
@@ -151,7 +151,6 @@ func resolveVersion(versionFlag string) (string, error) {
 }
 
 func normalizeReleaseVersion(version string) string {
-	version = strings.TrimSpace(version)
 	return strings.TrimPrefix(version, "v")
 }
 
@@ -278,7 +277,7 @@ func canonicalPath(path string) (string, error) {
 }
 
 func pathsAlias(firstPath, secondPath string) (bool, error) {
-	if firstPath == secondPath || strings.EqualFold(firstPath, secondPath) {
+	if firstPath == secondPath {
 		return true, nil
 	}
 	firstInfo, firstSuffix, err := existingPathAncestor(firstPath)
@@ -293,11 +292,31 @@ func pathsAlias(firstPath, secondPath string) (bool, error) {
 		return false, nil
 	}
 	for i := range firstSuffix {
-		if !strings.EqualFold(firstSuffix[i], secondSuffix[i]) {
+		if !asciiEqualFold(firstSuffix[i], secondSuffix[i]) {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+func asciiEqualFold(first, second string) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for i := 0; i < len(first); i++ {
+		if first[i] == second[i] {
+			continue
+		}
+		if first[i] >= 'A' && first[i] <= 'Z' {
+			if first[i]+'a'-'A' == second[i] {
+				continue
+			}
+		} else if first[i] >= 'a' && first[i] <= 'z' && first[i]-'a'+'A' == second[i] {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func existingPathAncestor(path string) (os.FileInfo, []string, error) {

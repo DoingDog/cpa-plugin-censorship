@@ -499,9 +499,9 @@ func TestAdaptiveExactBlockBoundary(t *testing.T) {
 		rules, textBytes int
 		want             bool
 	}{
-		{rules: 254, textBytes: 1 << 20},
-		{rules: 255, textBytes: (16 << 10) - 1},
-		{rules: 255, textBytes: 16 << 10, want: true},
+		{rules: 255, textBytes: 1 << 20},
+		{rules: 256, textBytes: (16 << 10) - 1},
+		{rules: 256, textBytes: 16 << 10, want: true},
 		{rules: 512, textBytes: 64 << 10, want: true},
 		{rules: 128, textBytes: 64 << 10},
 	} {
@@ -510,7 +510,7 @@ func TestAdaptiveExactBlockBoundary(t *testing.T) {
 		}
 	}
 
-	rules := make([]compiledRule, 255)
+	rules := make([]compiledRule, 256)
 	for i := range rules {
 		rules[i] = compiledRule{Term: "term-" + string(rune('A'+i))}
 	}
@@ -522,7 +522,7 @@ func TestAdaptiveExactBlockBoundary(t *testing.T) {
 		t.Fatal("exact block snapshot left ExactBlockMatcher nil")
 	}
 
-	belowBoundary := &configSnapshot{Mode: modeBlock, Rules: append([]compiledRule(nil), rules[:254]...)}
+	belowBoundary := &configSnapshot{Mode: modeBlock, Rules: append([]compiledRule(nil), rules[:255]...)}
 	if err := compileSnapshot(belowBoundary); err != nil {
 		t.Fatal(err)
 	}
