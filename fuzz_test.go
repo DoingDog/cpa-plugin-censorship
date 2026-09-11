@@ -56,6 +56,55 @@ func TestProtocolOracleClassifiesInvalidUTF8AsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
+	const invalidMessage = "censorship rewrite would make a text field invalid"
+	invalid := transformResult{Invalid: true, InvalidMessage: invalidMessage}
+	accepted := []struct {
+		name string
+		body []byte
+		fold bool
+	}{
+		{name: "top-level system typed text", body: []byte(`{"system":[{"type":"text","text":"SECRET"}]}`)},
+		{name: "system typed text", body: []byte(`{"messages":[{"role":"system","content":[{"type":"text","text":"SECRET"}]}]}`)},
+		{name: "user typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"}]}]}`)},
+		{name: "folded user typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"secret"}]}]}`), fold: true},
+		{name: "document title", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"SECRET"}]}]}`)},
+		{name: "document context", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET"}]}]}`)},
+		{name: "document source content typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":[{"type":"text","text":"SECRET"}]}}]}]}`)},
+	}
+	for _, tc := range accepted {
+		if err := checkProtocolResult("claude", tc.body, modeStrip, tc.fold, invalid); err != nil {
+			t.Errorf("%s error = %v, want nil", tc.name, err)
+		}
+	}
+
+	rejected := []struct {
+		name   string
+		format string
+		body   []byte
+		mode   mode
+		got    transformResult
+	}{
+		{name: "OpenAI typed text", format: "openai", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
+		{name: "OpenAI string text", format: "openai", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude generic string content", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude assistant typed text", format: "claude", body: []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude search result title", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude document source scalar text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","text":"SECRET"}}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude document source scalar content", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":"SECRET"}}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude nested tool result", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude partial required text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET tail"}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude obfuscation", format: "claude", body: accepted[0].body, mode: modeObfs, got: invalid},
+		{name: "empty invalid message", format: "claude", body: accepted[0].body, mode: modeStrip, got: transformResult{Invalid: true}},
+		{name: "different invalid message", format: "claude", body: accepted[0].body, mode: modeStrip, got: transformResult{Invalid: true, InvalidMessage: "different"}},
+	}
+	for _, tc := range rejected {
+		if err := checkProtocolResult(tc.format, tc.body, tc.mode, false, tc.got); err == nil {
+			t.Errorf("%s was accepted", tc.name)
+		}
+	}
+}
+
 func TestProtocolOracleTreatsEmptyGeminiRoleAsUser(t *testing.T) {
 	body := []byte(`{"contents":[{"role":"","parts":[{"text":"SECRET"}]}]}`)
 	got := transformResult{Body: []byte(`{"contents":[{"role":"","parts":[{"text":""}]}]}`)}
@@ -313,6 +362,11 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		return nil
 	}
 	if got.Invalid {
+		if format == "claude" && selected == modeStrip && got.Blocked == nil && len(got.Body) == 0 &&
+			got.InvalidMessage == "censorship rewrite would make a text field invalid" &&
+			oracleClaudeRequiredFieldWouldBeEmpty(body, fold) {
+			return nil
+		}
 		return fmt.Errorf("valid JSON object marked invalid: %s", body)
 	}
 
@@ -409,6 +463,89 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		return fmt.Errorf("excluded raw tokens changed: before=%q after=%q", beforeExcluded, afterExcluded)
 	}
 	return nil
+}
+
+func oracleClaudeRequiredFieldWouldBeEmpty(body []byte, fold bool) bool {
+	if !validJSONObject(body) || !boundedJSONNesting(body, maxFuzzJSONDepth) {
+		return false
+	}
+	if system, ok := oracleFirstField(body, "system"); ok && oracleClaudeRequiredTextBlocksWouldBeEmpty(system, fold) {
+		return true
+	}
+	messages, ok := oracleFirstField(body, "messages")
+	if !ok {
+		return false
+	}
+	found := false
+	oracleForEachArray(messages, func(message json.RawMessage) {
+		if found {
+			return
+		}
+		role, ok := oracleStringField(message, "role")
+		if !ok || role != "system" && role != "user" {
+			return
+		}
+		content, ok := oracleFirstField(message, "content")
+		if !ok {
+			return
+		}
+		oracleForEachArray(content, func(block json.RawMessage) {
+			if found {
+				return
+			}
+			if oracleClaudeRequiredTextBlockWouldBeEmpty(block, fold) {
+				found = true
+				return
+			}
+			if role != "user" || !oracleClaudeBlockHasType(block, "document") {
+				return
+			}
+			if title, ok := oracleStringField(block, "title"); ok && oracleWouldEmptyAfterStrip(title, fold) {
+				found = true
+				return
+			}
+			if context, ok := oracleStringField(block, "context"); ok && oracleWouldEmptyAfterStrip(context, fold) {
+				found = true
+				return
+			}
+			source, ok := oracleFirstField(block, "source")
+			if !ok || !oracleClaudeBlockHasType(source, "content") {
+				return
+			}
+			if sourceContent, ok := oracleFirstField(source, "content"); ok && oracleClaudeRequiredTextBlocksWouldBeEmpty(sourceContent, fold) {
+				found = true
+			}
+		})
+	})
+	return found
+}
+
+func oracleClaudeRequiredTextBlocksWouldBeEmpty(raw json.RawMessage, fold bool) bool {
+	found := false
+	oracleForEachArray(raw, func(block json.RawMessage) {
+		if !found && oracleClaudeRequiredTextBlockWouldBeEmpty(block, fold) {
+			found = true
+		}
+	})
+	return found
+}
+
+func oracleClaudeRequiredTextBlockWouldBeEmpty(raw json.RawMessage, fold bool) bool {
+	if !oracleClaudeBlockHasType(raw, "text") {
+		return false
+	}
+	text, ok := oracleStringField(raw, "text")
+	return ok && oracleWouldEmptyAfterStrip(text, fold)
+}
+
+func oracleClaudeBlockHasType(raw json.RawMessage, want string) bool {
+	typ, ok := oracleStringField(raw, "type")
+	return ok && typ == want
+}
+
+func oracleWouldEmptyAfterStrip(text string, fold bool) bool {
+	stripped := oracleStrip(text, "SECRET", fold)
+	return stripped != text && stripped == ""
 }
 
 func oracleRequireUnchangedOutsideRawRanges(before, after []byte, beforeSpans, afterSpans []oracleRawStringToken, selected []int) error {
