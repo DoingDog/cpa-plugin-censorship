@@ -90,7 +90,7 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		{name: "Claude generic string content", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude assistant typed text", format: "claude", body: []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude search result title", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
-		{name: "Claude document source scalar text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","text":"SECRET"}}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude document source scalar text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"SECRET","text":"unselected"}}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude document source scalar content", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":"SECRET"}}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude nested tool result", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude partial required text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET tail"}]}]}`), mode: modeStrip, got: invalid},
@@ -102,6 +102,47 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		if err := checkProtocolResult(tc.format, tc.body, tc.mode, false, tc.got); err == nil {
 			t.Errorf("%s was accepted", tc.name)
 		}
+	}
+}
+
+func TestProtocolOracleAcceptsClaudeResultBlockTransforms(t *testing.T) {
+	const invalidMessage = "censorship rewrite would make a text field invalid"
+	for _, tc := range []struct {
+		name string
+		body []byte
+		mode mode
+		got  transformResult
+	}{
+		{
+			name: "blocks search result title",
+			body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"SECRET","id":"machine SECRET","url":"https://SECRET"}]}]}`),
+			mode: modeBlock,
+			got:  transformResult{Blocked: &blockMatch{Term: "SECRET", Role: "user"}},
+		},
+		{
+			name: "strips document title context and scalar source content",
+			body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"title SECRET tail","context":"context SECRET tail","source":{"type":"content","content":"source SECRET tail","text":"machine SECRET"},"id":"machine SECRET","citations":[{"url":"https://SECRET"}]}]}]}`),
+			mode: modeStrip,
+			got:  transformResult{Body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"title  tail","context":"context  tail","source":{"type":"content","content":"source  tail","text":"machine SECRET"},"id":"machine SECRET","citations":[{"url":"https://SECRET"}]}]}]}`)},
+		},
+		{
+			name: "obfuscates document source data without changing machine siblings",
+			body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"SECRET","text":"machine SECRET","media":"SECRET"},"id":"machine SECRET","url":"https://SECRET"}]}]}`),
+			mode: modeObfs,
+			got:  transformResult{Body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"S​ECRET","text":"machine SECRET","media":"SECRET"},"id":"machine SECRET","url":"https://SECRET"}]}]}`)},
+		},
+		{
+			name: "rejects full strip of search result typed text",
+			body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","content":[{"type":"text","text":"SECRET"}],"id":"machine SECRET","url":"https://SECRET"}]}]}`),
+			mode: modeStrip,
+			got:  transformResult{Invalid: true, InvalidMessage: invalidMessage},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := checkProtocolResult("claude", tc.body, tc.mode, false, tc.got); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -305,6 +346,7 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "openai", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}],"tools":[{"description":"SECRET"}]}`)},
 		{format: "openai-response", body: []byte(`{"instructions":"SECRET","input":[{"type":"function_call_output","output":"SECRET"}]}`)},
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"},{"type":"thinking","thinking":"SECRET"}]}]}`)},
+		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"secret","content":[{"type":"text","text":"search SECRET tail"},{"type":"image","source":{"data":"SECRET"}}],"id":"SECRET","url":"https://SECRET","cache_metadata":{"SECRET":"SECRET"}},{"type":"document","title":"document SECRET tail","context":"context SECRET tail","source":{"type":"text","data":"data SECRET tail","text":"SECRET","media":"SECRET"},"id":"SECRET","citations":[{"url":"https://SECRET"}]},{"type":"document","source":{"type":"content","content":"scalar SECRET tail","data":"SECRET"}},{"type":"document","source":{"type":"content","content":[{"type":"text","text":"typed SECRET tail"},{"type":"image","source":{"data":"SECRET"}}]}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET"},{"text":"SECRET","inlineData":{"data":"SECRET"}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thought":false,"thought":true}]}]}`)},
 		{format: "interactions", body: interactionStepsSeed(64)},
@@ -497,7 +539,15 @@ func oracleClaudeRequiredFieldWouldBeEmpty(body []byte, fold bool) bool {
 				found = true
 				return
 			}
-			if role != "user" || !oracleClaudeBlockHasType(block, "document") {
+			if role != "user" {
+				return
+			}
+			if oracleClaudeBlockHasType(block, "search_result") {
+				if resultContent, ok := oracleFirstField(block, "content"); ok && oracleClaudeRequiredTextBlocksWouldBeEmpty(resultContent, fold) {
+					found = true
+				}
+			}
+			if !oracleClaudeBlockHasType(block, "document") {
 				return
 			}
 			if title, ok := oracleStringField(block, "title"); ok && oracleWouldEmptyAfterStrip(title, fold) {
@@ -949,9 +999,61 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 		}
 		oracleAppendString(spans, content, role)
 		oracleForEachArray(content, func(block json.RawMessage) {
-			if blockType, ok := oracleStringField(block, "type"); ok && blockType == "text" {
+			blockType, ok := oracleStringField(block, "type")
+			if !ok {
+				return
+			}
+			if blockType == "text" {
 				if text, ok := oracleFirstField(block, "text"); ok {
 					oracleAppendString(spans, text, role)
+				}
+				return
+			}
+			if role != "user" {
+				return
+			}
+			switch blockType {
+			case "search_result":
+				if title, ok := oracleFirstField(block, "title"); ok {
+					oracleAppendString(spans, title, role)
+				}
+				if resultContent, ok := oracleFirstField(block, "content"); ok {
+					oracleForEachArray(resultContent, func(part json.RawMessage) {
+						if oracleClaudeBlockHasType(part, "text") {
+							if text, ok := oracleFirstField(part, "text"); ok {
+								oracleAppendString(spans, text, role)
+							}
+						}
+					})
+				}
+			case "document":
+				for _, field := range []string{"title", "context"} {
+					if text, ok := oracleFirstField(block, field); ok {
+						oracleAppendString(spans, text, role)
+					}
+				}
+				source, ok := oracleFirstField(block, "source")
+				if !ok {
+					return
+				}
+				switch {
+				case oracleClaudeBlockHasType(source, "text"):
+					if data, ok := oracleFirstField(source, "data"); ok {
+						oracleAppendString(spans, data, role)
+					}
+				case oracleClaudeBlockHasType(source, "content"):
+					sourceContent, ok := oracleFirstField(source, "content")
+					if !ok {
+						return
+					}
+					oracleAppendString(spans, sourceContent, role)
+					oracleForEachArray(sourceContent, func(part json.RawMessage) {
+						if oracleClaudeBlockHasType(part, "text") {
+							if text, ok := oracleFirstField(part, "text"); ok {
+								oracleAppendString(spans, text, role)
+							}
+						}
+					})
 				}
 			}
 		})
@@ -1277,9 +1379,68 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 			continue
 		}
 		for _, block := range content.array {
-			if blockType, ok := oracleRawStringField(block, "type"); ok && blockType == "text" {
+			blockType, ok := oracleRawStringField(block, "type")
+			if !ok {
+				continue
+			}
+			if blockType == "text" {
 				if text, ok := block.firstField("text"); ok {
 					oracleRawAppendString(spans, text, role)
+				}
+				continue
+			}
+			if role != "user" {
+				continue
+			}
+			switch blockType {
+			case "search_result":
+				if title, ok := block.firstField("title"); ok {
+					oracleRawAppendString(spans, title, role)
+				}
+				if resultContent, ok := block.firstField("content"); ok && resultContent.kind == 'a' {
+					for _, part := range resultContent.array {
+						if partType, ok := oracleRawStringField(part, "type"); ok && partType == "text" {
+							if text, ok := part.firstField("text"); ok {
+								oracleRawAppendString(spans, text, role)
+							}
+						}
+					}
+				}
+			case "document":
+				for _, field := range []string{"title", "context"} {
+					if text, ok := block.firstField(field); ok {
+						oracleRawAppendString(spans, text, role)
+					}
+				}
+				source, ok := block.firstField("source")
+				if !ok {
+					continue
+				}
+				sourceType, ok := oracleRawStringField(source, "type")
+				if !ok {
+					continue
+				}
+				switch sourceType {
+				case "text":
+					if data, ok := source.firstField("data"); ok {
+						oracleRawAppendString(spans, data, role)
+					}
+				case "content":
+					sourceContent, ok := source.firstField("content")
+					if !ok {
+						continue
+					}
+					oracleRawAppendString(spans, sourceContent, role)
+					if sourceContent.kind != 'a' {
+						continue
+					}
+					for _, part := range sourceContent.array {
+						if partType, ok := oracleRawStringField(part, "type"); ok && partType == "text" {
+							if text, ok := part.firstField("text"); ok {
+								oracleRawAppendString(spans, text, role)
+							}
+						}
+					}
 				}
 			}
 		}
