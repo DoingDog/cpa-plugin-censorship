@@ -122,6 +122,14 @@ func appendStringSpan(spans *[]textSpan, value gjson.Result, role string, roles 
 	})
 }
 
+func appendNonEmptyStringSpan(spans *[]textSpan, value gjson.Result, role string, roles scopeSet) {
+	before := len(*spans)
+	appendStringSpan(spans, value, role, roles)
+	if len(*spans) > before {
+		(*spans)[len(*spans)-1].RequiresNonEmpty = true
+	}
+}
+
 func scanTextPart(part gjson.Result, requireTextType bool) (text gjson.Result, allowed bool) {
 	if !part.IsObject() {
 		return text, false

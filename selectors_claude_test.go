@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestClaudeSelectorRowsAndExclusions(t *testing.T) {
@@ -35,6 +38,7 @@ func TestClaudeSelectorRowsAndExclusions(t *testing.T) {
 		rawReplacement{Before: `"SECRET tool"`, After: `" tool"`},
 		rawReplacement{Before: `"SECRET string result"`, After: `" string result"`},
 		rawReplacement{Before: `"SECRET assistant"`, After: `" assistant"`},
+		rawReplacement{Before: `"SECRET document"`, After: `" document"`},
 	)
 	if !bytes.Equal(resp.Body, want) {
 		t.Fatalf("body differs outside contracted Claude string tokens")
@@ -135,6 +139,32 @@ func TestClaudeResultText(t *testing.T) {
 				{Before: `"SECRET nested second"`, After: `" nested second"`},
 			},
 		},
+		{
+			name:          "direct user search and document metadata",
+			roles:         "[user]",
+			disabledRoles: "[tool]",
+			body:          `{"messages":[{"role":"user","content":[{"type":"search_result","source":"SECRET search source","title":"SECRET search title","content":[{"type":"text","text":"SECRET search text"}]},{"type":"document","title":"SECRET document title","context":"SECRET document context","source":{"type":"content","content":"SECRET scalar document"}}]}]}`,
+			replacements: []rawReplacement{
+				{Before: `"SECRET search title"`, After: `" search title"`},
+				{Before: `"SECRET search text"`, After: `" search text"`},
+				{Before: `"SECRET document title"`, After: `" document title"`},
+				{Before: `"SECRET document context"`, After: `" document context"`},
+				{Before: `"SECRET scalar document"`, After: `" scalar document"`},
+			},
+		},
+		{
+			name:          "nested tool search and document metadata",
+			roles:         "[tool]",
+			disabledRoles: "[user]",
+			body:          `{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"SECRET tool id","content":[{"type":"search_result","source":"SECRET nested source","title":"SECRET nested search title","content":[{"type":"text","text":"SECRET nested search text"}]},{"type":"document","title":"SECRET nested document title","context":"SECRET nested document context","source":{"type":"content","content":"SECRET nested scalar document"}}]}]}]}`,
+			replacements: []rawReplacement{
+				{Before: `"SECRET nested search title"`, After: `" nested search title"`},
+				{Before: `"SECRET nested search text"`, After: `" nested search text"`},
+				{Before: `"SECRET nested document title"`, After: `" nested document title"`},
+				{Before: `"SECRET nested document context"`, After: `" nested document context"`},
+				{Before: `"SECRET nested scalar document"`, After: `" nested scalar document"`},
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -158,17 +188,96 @@ func TestClaudeResultText(t *testing.T) {
 
 func TestClaudeResultTextPreservesMachineFields(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user, tool]\n")
-	body := []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","source":"SECRET search source","title":"SECRET search title","citations":[{"data":"SECRET citation data"}],"content":[{"type":"text","text":"SECRET direct search"},{"type":"image","source":{"data":"SECRET search non-text"}}]},{"type":"document","title":"SECRET document title","source":{"type":"text","media_type":"SECRET document media type","data":"SECRET direct document"}},{"type":"document","source":{"type":"url","url":"SECRET URL source"}},{"type":"document","source":{"type":"file","file_id":"SECRET file source"}},{"type":"document","source":{"type":"base64","media_type":"SECRET base64 media type","data":"SECRET base64 source"}},{"type":"document","title":"SECRET custom content title","source":{"type":"content","url":"SECRET custom content URL","cache_control":{"type":"SECRET custom content cache control"},"content":[{"type":"text","text":"SECRET custom content first","citation":{"url":"SECRET custom content citation URL","title":"SECRET custom content citation title"}},{"type":"image","source":{"data":"SECRET custom content image"},"title":"SECRET custom content image title"},{"type":"text","text":"SECRET custom content second","cache_control":{"type":"SECRET custom content part cache control"}}]}},{"type":"tool_result","tool_use_id":"SECRET tool use id","is_error":"SECRET is error","content":["SECRET tool result",{"type":"search_result","source":"SECRET nested search source","title":"SECRET nested search title","citations":[{"data":"SECRET nested citation data"}],"content":[{"type":"text","text":"SECRET nested search"},{"type":"image","source":{"data":"SECRET nested search non-text"}}]},{"type":"document","title":"SECRET nested document title","source":{"type":"text","media_type":"SECRET nested document media type","data":"SECRET nested document"}},{"type":"document","source":{"type":"url","url":"SECRET nested URL source"}},{"type":"document","source":{"type":"file","file_id":"SECRET nested file source"}},{"type":"document","source":{"type":"base64","media_type":"SECRET nested base64 media type","data":"SECRET nested base64 source"}}]},{"type":"tool_use","input":{"query":"SECRET tool input"}},{"type":"thinking","thinking":"SECRET thinking","text":"SECRET thinking text"},{"type":"redacted_thinking","data":"SECRET redacted thinking"},{"type":"image","source":{"data":"SECRET image source"}}]}]}`)
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","source":"SECRET search source","title":"SECRET search title","citations":[{"data":"SECRET citation data"}],"content":[{"type":"text","text":"SECRET direct search"},{"type":"image","source":{"data":"SECRET search non-text"}}]},{"type":"document","title":"SECRET document title","context":"SECRET direct document context","source":{"type":"text","media_type":"SECRET document media type","data":"SECRET direct document"}},{"type":"document","context":"SECRET direct URL document context","source":{"type":"url","url":"SECRET URL source"}},{"type":"document","context":"SECRET direct file document context","source":{"type":"file","file_id":"SECRET file source"}},{"type":"document","context":"SECRET direct base64 document context","source":{"type":"base64","media_type":"SECRET base64 media type","data":"SECRET base64 source"}},{"type":"document","title":"SECRET custom content title","context":"SECRET direct custom content document context","source":{"type":"content","url":"SECRET custom content URL","cache_control":{"type":"SECRET custom content cache control"},"content":[{"type":"text","text":"SECRET custom content first","citation":{"url":"SECRET custom content citation URL","title":"SECRET custom content citation title"}},{"type":"image","source":{"data":"SECRET custom content image"},"title":"SECRET custom content image title"},{"type":"text","text":"SECRET custom content second","cache_control":{"type":"SECRET custom content part cache control"}}]}},{"type":"document","title":"SECRET direct scalar content document title","context":"SECRET direct scalar content document context","source":{"type":"content","content":"SECRET direct scalar document"}},{"type":"tool_result","tool_use_id":"SECRET tool use id","is_error":"SECRET is error","content":["SECRET tool result",{"type":"search_result","source":"SECRET nested search source","title":"SECRET nested search title","citations":[{"data":"SECRET nested citation data"}],"content":[{"type":"text","text":"SECRET nested search"},{"type":"image","source":{"data":"SECRET nested search non-text"}}]},{"type":"document","title":"SECRET nested document title","context":"SECRET nested document context","source":{"type":"text","media_type":"SECRET nested document media type","data":"SECRET nested document"}},{"type":"document","context":"SECRET nested URL document context","source":{"type":"url","url":"SECRET nested URL source"}},{"type":"document","context":"SECRET nested file document context","source":{"type":"file","file_id":"SECRET nested file source"}},{"type":"document","context":"SECRET nested base64 document context","source":{"type":"base64","media_type":"SECRET nested base64 media type","data":"SECRET nested base64 source"}},{"type":"document","title":"SECRET nested scalar content document title","context":"SECRET nested scalar content document context","source":{"type":"content","content":"SECRET nested scalar document"}}]},{"type":"tool_use","input":{"query":"SECRET tool input"}},{"type":"thinking","thinking":"SECRET thinking","text":"SECRET thinking text"},{"type":"redacted_thinking","data":"SECRET redacted thinking"},{"type":"image","source":{"data":"SECRET image source"}}]}]}`)
 	resp := interceptRPC(t, "claude", body)
 	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET search title"`, After: `" search title"`},
 		rawReplacement{Before: `"SECRET direct search"`, After: `" direct search"`},
+		rawReplacement{Before: `"SECRET document title"`, After: `" document title"`},
+		rawReplacement{Before: `"SECRET direct document context"`, After: `" direct document context"`},
 		rawReplacement{Before: `"SECRET direct document"`, After: `" direct document"`},
+		rawReplacement{Before: `"SECRET direct URL document context"`, After: `" direct URL document context"`},
+		rawReplacement{Before: `"SECRET direct file document context"`, After: `" direct file document context"`},
+		rawReplacement{Before: `"SECRET direct base64 document context"`, After: `" direct base64 document context"`},
+		rawReplacement{Before: `"SECRET custom content title"`, After: `" custom content title"`},
+		rawReplacement{Before: `"SECRET direct custom content document context"`, After: `" direct custom content document context"`},
 		rawReplacement{Before: `"SECRET custom content first"`, After: `" custom content first"`},
 		rawReplacement{Before: `"SECRET custom content second"`, After: `" custom content second"`},
+		rawReplacement{Before: `"SECRET direct scalar content document title"`, After: `" direct scalar content document title"`},
+		rawReplacement{Before: `"SECRET direct scalar content document context"`, After: `" direct scalar content document context"`},
+		rawReplacement{Before: `"SECRET direct scalar document"`, After: `" direct scalar document"`},
+		rawReplacement{Before: `"SECRET nested search title"`, After: `" nested search title"`},
 		rawReplacement{Before: `"SECRET nested search"`, After: `" nested search"`},
+		rawReplacement{Before: `"SECRET nested document title"`, After: `" nested document title"`},
+		rawReplacement{Before: `"SECRET nested document context"`, After: `" nested document context"`},
 		rawReplacement{Before: `"SECRET nested document"`, After: `" nested document"`},
+		rawReplacement{Before: `"SECRET nested URL document context"`, After: `" nested URL document context"`},
+		rawReplacement{Before: `"SECRET nested file document context"`, After: `" nested file document context"`},
+		rawReplacement{Before: `"SECRET nested base64 document context"`, After: `" nested base64 document context"`},
+		rawReplacement{Before: `"SECRET nested scalar content document title"`, After: `" nested scalar content document title"`},
+		rawReplacement{Before: `"SECRET nested scalar content document context"`, After: `" nested scalar content document context"`},
+		rawReplacement{Before: `"SECRET nested scalar document"`, After: `" nested scalar document"`},
 	)
 	if !bytes.Equal(resp.Body, want) {
 		t.Fatalf("body differs outside selected Claude result text")
+	}
+}
+
+func TestClaudeMinimumLengthFieldsRejectFullStrip(t *testing.T) {
+	cases := []struct {
+		name string
+		body []byte
+	}{
+		{name: "typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"}]}]}`)},
+		{name: "document title", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"SECRET","source":{"type":"text","data":"clean"}}]}]}`)},
+		{name: "document context", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET","source":{"type":"text","data":"clean"}}]}]}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+			resp := interceptRPC(t, "claude", tc.body)
+			if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.ResponseHeaders.Get("Content-Type") != "application/json" || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v", resp)
+			}
+			if got := gjson.GetBytes(resp.ResponseBody, "error.code").String(); got != "censorship_invalid_request" {
+				t.Fatalf("error code = %q, body = %s", got, resp.ResponseBody)
+			}
+			if got := gjson.GetBytes(resp.ResponseBody, "error.message").String(); got != "censorship rewrite would make a text field invalid" {
+				t.Fatalf("error message = %q, body = %s", got, resp.ResponseBody)
+			}
+		})
+	}
+}
+
+func TestClaudeMinimumLengthFieldsAllowPartialStrip(t *testing.T) {
+	cases := []struct {
+		name string
+		body []byte
+		want []byte
+	}{
+		{
+			name: "typed text",
+			body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET tail"}]}]}`),
+			want: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":" tail"}]}]}`),
+		},
+		{
+			name: "document title",
+			body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"SECRET title","source":{"type":"text","data":"clean"}}]}]}`),
+			want: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":" title","source":{"type":"text","data":"clean"}}]}]}`),
+		},
+		{
+			name: "document context",
+			body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET context","source":{"type":"text","data":"clean"}}]}]}`),
+			want: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":" context","source":{"type":"text","data":"clean"}}]}]}`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+			resp := interceptRPC(t, "claude", tc.body)
+			if resp.Terminate || !bytes.Equal(resp.Body, tc.want) {
+				t.Fatalf("response = %#v, want body %s", resp, tc.want)
+			}
+		})
 	}
 }

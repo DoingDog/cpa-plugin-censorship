@@ -120,10 +120,14 @@ func interceptBeforeAuth(raw []byte) ([]byte, error) {
 	}
 	switch {
 	case result.Invalid:
+		message := result.InvalidMessage
+		if message == "" {
+			message = "request body must be a JSON object"
+		}
 		return terminatedRequest(censorshipError{
 			Type:    "invalid_request_error",
 			Code:    "censorship_invalid_request",
-			Message: "request body must be a JSON object",
+			Message: message,
 		})
 	case result.Blocked != nil:
 		return terminatedRequest(censorshipError{

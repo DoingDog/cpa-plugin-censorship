@@ -8,12 +8,13 @@ import (
 )
 
 type textSpan struct {
-	RawStart        int
-	RawEnd          int
-	Text            string
-	Role            string
-	Changed         bool
-	SkipFoldRewrite bool
+	RawStart         int
+	RawEnd           int
+	Text             string
+	Role             string
+	Changed          bool
+	SkipFoldRewrite  bool
+	RequiresNonEmpty bool
 }
 
 const (
@@ -44,9 +45,10 @@ type blockMatch struct {
 }
 
 type transformResult struct {
-	Body    []byte
-	Blocked *blockMatch
-	Invalid bool
+	Body           []byte
+	Blocked        *blockMatch
+	Invalid        bool
+	InvalidMessage string
 }
 
 func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (transformResult, error) {
@@ -66,6 +68,14 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	}
 	if !changed {
 		return transformResult{}, nil
+	}
+	for _, span := range spans {
+		if span.Changed && span.RequiresNonEmpty && span.Text == "" {
+			return transformResult{
+				Invalid:        true,
+				InvalidMessage: "censorship rewrite would make a text field invalid",
+			}, nil
+		}
 	}
 	out, err := rebuildBody(body, spans)
 	return transformResult{Body: out}, err

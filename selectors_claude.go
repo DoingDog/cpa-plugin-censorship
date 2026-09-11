@@ -11,7 +11,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				if block.IsObject() {
 					blockType := block.Get("type")
 					if blockType.Type == gjson.String && blockType.Str == "text" {
-						appendStringSpan(spans, block.Get("text"), "system", roles)
+						appendNonEmptyStringSpan(spans, block.Get("text"), "system", roles)
 					}
 				}
 				return true
@@ -60,7 +60,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			switch blockType.Str {
 			case "text":
 				if roles.has(role.Str) {
-					appendStringSpan(spans, block.Get("text"), role.Str, roles)
+					appendNonEmptyStringSpan(spans, block.Get("text"), role.Str, roles)
 				}
 			case "search_result", "document":
 				if role.Str == "user" {
@@ -80,7 +80,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 					if inner.IsObject() {
 						innerType := inner.Get("type")
 						if innerType.Type == gjson.String && innerType.Str == "text" {
-							appendStringSpan(spans, inner.Get("text"), "tool", roles)
+							appendNonEmptyStringSpan(spans, inner.Get("text"), "tool", roles)
 						}
 					}
 					return true
@@ -104,17 +104,20 @@ func appendClaudeResultText(spans *[]textSpan, block gjson.Result, role string, 
 
 	switch blockType.Str {
 	case "search_result":
+		appendStringSpan(spans, block.Get("title"), role, roles)
 		content := block.Get("content")
 		if !content.IsArray() {
 			return
 		}
 		content.ForEach(func(_, part gjson.Result) bool {
 			if part.IsObject() && part.Get("type").Str == "text" {
-				appendStringSpan(spans, part.Get("text"), role, roles)
+				appendNonEmptyStringSpan(spans, part.Get("text"), role, roles)
 			}
 			return true
 		})
 	case "document":
+		appendNonEmptyStringSpan(spans, block.Get("title"), role, roles)
+		appendNonEmptyStringSpan(spans, block.Get("context"), role, roles)
 		source := block.Get("source")
 		if !source.IsObject() {
 			return
@@ -124,12 +127,13 @@ func appendClaudeResultText(spans *[]textSpan, block gjson.Result, role string, 
 			appendStringSpan(spans, source.Get("data"), role, roles)
 		case "content":
 			content := source.Get("content")
+			appendStringSpan(spans, content, role, roles)
 			if !content.IsArray() {
 				return
 			}
 			content.ForEach(func(_, part gjson.Result) bool {
 				if part.IsObject() && part.Get("type").Str == "text" {
-					appendStringSpan(spans, part.Get("text"), role, roles)
+					appendNonEmptyStringSpan(spans, part.Get("text"), role, roles)
 				}
 				return true
 			})
