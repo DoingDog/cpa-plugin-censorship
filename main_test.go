@@ -552,6 +552,19 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"censorship_<version>_<goos>_<goarch>.zip",
 		".zip.sha256",
 		"64 lowercase hex characters, two spaces, and the archive basename",
+		"`program_output.result`",
+		"`mcp_call.error.message`",
+		"`mcp_list_tools.error`",
+		"`file_search_call.results[*].text`",
+		"`code_interpreter_call.outputs[type=logs].logs`",
+		"`search_result.title`",
+		"`document.title`",
+		"`document.context`",
+		"scalar `document.source.content`",
+		"censorship rewrite would make a text field invalid",
+		"0.0.0-dev",
+		"aggregate packaging",
+		"signed-history prefix",
 	}
 	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
 		raw, err := os.ReadFile(name)

@@ -1,6 +1,13 @@
-# Censorship v0.2.1
+# Censorship v0.2.2
 
-v0.2.1 fixes Gemini null union semantics, Claude custom-content documents, native ABI descriptor validation, safe one-time VERSION normalization, packaging alias protection with deterministic archives, and integration coverage. Claims below are limited to verified behavior.
+## v0.2.2 fixes
+
+- Documents current OpenAI Responses tool-result leaves and Claude selected document-field roles.
+- Rejects a Claude rewrite that would empty a required text field locally.
+- Uses `0.0.0-dev` for bare host artifacts and rejects aliases before direct and aggregate packaging changes output paths.
+- Documents the Claude signed-history prefix limitation without mutating thinking/signatures or adding an overbroad runtime rejection.
+
+Claims below are limited to verified behavior.
 
 Censorship remains a pure CLIProxyAPI `RequestInterceptor`: it is request-only; never inspects or changes model output, response bodies, SSE chunks, or server WebSocket events. It has no custom panel, menu, or Management API.
 
@@ -75,8 +82,8 @@ There is no Unicode normalization and no full case folding. `strip` removes the 
 
 Selectors enter only documented text leaves; there is no recursive fallback string walker.
 
-- OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, and documented `tool` and legacy `function` result text; Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, plus documented `function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Responses `output_text` and `refusal` use canonical `assistant`; documented tool/function result text uses canonical `tool`.
-- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result` and `document` text, including the `document` text path when `source.type == "content"`, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct search/document text has canonical `user`; nested tool-result text has canonical `tool`.
+- OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, and documented `tool` and legacy `function` result text; Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, plus documented `function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text: `program_output.result`, `mcp_call.output`, `mcp_call.error.message` only for `mcp_protocol_error` and `http_error`, scalar `mcp_list_tools.error`, `file_search_call.results[*].text`, and `code_interpreter_call.outputs[type=logs].logs`. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Responses `output_text` and `refusal` use canonical `assistant`; all documented tool/function result-text leaves use canonical `tool`. Unsupported error/output variants and machine siblings remain unchanged.
+- Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result.title`, `document.title`, `document.context`, and scalar `document.source.content` when `source.type == "content"`, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct user blocks use `user` and nested tool-result blocks use `tool`.
 - Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role. A JSON `null` machine discriminator is treated as unset.
 - Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content.
 
@@ -90,11 +97,13 @@ Machine exclusions: tool calls, tool schemas, arguments, reasoning, thinking, JS
 
 Tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude unselected tool-result fields, Gemini `functionResponse`, Interactions function/tool data, and every model response remain excluded. Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers.
 
-Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Unknown SourceFormat, roles, item types, content blocks, and future protocol shapes are left unchanged. Enabled known formats reject JSON objects with duplicate member names at any nesting depth. JSON text inside a string remains ordinary text rather than a nested request object.
+Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Unknown SourceFormat, roles, item types, content blocks, and future protocol shapes are left unchanged. Enabled known formats reject JSON objects with duplicate member names at any nesting depth. JSON text inside a string remains ordinary text rather than a nested request object. If a censorship rewrite empties a Claude `TextBlockParam.text`, present `document.title`, or present `document.context`, it terminates locally with `censorship_invalid_request`: censorship rewrite would make a text field invalid.
 
 ## Reload, ABI, and integration
 
 A non-Home CPA YAML update calls `plugin.reconfigure`, which publishes one complete immutable snapshot atomically. Poll a request containing a unique B-only term until it blocks. Therefore: valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel. An invalid reconfiguration keeps the last-known-good snapshot. Home mode does not watch local YAML.
+
+Bare `make build` and host-artifact `make package` use `0.0.0-dev`; explicit empty or unsafe `VERSION` remains invalid.
 
 The native ABI remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input.
 
@@ -116,6 +125,7 @@ The integration harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer h
 12. Known SourceFormat JSON objects accept at most 1024 simultaneously open object or array levels, including the top-level object. Deeper requests return `censorship_invalid_request`.
 13. Methods that read or copy request input reject lengths that exceed `C.int` with a non-zero ABI return code. After-auth intentionally does not read input and may accept a coherent non-nil oversized descriptor. Oversized host callback responses return a plugin error.
 14. The Responses WebSocket integration test fails after 20 seconds without `response.completed`; it does not wait indefinitely.
+15. A provider-controlled Claude signed-history prefix can bind preceding input. The BeforeAuth hook cannot reliably know final model/binding controls, so the plugin neither mutates thinking/signatures nor adds an overbroad runtime rejection.
 
 ## Artifacts
 
@@ -128,4 +138,4 @@ censorship_<version>_<goos>_<goarch>.zip.sha256
 
 Supported tuples are `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`, and `freebsd/amd64`. Raw tag, `VERSION`, and packager `-version` inputs must be safe ASCII filename components. One lowercase ASCII `v` is then removed exactly once.
 
-Direct `-library`/`-archive`/`-checksum` mode rejects output/input aliases, archive/checksum symlinks, hard links, junctions, and ASCII case aliases. Packaging produces deterministic ZIP archives. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.
+Direct and aggregate packaging reject library/archive/checksum aliases before changing those paths. Direct `-library`/`-archive`/`-checksum` mode rejects output/input aliases, archive/checksum symlinks, hard links, junctions, and ASCII case aliases. Packaging produces deterministic ZIP archives. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.

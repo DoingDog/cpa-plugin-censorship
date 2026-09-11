@@ -1082,6 +1082,12 @@ func TestDocumentationSelectorContractIncludesToolResults(t *testing.T) {
 			"a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text",
 			"`function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text",
 			"Claude unselected tool-result fields",
+			"`program_output.result`",
+			"`mcp_call.output`",
+			"`mcp_call.error.message`",
+			"`mcp_list_tools.error`",
+			"`file_search_call.results[*].text`",
+			"`code_interpreter_call.outputs[type=logs].logs`",
 		} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("%s omits %q", path, want)
