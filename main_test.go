@@ -579,3 +579,16 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
+	raw, err := os.ReadFile("RELEASE_NOTES.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte("v0.2.2 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.2")
+	}
+	if bytes.Contains(raw, []byte("v0.2.1 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.1")
+	}
+}
