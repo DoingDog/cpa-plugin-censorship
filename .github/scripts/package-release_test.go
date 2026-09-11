@@ -852,6 +852,135 @@ func TestPackageExistingArtifactsRejectsLateArchiveAliasWithoutChangingFiles(t *
 	assertFilesUnchanged(t, before)
 }
 
+func TestPackageExistingArtifactsRejectsCrossArtifactAndAggregateAliasesWithoutChangingFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		alias func(*testing.T, aggregateAliasFixture)
+	}{
+		{
+			name: "first archive hard-linked to second library",
+			alias: func(t *testing.T, fixture aggregateAliasFixture) {
+				t.Helper()
+				if err := os.Link(fixture.libraries[1], fixture.archives[0]); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "archives from different artifacts hard-linked",
+			alias: func(t *testing.T, fixture aggregateAliasFixture) {
+				t.Helper()
+				if err := os.WriteFile(fixture.archives[0], []byte("existing archive"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(fixture.archives[0], fixture.archives[1]); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "checksums hard-linked to library",
+			alias: func(t *testing.T, fixture aggregateAliasFixture) {
+				t.Helper()
+				if err := os.Link(fixture.libraries[0], fixture.aggregate); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "checksums hard-linked to archive",
+			alias: func(t *testing.T, fixture aggregateAliasFixture) {
+				t.Helper()
+				if err := os.WriteFile(fixture.archives[0], []byte("existing archive"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(fixture.archives[0], fixture.aggregate); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "checksums hard-linked to repository LICENSE",
+			alias: func(t *testing.T, fixture aggregateAliasFixture) {
+				t.Helper()
+				license := filepath.Join(fixture.root, "LICENSE")
+				if err := os.WriteFile(license, []byte("license contents"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(license, fixture.aggregate); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newAggregateAliasFixture(t)
+			old, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chdir(fixture.root); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chdir(old) })
+			tc.alias(t, fixture)
+			before := snapshotAggregateAliasFixture(t, fixture)
+
+			if err := packageExistingArtifacts("1.2.3", fixture.dist, fixture.out); err == nil {
+				t.Errorf("aggregate packaging accepted %s", tc.name)
+			}
+			assertFilesUnchanged(t, before)
+		})
+	}
+}
+
+type aggregateAliasFixture struct {
+	root      string
+	dist      string
+	out       string
+	libraries []string
+	archives  []string
+	checksums []string
+	aggregate string
+}
+
+func newAggregateAliasFixture(t *testing.T) aggregateAliasFixture {
+	t.Helper()
+	root := t.TempDir()
+	fixture := aggregateAliasFixture{
+		root: root,
+		dist: filepath.Join(root, "dist"),
+		out:  filepath.Join(root, "out"),
+	}
+	for _, artifact := range artifactSpecs()[:2] {
+		library := artifact.binaryPath(fixture.dist)
+		if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(library, []byte(artifact.osName+artifact.arch), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		archive := filepath.Join(fixture.out, fmt.Sprintf("%s_%s_%s_%s.zip", pluginName, "1.2.3", artifact.osName, artifact.arch))
+		fixture.libraries = append(fixture.libraries, library)
+		fixture.archives = append(fixture.archives, archive)
+		fixture.checksums = append(fixture.checksums, archive+".sha256")
+	}
+	if err := os.MkdirAll(fixture.out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture.aggregate = filepath.Join(fixture.out, "checksums.txt")
+	return fixture
+}
+
+func snapshotAggregateAliasFixture(t *testing.T, fixture aggregateAliasFixture) map[string]fileSnapshot {
+	t.Helper()
+	paths := append([]string(nil), fixture.libraries...)
+	paths = append(paths, fixture.archives...)
+	paths = append(paths, fixture.checksums...)
+	paths = append(paths, fixture.aggregate, filepath.Join(fixture.root, "LICENSE"))
+	return snapshotFiles(t, paths...)
+}
+
 func TestPackageExistingArtifactsHashesEachArchiveOnce(t *testing.T) {
 	dist := filepath.Join(t.TempDir(), "dist")
 	out := filepath.Join(t.TempDir(), "out")

@@ -92,13 +92,86 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		}{library, archive, checksum})
 	}
 
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("create output dir %s: %w", outDir, err)
-	}
 	if len(packages) == 0 {
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return fmt.Errorf("create output dir %s: %w", outDir, err)
+		}
 		return fmt.Errorf("no supported artifacts found under %s", filepath.ToSlash(distDir))
 	}
 
+	checksumsPath := filepath.Join(outDir, "checksums.txt")
+	if err := rejectOutputSymlink(checksumsPath, "checksums.txt"); err != nil {
+		return err
+	}
+	checksums, err := canonicalPath(checksumsPath)
+	if err != nil {
+		return err
+	}
+	outputs := make([]struct {
+		name string
+		path string
+	}, 0, len(packages)*2+1)
+	for _, artifact := range packages {
+		outputs = append(outputs,
+			struct {
+				name string
+				path string
+			}{"archive", artifact.archive},
+			struct {
+				name string
+				path string
+			}{"checksum", artifact.checksum},
+		)
+	}
+	outputs = append(outputs, struct {
+		name string
+		path string
+	}{"checksums.txt", checksums})
+	for index, output := range outputs {
+		for _, artifact := range packages {
+			same, err := pathsAlias(artifact.library, output.path)
+			if err != nil {
+				return err
+			}
+			if same {
+				return fmt.Errorf("library and %s must refer to different files", output.name)
+			}
+		}
+		for _, previous := range outputs[:index] {
+			same, err := pathsAlias(previous.path, output.path)
+			if err != nil {
+				return err
+			}
+			if same {
+				return fmt.Errorf("%s and %s must refer to different files", previous.name, output.name)
+			}
+		}
+	}
+	if _, err := os.Lstat("LICENSE"); err == nil {
+		if _, err := os.Stat("LICENSE"); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("LICENSE must not be a dangling symlink")
+			}
+			return fmt.Errorf("inspect LICENSE: %w", err)
+		}
+		license, err := canonicalPath("LICENSE")
+		if err != nil {
+			return err
+		}
+		same, err := pathsAlias(license, checksums)
+		if err != nil {
+			return err
+		}
+		if same {
+			return fmt.Errorf("LICENSE and checksums.txt must refer to different files")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect LICENSE: %w", err)
+	}
+
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir %s: %w", outDir, err)
+	}
 	checksumLines := make([]string, 0, len(packages))
 	for _, artifact := range packages {
 		if err := packageLibrary(artifact.library, artifact.archive); err != nil {
@@ -110,7 +183,7 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		}
 		checksumLines = append(checksumLines, line)
 	}
-	return writeChecksums(filepath.Join(outDir, "checksums.txt"), checksumLines)
+	return writeChecksums(checksums, checksumLines)
 }
 
 func artifactSpecs() []artifactSpec {
