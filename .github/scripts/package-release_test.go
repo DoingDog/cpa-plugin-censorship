@@ -783,6 +783,34 @@ func assertFilesUnchanged(t *testing.T, before map[string]fileSnapshot) {
 	}
 }
 
+func TestPackageExistingArtifactsRejectsArchiveAliasWithoutChangingFiles(t *testing.T) {
+	dist := filepath.Join(t.TempDir(), "dist")
+	out := filepath.Join(t.TempDir(), "out")
+	artifact := artifactSpec{osName: "linux", arch: "amd64"}
+	library := artifact.binaryPath(dist)
+	if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(library, []byte("library contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(out, "censorship_1.2.3_linux_amd64.zip")
+	if err := os.Link(library, archive); err != nil {
+		t.Fatal(err)
+	}
+	checksum := archive + ".sha256"
+	aggregate := filepath.Join(out, "checksums.txt")
+	before := snapshotFiles(t, library, archive, checksum, aggregate)
+
+	if err := packageExistingArtifacts("1.2.3", dist, out); err == nil {
+		t.Fatal("aggregate packaging accepted an archive alias of its input library")
+	}
+	assertFilesUnchanged(t, before)
+}
+
 func TestPackageExistingArtifactsHashesEachArchiveOnce(t *testing.T) {
 	dist := filepath.Join(t.TempDir(), "dist")
 	out := filepath.Join(t.TempDir(), "out")

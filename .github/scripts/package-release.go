@@ -81,10 +81,14 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		}
 		zipName := fmt.Sprintf("%s_%s_%s_%s.zip", pluginName, version, artifact.osName, artifact.arch)
 		zipPath := filepath.Join(outDir, zipName)
-		if err := packageLibrary(binaryPath, zipPath); err != nil {
+		library, archive, checksum, err := validateDirectPackagePaths(binaryPath, zipPath, zipPath+".sha256")
+		if err != nil {
 			return err
 		}
-		line, err := writeChecksum(zipPath+".sha256", zipPath)
+		if err := packageLibrary(library, archive); err != nil {
+			return err
+		}
+		line, err := writeChecksum(checksum, archive)
 		if err != nil {
 			return err
 		}
