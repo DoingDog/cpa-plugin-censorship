@@ -1,8 +1,8 @@
 PLUGIN_NAME := censorship
 GO ?= go
-unexport VERSION
 RAW_VERSION := $(value VERSION)
 PACKAGER_VERSION := $(if $(filter undefined,$(origin VERSION)),0.0.0-dev,$(RAW_VERSION))
+unexport VERSION
 NORMALIZED_VERSION = $(patsubst v%,%,$(PACKAGER_VERSION))
 export PACKAGER_VERSION NORMALIZED_VERSION
 

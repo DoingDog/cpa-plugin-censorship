@@ -911,6 +911,24 @@ func withEnvironment(base []string, key, value string) []string {
 	return append(out, key+"="+value)
 }
 
+func withoutEnvironment(base []string, keys ...string) []string {
+	out := make([]string, 0, len(base))
+	for _, entry := range base {
+		name, _, _ := strings.Cut(entry, "=")
+		remove := false
+		for _, key := range keys {
+			if strings.EqualFold(name, key) {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
 func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
 	forcedOS := "plan9"
 	if runtime.GOOS == forcedOS {
@@ -964,6 +982,19 @@ func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
 	}
 }
 
+func TestMakeMissingVersionUsesDevelopmentDefault(t *testing.T) {
+	makefile, err := filepath.Abs(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("make", "-f", makefile, "validate-version")
+	cmd.Dir = t.TempDir()
+	cmd.Env = withoutEnvironment(os.Environ(), "VERSION", "PACKAGER_VERSION", "NORMALIZED_VERSION")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("make validate-version without VERSION: %v\n%s", err, output)
+	}
+}
+
 func TestMakeVersionValidationContract(t *testing.T) {
 	makefile, err := filepath.Abs(filepath.Join("..", "..", "Makefile"))
 	if err != nil {
@@ -976,6 +1007,7 @@ func TestMakeVersionValidationContract(t *testing.T) {
 	}{
 		{value: `v1";touch VERSION_INJECTION_SENTINEL;version="1`, sentinel: "VERSION_INJECTION_SENTINEL"},
 		{value: `$(shell touch VERSION_MAKE_SENTINEL)`, sentinel: "VERSION_MAKE_SENTINEL"},
+		{value: ""},
 		{value: " v1.2.3", environment: true},
 		{value: "v1.2.3 ", environment: true},
 		{value: " ", environment: true},
