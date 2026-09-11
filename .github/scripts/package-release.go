@@ -66,11 +66,11 @@ func run() error {
 }
 
 func packageExistingArtifacts(version, distDir, outDir string) error {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("create output dir %s: %w", outDir, err)
-	}
-
-	checksumLines := make([]string, 0, len(artifactSpecs()))
+	packages := make([]struct {
+		library  string
+		archive  string
+		checksum string
+	}, 0, len(artifactSpecs()))
 	for _, artifact := range artifactSpecs() {
 		binaryPath := artifact.binaryPath(distDir)
 		if _, err := os.Stat(binaryPath); err != nil {
@@ -85,17 +85,30 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		if err != nil {
 			return err
 		}
-		if err := packageLibrary(library, archive); err != nil {
+		packages = append(packages, struct {
+			library  string
+			archive  string
+			checksum string
+		}{library, archive, checksum})
+	}
+
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir %s: %w", outDir, err)
+	}
+	if len(packages) == 0 {
+		return fmt.Errorf("no supported artifacts found under %s", filepath.ToSlash(distDir))
+	}
+
+	checksumLines := make([]string, 0, len(packages))
+	for _, artifact := range packages {
+		if err := packageLibrary(artifact.library, artifact.archive); err != nil {
 			return err
 		}
-		line, err := writeChecksum(checksum, archive)
+		line, err := writeChecksum(artifact.checksum, artifact.archive)
 		if err != nil {
 			return err
 		}
 		checksumLines = append(checksumLines, line)
-	}
-	if len(checksumLines) == 0 {
-		return fmt.Errorf("no supported artifacts found under %s", filepath.ToSlash(distDir))
 	}
 	return writeChecksums(filepath.Join(outDir, "checksums.txt"), checksumLines)
 }

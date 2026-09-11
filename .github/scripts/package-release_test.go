@@ -811,6 +811,47 @@ func TestPackageExistingArtifactsRejectsArchiveAliasWithoutChangingFiles(t *test
 	assertFilesUnchanged(t, before)
 }
 
+func TestPackageExistingArtifactsRejectsLateArchiveAliasWithoutChangingFiles(t *testing.T) {
+	dist := filepath.Join(t.TempDir(), "dist")
+	out := filepath.Join(t.TempDir(), "out")
+	artifacts := artifactSpecs()[:2]
+	libraries := make([]string, len(artifacts))
+	archives := make([]string, len(artifacts))
+	checksums := make([]string, len(artifacts))
+	for i, artifact := range artifacts {
+		libraries[i] = artifact.binaryPath(dist)
+		if err := os.MkdirAll(filepath.Dir(libraries[i]), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(libraries[i], []byte(artifact.osName+artifact.arch), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		archives[i] = filepath.Join(out, fmt.Sprintf("%s_%s_%s_%s.zip", pluginName, "1.2.3", artifact.osName, artifact.arch))
+		checksums[i] = archives[i] + ".sha256"
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archives[0], []byte("existing archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(libraries[1], archives[1]); err != nil {
+		t.Fatal(err)
+	}
+	aggregate := filepath.Join(out, "checksums.txt")
+	before := snapshotFiles(t,
+		libraries[0], libraries[1],
+		archives[0], archives[1],
+		checksums[0], checksums[1],
+		aggregate,
+	)
+
+	if err := packageExistingArtifacts("1.2.3", dist, out); err == nil {
+		t.Fatal("aggregate packaging accepted a late archive alias of its input library")
+	}
+	assertFilesUnchanged(t, before)
+}
+
 func TestPackageExistingArtifactsHashesEachArchiveOnce(t *testing.T) {
 	dist := filepath.Join(t.TempDir(), "dist")
 	out := filepath.Join(t.TempDir(), "out")
