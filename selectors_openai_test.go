@@ -278,17 +278,40 @@ func TestOpenAIResponsesOutputRoleGate(t *testing.T) {
 		},
 		{
 			name: "mcp call",
-			body: []byte(`{"input":[{"type":"mcp_call","role":"user","id":"SECRET mcp id","name":"SECRET mcp name","arguments":"SECRET mcp arguments","server_label":"SECRET mcp server","output":"SECRET mcp output","error":"SECRET mcp error","url":"SECRET mcp url","status":"SECRET mcp status","files":["SECRET mcp file"],"screenshots":["SECRET mcp screenshot"]}]}`),
+			body: []byte(`{"input":[{"type":"mcp_call","id":"SECRET mcp id","name":"SECRET mcp name","arguments":"SECRET mcp arguments","server_label":"SECRET mcp server","output":"SECRET mcp output","error":{"type":"mcp_protocol_error","message":"SECRET protocol message","code":"SECRET protocol code"}},{"type":"mcp_call","output":null,"error":{"type":"http_error","message":"SECRET HTTP message","status_code":500}},{"type":"mcp_call","error":{"type":"future_error","message":"SECRET future message"}}]}`),
 			replacements: []rawReplacement{
 				{Before: `"SECRET mcp output"`, After: `" mcp output"`},
-				{Before: `"SECRET mcp error"`, After: `" mcp error"`},
+				{Before: `"SECRET protocol message"`, After: `" protocol message"`},
+				{Before: `"SECRET HTTP message"`, After: `" HTTP message"`},
 			},
 		},
 		{
-			name: "program result",
-			body: []byte(`{"input":[{"type":"program_result","role":"user","id":"SECRET program id","name":"SECRET program name","arguments":"SECRET program arguments","result":"SECRET program result","command":"SECRET program command","status":"SECRET program status","url":"SECRET program url","files":["SECRET program file"],"screenshots":["SECRET program screenshot"]},{"type":"unknown_result","id":"SECRET unknown id","output":"SECRET unknown output","result":"SECRET unknown result","error":"SECRET unknown error"}]}`),
+			name: "mcp list tools error",
+			body: []byte(`{"input":[{"type":"mcp_list_tools","id":"SECRET list id","server_label":"SECRET server","error":"SECRET list error","tools":[{"name":"SECRET tool","description":"SECRET description","input_schema":{"note":"SECRET schema"}}]}]}`),
+			replacements: []rawReplacement{
+				{Before: `"SECRET list error"`, After: `" list error"`},
+			},
+		},
+		{
+			name: "program output",
+			body: []byte(`{"input":[{"type":"program_output","id":"SECRET program id","result":"SECRET program result","status":"SECRET program status"},{"type":"program_result","result":"SECRET legacy result"},{"type":"unknown_result","result":"SECRET unknown result"}]}`),
 			replacements: []rawReplacement{
 				{Before: `"SECRET program result"`, After: `" program result"`},
+			},
+		},
+		{
+			name: "file search results",
+			body: []byte(`{"input":[{"type":"file_search_call","id":"SECRET file search id","queries":["SECRET query"],"results":[{"file_id":"SECRET file id","filename":"SECRET filename","score":0.75,"text":"SECRET first result","attributes":{"note":"SECRET attribute"}},{"text":"SECRET second result"},{"text":123}]}]}`),
+			replacements: []rawReplacement{
+				{Before: `"SECRET first result"`, After: `" first result"`},
+				{Before: `"SECRET second result"`, After: `" second result"`},
+			},
+		},
+		{
+			name: "code interpreter logs",
+			body: []byte(`{"input":[{"type":"code_interpreter_call","id":"SECRET code id","code":"SECRET code","container_id":"SECRET container","outputs":[{"type":"logs","logs":"SECRET logs"},{"type":"image","url":"SECRET image URL","logs":"SECRET image logs"},{"type":"future","logs":"SECRET future logs"}]}]}`),
+			replacements: []rawReplacement{
+				{Before: `"SECRET logs"`, After: `" logs"`},
 			},
 		},
 	}

@@ -117,12 +117,51 @@ func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *
 	case "mcp_call":
 		if roles.has("tool") {
 			appendStringSpan(spans, item.Get("output"), "tool", roles)
+			errorValue := item.Get("error")
+			if errorValue.IsObject() {
+				switch errorValue.Get("type").Str {
+				case "mcp_protocol_error", "http_error":
+					appendStringSpan(spans, errorValue.Get("message"), "tool", roles)
+				}
+			}
+		}
+		return true
+	case "mcp_list_tools":
+		if roles.has("tool") {
 			appendStringSpan(spans, item.Get("error"), "tool", roles)
 		}
 		return true
-	case "program_result":
+	case "program_output":
 		if roles.has("tool") {
 			appendStringSpan(spans, item.Get("result"), "tool", roles)
+		}
+		return true
+	case "file_search_call":
+		if !roles.has("tool") {
+			return true
+		}
+		results := item.Get("results")
+		if results.IsArray() {
+			results.ForEach(func(_, result gjson.Result) bool {
+				if result.IsObject() {
+					appendStringSpan(spans, result.Get("text"), "tool", roles)
+				}
+				return true
+			})
+		}
+		return true
+	case "code_interpreter_call":
+		if !roles.has("tool") {
+			return true
+		}
+		outputs := item.Get("outputs")
+		if outputs.IsArray() {
+			outputs.ForEach(func(_, output gjson.Result) bool {
+				if output.IsObject() && output.Get("type").Str == "logs" {
+					appendStringSpan(spans, output.Get("logs"), "tool", roles)
+				}
+				return true
+			})
 		}
 		return true
 	default:
