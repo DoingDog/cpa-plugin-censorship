@@ -468,6 +468,9 @@ func TestWriteOutputFileRejectsSymlinkDestination(t *testing.T) {
 func TestWriteOutputFileLeavesNoTemporaryFilesAfterInstall(t *testing.T) {
 	dir := t.TempDir()
 	destination := filepath.Join(dir, "output")
+	if err := os.WriteFile(destination, []byte("old output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeOutputFile(destination, 0o600, func(file *os.File) error {
 		_, err := file.Write([]byte("new output"))
 		return err

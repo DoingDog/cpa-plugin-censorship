@@ -719,6 +719,16 @@ func TestOpenAIResponsesDefinitionMachineFieldsRemainUnchanged(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesLocalShellSkillDescriptionPreservesMachineFields(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"tools":[{"type":"shell","name":"SECRET shell name","environment":{"type":"local","id":"SECRET environment id","commands":["SECRET command"],"path":"/SECRET/environment","skills":[{"description":"SECRET description","name":"SECRET skill name","path":"/SECRET/skill","id":"SECRET hosted skill id","version":"SECRET hosted skill version","zip":"SECRET inline ZIP","base64":"SECRET inline base64"}]}}]}`)
+	want := []byte(`{"tools":[{"type":"shell","name":"SECRET shell name","environment":{"type":"local","id":"SECRET environment id","commands":["SECRET command"],"path":"/SECRET/environment","skills":[{"description":" description","name":"SECRET skill name","path":"/SECRET/skill","id":"SECRET hosted skill id","version":"SECRET hosted skill version","zip":"SECRET inline ZIP","base64":"SECRET inline base64"}]}}]}`)
+	resp := interceptRPC(t, "openai-response", body)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+	}
+}
+
 func TestOpenAIChatSchemaDescriptionsChangeWithoutMachineFields(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
 	body := []byte(`{"functions":[{"name":"SECRET name","description":"SECRET root","parameters":{"type":"object","description":"SECRET object","properties":{"SECRET property":{"type":"string","description":"SECRET property description","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","examples":["SECRET example"],"x-extra":{"description":"SECRET extension"}}},"items":{"type":"string","description":"SECRET items"},"allOf":[{"description":"SECRET all of"}]}}],"tool_calls":[{"function":{"arguments":"SECRET arguments"}}]}`)
