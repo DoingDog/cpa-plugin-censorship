@@ -1,11 +1,9 @@
-# Censorship v0.2.2
+# Censorship v0.2.3
 
-## v0.2.2 fixes
+## v0.2.3 fixes
 
-- Documents current OpenAI Responses tool-result leaves and Claude selected document-field roles.
-- Rejects a Claude rewrite that would empty a required text field locally.
-- Uses `0.0.0-dev` for bare host artifacts and rejects aliases before direct and aggregate packaging changes output paths.
-- Documents the Claude signed-history prefix limitation without mutating thinking/signatures or adding an overbroad runtime rejection.
+- Clears stale `Content-Encoding`, `Content-Length`, and `Transfer-Encoding` whenever censorship replaces a decoded request body.
+- Strictly validates complete, correctly typed HTTP and Responses WebSocket JSON in the integration oracle.
 
 Claims below are limited to verified behavior.
 
@@ -13,7 +11,7 @@ Censorship remains a pure CLIProxyAPI `RequestInterceptor`: it is request-only; 
 
 ## Compatibility
 
-v0.2.2 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.2.3 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Object configuration panel
 
@@ -105,9 +103,9 @@ A non-Home CPA YAML update calls `plugin.reconfigure`, which publishes one compl
 
 Bare `make build` and host-artifact `make package` use `0.0.0-dev`; explicit empty or unsafe `VERSION` remains invalid.
 
-The native ABI remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input.
+The native ABI remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input. When censorship replaces a decoded request body, it clears `Content-Encoding`, `Content-Length`, and `Transfer-Encoding`; no-op requests preserve headers.
 
-The integration harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling, and exact provider paths. Task 12 writes the watched configuration path in place and waits through a bounded marker write/probe handshake; Task 13 reuses the CPA integration checkout; Task 14 hardens release packaging. Tagged CPA integration, runner, and package checks passed.
+The integration harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling, and exact provider paths. The integration oracle strictly validates complete, correctly typed HTTP and Responses WebSocket JSON. Task 12 writes the watched configuration path in place and waits through a bounded marker write/probe handshake; Task 13 reuses the CPA integration checkout; Task 14 hardens release packaging. Tagged CPA integration, runner, and package checks passed.
 
 ## Accepted pure-plugin limits
 

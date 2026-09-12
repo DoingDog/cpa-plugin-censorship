@@ -538,6 +538,8 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"glibc 2.34+",
 		"C.GoBytes",
 		"does not claim pinned Windows host request-pointer liveness has been proven",
+		"When censorship replaces a decoded request body, it clears `Content-Encoding`, `Content-Length`, and `Transfer-Encoding`; no-op requests preserve headers.",
+		"The integration oracle strictly validates complete, correctly typed HTTP and Responses WebSocket JSON.",
 		"optional repository `LICENSE` if one exists",
 		"harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling",
 		"https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png",
@@ -619,10 +621,10 @@ func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.2.2 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.2")
+	if !bytes.Contains(raw, []byte("v0.2.3 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.3")
 	}
-	if bytes.Contains(raw, []byte("v0.2.1 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.1")
+	if bytes.Contains(raw, []byte("v0.2.2 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.2")
 	}
 }
