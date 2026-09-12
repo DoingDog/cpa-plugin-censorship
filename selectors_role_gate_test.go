@@ -312,7 +312,7 @@ func TestScanTextPartIgnoresNullMachineDiscriminators(t *testing.T) {
 		`{"function_call":null,"text":"allowed"}`,
 		`{"text":"allowed","function_call":null}`,
 	} {
-		text, allowed := scanTextPart(gjson.Parse(body), false)
+		text, allowed, _ := scanTextPart(gjson.Parse(body), false)
 		if !allowed || text.Str != "allowed" {
 			t.Fatalf("scanTextPart(%s) = (%q, %t), want (allowed, true)", body, text.Str, allowed)
 		}
@@ -323,7 +323,7 @@ func TestScanTextPartIgnoresNullMachineDiscriminators(t *testing.T) {
 		`{"function_call":false,"text":"excluded"}`,
 		`{"thought":true,"text":"excluded"}`,
 	} {
-		if _, allowed := scanTextPart(gjson.Parse(body), false); allowed {
+		if _, allowed, _ := scanTextPart(gjson.Parse(body), false); allowed {
 			t.Fatalf("scanTextPart(%s) allowed = true, want false", body)
 		}
 	}

@@ -33,8 +33,9 @@ type oracleTextMatch struct {
 }
 
 type oracleProtocolSpan struct {
-	Text string
-	Role string
+	Text               string
+	Role               string
+	RequiresUnmodified bool
 }
 
 func TestValidJSONObjectRejectsNonJSONWhitespace(t *testing.T) {
@@ -71,6 +72,7 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		{name: "document title", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"SECRET"}]}]}`)},
 		{name: "document context", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET"}]}]}`)},
 		{name: "document source content typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":[{"type":"text","text":"SECRET"}]}}]}]}`)},
+		{name: "canonical user scalar content", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)},
 	}
 	for _, tc := range accepted {
 		if err := checkProtocolResult("claude", tc.body, modeStrip, tc.fold, invalid); err != nil {
@@ -87,7 +89,6 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 	}{
 		{name: "OpenAI typed text", format: "openai", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
 		{name: "OpenAI string text", format: "openai", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`), mode: modeStrip, got: invalid},
-		{name: "Claude generic string content", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude assistant typed text", format: "claude", body: []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude search result title", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude document source scalar text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"SECRET","text":"unselected"}}]}]}`), mode: modeStrip, got: invalid},
@@ -102,6 +103,151 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		if err := checkProtocolResult(tc.format, tc.body, tc.mode, false, tc.got); err == nil {
 			t.Errorf("%s was accepted", tc.name)
 		}
+	}
+}
+
+func TestProtocolOracleAcceptsOnlyGeminiSignatureBoundRewrites(t *testing.T) {
+	const invalidMessage = "censorship cannot rewrite signature-bound text"
+	carriers := []string{
+		`"thoughtSignature":"signature"`,
+		`"thought_signature":"signature"`,
+		`"extra_content":{"google":{"thought_signature":"signature"}}`,
+	}
+	for _, carrier := range carriers {
+		body := []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET",` + carrier + `}]}]}`)
+		for _, selected := range []mode{modeStrip, modeObfs} {
+			got := transformResult{Invalid: true, InvalidMessage: invalidMessage}
+			if err := checkProtocolResult("gemini", body, selected, false, got); err != nil {
+				t.Errorf("carrier %s mode %s error = %v, want nil", carrier, selected, err)
+			}
+		}
+		if err := checkProtocolResult("gemini", body, modeBlock, false, transformResult{
+			Blocked: &blockMatch{Term: "SECRET", Role: "user"},
+		}); err != nil {
+			t.Errorf("carrier %s block error = %v, want nil", carrier, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		body []byte
+		mode mode
+		got  transformResult
+	}{
+		{
+			name: "wrong invalid message",
+			body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thoughtSignature":"signature"}]}]}`),
+			mode: modeStrip,
+			got:  transformResult{Invalid: true, InvalidMessage: "different"},
+		},
+		{
+			name: "unsigned part",
+			body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET"}]}]}`),
+			mode: modeStrip,
+			got:  transformResult{Invalid: true, InvalidMessage: invalidMessage},
+		},
+		{
+			name: "function part",
+			body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thoughtSignature":"signature","functionCall":{}}]}]}`),
+			mode: modeObfs,
+			got:  transformResult{Invalid: true, InvalidMessage: invalidMessage},
+		},
+		{
+			name: "thought part",
+			body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thoughtSignature":"signature","thought":true}]}]}`),
+			mode: modeObfs,
+			got:  transformResult{Invalid: true, InvalidMessage: invalidMessage},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := checkProtocolResult("gemini", tc.body, tc.mode, false, tc.got); err == nil {
+				t.Fatal("checkProtocolResult accepted invalid Gemini signature result")
+			}
+		})
+	}
+}
+
+func TestProtocolOracleCoversDefaultScopeOpenAIDefinitions(t *testing.T) {
+	for _, tc := range []struct {
+		name, format, body, role string
+	}{
+		{
+			name: "chat legacy function schema description", format: "openai", role: "developer",
+			body: `{"functions":[{"description":"safe","parameters":{"type":"object","description":"SECRET"}}]}`,
+		},
+		{
+			name: "chat function tool schema description", format: "openai", role: "developer",
+			body: `{"tools":[{"type":"function","function":{"description":"safe","output_schema":{"type":"object","description":"SECRET"}}}]}`,
+		},
+		{
+			name: "chat custom tool description", format: "openai", role: "developer",
+			body: `{"tools":[{"type":"custom","custom":{"description":"SECRET","format":{"definition":"machine SECRET"}}}]}`,
+		},
+		{
+			name: "chat response format schema description", format: "openai", role: "developer",
+			body: `{"response_format":{"type":"json_schema","json_schema":{"schema":{"type":"object","description":"SECRET"}}}}`,
+		},
+		{
+			name: "responses prompt scalar", format: "openai-response", role: "user",
+			body: `{"prompt":{"variables":{"name":"SECRET"}}}`,
+		},
+		{
+			name: "responses prompt typed object", format: "openai-response", role: "user",
+			body: `{"prompt":{"variables":{"name":{"type":"input_text","text":"SECRET"}}}}`,
+		},
+		{
+			name: "responses prompt typed array", format: "openai-response", role: "user",
+			body: `{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}}}`,
+		},
+		{
+			name: "responses text format schema description", format: "openai-response", role: "developer",
+			body: `{"text":{"format":{"type":"json_schema","schema":{"type":"object","description":"SECRET"}}}}`,
+		},
+		{
+			name: "responses function schema description", format: "openai-response", role: "developer",
+			body: `{"tools":[{"type":"function","description":"safe","parameters":{"type":"object","description":"SECRET"}}]}`,
+		},
+		{
+			name: "responses custom description", format: "openai-response", role: "developer",
+			body: `{"tools":[{"type":"custom","description":"SECRET"}]}`,
+		},
+		{
+			name: "responses namespace child description", format: "openai-response", role: "developer",
+			body: `{"tools":[{"type":"namespace","tools":[{"type":"function","description":"SECRET"}]}]}`,
+		},
+		{
+			name: "responses tool search schema description", format: "openai-response", role: "developer",
+			body: `{"tools":[{"type":"tool_search","parameters":{"type":"object","description":"SECRET"}}]}`,
+		},
+		{
+			name: "responses mcp description", format: "openai-response", role: "developer",
+			body: `{"tools":[{"type":"mcp","server_description":"SECRET"}]}`,
+		},
+		{
+			name: "responses local shell skill", format: "openai-response", role: "user",
+			body: `{"tools":[{"type":"shell","environment":{"type":"local","skills":[{"description":"SECRET"}]}}]}`,
+		},
+		{
+			name: "responses additional system", format: "openai-response", role: "system",
+			body: `{"input":[{"type":"additional_tools","role":"system","tools":[{"type":"custom","description":"SECRET"}]}]}`,
+		},
+		{
+			name: "responses additional developer", format: "openai-response", role: "developer",
+			body: `{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"SECRET"}]}]}`,
+		},
+		{
+			name: "responses additional user", format: "openai-response", role: "user",
+			body: `{"input":[{"type":"additional_tools","role":"user","tools":[{"type":"custom","description":"SECRET"}]}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkProtocolResult(tc.format, []byte(tc.body), modeBlock, false, transformResult{
+				Blocked: &blockMatch{Term: "SECRET", Role: tc.role},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -348,7 +494,13 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"},{"type":"thinking","thinking":"SECRET"}]}]}`)},
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"secret","content":[{"type":"text","text":"search SECRET tail"},{"type":"image","source":{"data":"SECRET"}}],"id":"SECRET","url":"https://SECRET","cache_metadata":{"SECRET":"SECRET"}},{"type":"document","title":"document SECRET tail","context":"context SECRET tail","source":{"type":"text","data":"data SECRET tail","text":"SECRET","media":"SECRET"},"id":"SECRET","citations":[{"url":"https://SECRET"}]},{"type":"document","source":{"type":"content","content":"scalar SECRET tail","data":"SECRET"}},{"type":"document","source":{"type":"content","content":[{"type":"text","text":"typed SECRET tail"},{"type":"image","source":{"data":"SECRET"}}]}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET"},{"text":"SECRET","inlineData":{"data":"SECRET"}}]}]}`)},
+		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thoughtSignature":"signature"}]}]}`)},
+		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thought_signature":"signature"}]}]}`)},
+		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","extra_content":{"google":{"thought_signature":"signature"}}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thought":false,"thought":true}]}]}`)},
+		{format: "openai", body: []byte(`{"functions":[{"description":"SECRET"}],"response_format":{"type":"json_schema","json_schema":{"schema":{"type":"object","description":"SECRET"}}}}`)},
+		{format: "openai-response", body: []byte(`{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}},"tools":[{"type":"function","description":"SECRET"}]}`)},
+		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"SECRET"}]}]}`)},
 		{format: "interactions", body: interactionStepsSeed(64)},
 		{format: "interactions", body: []byte(`{"input":{"type":"user_input","content":[{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}]}}`)},
 		{format: "interactions", body: []byte(`{"input":[{"type":"function_result","content":"SECRET"}]}`)},
@@ -409,6 +561,11 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 			oracleClaudeRequiredFieldWouldBeEmpty(body, fold) {
 			return nil
 		}
+		if format == "gemini" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 &&
+			got.InvalidMessage == "censorship cannot rewrite signature-bound text" &&
+			oracleGeminiSignatureBoundSpanMatches(body, fold) {
+			return nil
+		}
 		return fmt.Errorf("valid JSON object marked invalid: %s", body)
 	}
 
@@ -421,7 +578,8 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		return fmt.Errorf("oracle raw spans disagreed with protocol spans: raw=%#v spans=%#v", beforeRaw, before)
 	}
 	for i := range before {
-		if beforeRaw[i].Role != before[i].Role || beforeRaw[i].Text != before[i].Text {
+		if beforeRaw[i].Role != before[i].Role || beforeRaw[i].Text != before[i].Text ||
+			beforeRaw[i].RequiresUnmodified != before[i].RequiresUnmodified {
 			return fmt.Errorf("oracle raw span %d = %#v, want %#v", i, beforeRaw[i], before[i])
 		}
 	}
@@ -490,7 +648,8 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		if after[i].Role != before[i].Role || after[i].Text != want {
 			return fmt.Errorf("eligible span %d = %#v, want role %q text %q", i, after[i], before[i].Role, want)
 		}
-		if afterRaw[i].Role != after[i].Role || afterRaw[i].Text != after[i].Text {
+		if afterRaw[i].Role != after[i].Role || afterRaw[i].Text != after[i].Text ||
+			afterRaw[i].RequiresUnmodified != after[i].RequiresUnmodified {
 			return fmt.Errorf("oracle raw span %d = %#v, want %#v", i, afterRaw[i], after[i])
 		}
 		if oracleContains(beforeRaw[i].Text, "SECRET", fold) {
@@ -505,6 +664,19 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		return fmt.Errorf("excluded raw tokens changed: before=%q after=%q", beforeExcluded, afterExcluded)
 	}
 	return nil
+}
+
+func oracleGeminiSignatureBoundSpanMatches(body []byte, fold bool) bool {
+	spans, ok := oracleProtocolSpans("gemini", body)
+	if !ok {
+		return false
+	}
+	for _, span := range spans {
+		if span.RequiresUnmodified && oracleContains(span.Text, "SECRET", fold) {
+			return true
+		}
+	}
+	return false
 }
 
 func oracleClaudeRequiredFieldWouldBeEmpty(body []byte, fold bool) bool {
@@ -530,6 +702,13 @@ func oracleClaudeRequiredFieldWouldBeEmpty(body []byte, fold bool) bool {
 		content, ok := oracleFirstField(message, "content")
 		if !ok {
 			return
+		}
+		if role == "user" {
+			var scalar string
+			if json.Unmarshal(content, &scalar) == nil && oracleWouldEmptyAfterStrip(scalar, fold) {
+				found = true
+				return
+			}
 		}
 		oracleForEachArray(content, func(block json.RawMessage) {
 			if found {
@@ -646,10 +825,11 @@ func oracleProtocolSpans(format string, body []byte) ([]oracleProtocolSpan, bool
 }
 
 type oracleRawStringToken struct {
-	Text  string
-	Role  string
-	Start int
-	End   int
+	Text               string
+	Role               string
+	RequiresUnmodified bool
+	Start              int
+	End                int
 }
 
 type oracleRawValue struct {
@@ -897,25 +1077,201 @@ func oracleStringField(object []byte, field string) (string, bool) {
 	return value, true
 }
 
-func oracleOpenAISpans(root []byte, spans *[]oracleProtocolSpan) {
-	messages, ok := oracleFirstField(root, "messages")
+func oracleAppendJSONSchemaDescriptions(spans *[]oracleProtocolSpan, schema json.RawMessage, role string) {
+	if !bytes.HasPrefix(bytes.TrimSpace(schema), []byte("{")) {
+		return
+	}
+	if description, ok := oracleFirstField(schema, "description"); ok {
+		oracleAppendString(spans, description, role)
+	}
+	for _, key := range []string{"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"} {
+		children, ok := oracleFirstField(schema, key)
+		if !ok {
+			continue
+		}
+		oracleForEachObject(children, func(_ string, child json.RawMessage) {
+			oracleAppendJSONSchemaDescriptions(spans, child, role)
+		})
+	}
+	for _, key := range []string{"items", "additionalProperties", "unevaluatedProperties", "propertyNames", "contains", "not", "if", "then", "else"} {
+		if child, ok := oracleFirstField(schema, key); ok {
+			oracleAppendJSONSchemaDescriptions(spans, child, role)
+		}
+	}
+	for _, key := range []string{"prefixItems", "allOf", "anyOf", "oneOf"} {
+		children, ok := oracleFirstField(schema, key)
+		if !ok {
+			continue
+		}
+		oracleForEachArray(children, func(child json.RawMessage) {
+			oracleAppendJSONSchemaDescriptions(spans, child, role)
+		})
+	}
+}
+
+func oracleAppendOpenAIChatTool(spans *[]oracleProtocolSpan, tool json.RawMessage) {
+	typeName, ok := oracleStringField(tool, "type")
 	if !ok {
 		return
 	}
-	oracleForEachArray(messages, func(message json.RawMessage) {
-		role, ok := oracleStringField(message, "role")
-		if !ok || !oracleRoleEnabled(role) {
-			return
-		}
-		content, ok := oracleFirstField(message, "content")
+	switch typeName {
+	case "function":
+		function, ok := oracleFirstField(tool, "function")
 		if !ok {
 			return
 		}
-		oracleAppendString(spans, content, role)
-		oracleForEachArray(content, func(part json.RawMessage) {
-			if partType, ok := oracleStringField(part, "type"); ok && partType == "text" {
+		if description, ok := oracleFirstField(function, "description"); ok {
+			oracleAppendString(spans, description, "developer")
+		}
+		for _, key := range []string{"parameters", "output_schema"} {
+			if schema, ok := oracleFirstField(function, key); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+	case "custom":
+		custom, ok := oracleFirstField(tool, "custom")
+		if !ok {
+			return
+		}
+		if description, ok := oracleFirstField(custom, "description"); ok {
+			oracleAppendString(spans, description, "developer")
+		}
+	}
+}
+
+func oracleOpenAISpans(root []byte, spans *[]oracleProtocolSpan) {
+	if messages, ok := oracleFirstField(root, "messages"); ok {
+		oracleForEachArray(messages, func(message json.RawMessage) {
+			role, ok := oracleStringField(message, "role")
+			if !ok || !oracleRoleEnabled(role) {
+				return
+			}
+			content, ok := oracleFirstField(message, "content")
+			if !ok {
+				return
+			}
+			oracleAppendString(spans, content, role)
+			oracleForEachArray(content, func(part json.RawMessage) {
+				if partType, ok := oracleStringField(part, "type"); ok && partType == "text" {
+					if text, ok := oracleFirstField(part, "text"); ok {
+						oracleAppendString(spans, text, role)
+					}
+				}
+			})
+		})
+	}
+	if functions, ok := oracleFirstField(root, "functions"); ok {
+		oracleForEachArray(functions, func(function json.RawMessage) {
+			if description, ok := oracleFirstField(function, "description"); ok {
+				oracleAppendString(spans, description, "developer")
+			}
+			for _, key := range []string{"parameters", "output_schema"} {
+				if schema, ok := oracleFirstField(function, key); ok {
+					oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+				}
+			}
+		})
+	}
+	if tools, ok := oracleFirstField(root, "tools"); ok {
+		oracleForEachArray(tools, func(tool json.RawMessage) {
+			oracleAppendOpenAIChatTool(spans, tool)
+		})
+	}
+	if format, ok := oracleFirstField(root, "response_format"); ok && oracleJSONHasType(format, "json_schema") {
+		if jsonSchema, ok := oracleFirstField(format, "json_schema"); ok {
+			if description, ok := oracleFirstField(jsonSchema, "description"); ok {
+				oracleAppendString(spans, description, "developer")
+			}
+			if schema, ok := oracleFirstField(jsonSchema, "schema"); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+	}
+}
+
+func oracleJSONHasType(object json.RawMessage, want string) bool {
+	value, ok := oracleStringField(object, "type")
+	return ok && value == want
+}
+
+func oracleAppendOpenAIResponsesTool(spans *[]oracleProtocolSpan, tool json.RawMessage, role string) {
+	typeName, ok := oracleStringField(tool, "type")
+	if !ok {
+		return
+	}
+	if typeName == "shell" {
+		environment, ok := oracleFirstField(tool, "environment")
+		if !ok || !oracleJSONHasType(environment, "local") {
+			return
+		}
+		skills, ok := oracleFirstField(environment, "skills")
+		if !ok {
+			return
+		}
+		oracleForEachArray(skills, func(skill json.RawMessage) {
+			if description, ok := oracleFirstField(skill, "description"); ok {
+				oracleAppendString(spans, description, "user")
+			}
+		})
+		return
+	}
+	switch typeName {
+	case "function":
+		if description, ok := oracleFirstField(tool, "description"); ok {
+			oracleAppendString(spans, description, role)
+		}
+		for _, key := range []string{"parameters", "output_schema"} {
+			if schema, ok := oracleFirstField(tool, key); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, role)
+			}
+		}
+	case "custom":
+		if description, ok := oracleFirstField(tool, "description"); ok {
+			oracleAppendString(spans, description, role)
+		}
+	case "namespace":
+		if description, ok := oracleFirstField(tool, "description"); ok {
+			oracleAppendString(spans, description, role)
+		}
+		if children, ok := oracleFirstField(tool, "tools"); ok {
+			oracleForEachArray(children, func(child json.RawMessage) {
+				oracleAppendOpenAIResponsesTool(spans, child, role)
+			})
+		}
+	case "tool_search":
+		if description, ok := oracleFirstField(tool, "description"); ok {
+			oracleAppendString(spans, description, role)
+		}
+		if schema, ok := oracleFirstField(tool, "parameters"); ok {
+			oracleAppendJSONSchemaDescriptions(spans, schema, role)
+		}
+	case "mcp":
+		if description, ok := oracleFirstField(tool, "server_description"); ok {
+			oracleAppendString(spans, description, role)
+		}
+	}
+}
+
+func oracleOpenAIResponsePromptVariables(root []byte, spans *[]oracleProtocolSpan) {
+	prompt, ok := oracleFirstField(root, "prompt")
+	if !ok {
+		return
+	}
+	variables, ok := oracleFirstField(prompt, "variables")
+	if !ok {
+		return
+	}
+	oracleForEachObject(variables, func(_ string, value json.RawMessage) {
+		oracleAppendString(spans, value, "user")
+		if oracleJSONHasType(value, "input_text") {
+			if text, ok := oracleFirstField(value, "text"); ok {
+				oracleAppendString(spans, text, "user")
+			}
+		}
+		oracleForEachArray(value, func(part json.RawMessage) {
+			if oracleJSONHasType(part, "input_text") {
 				if text, ok := oracleFirstField(part, "text"); ok {
-					oracleAppendString(spans, text, role)
+					oracleAppendString(spans, text, "user")
 				}
 			}
 		})
@@ -926,6 +1282,22 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 	if instructions, ok := oracleFirstField(root, "instructions"); ok {
 		oracleAppendString(spans, instructions, "system")
 	}
+	oracleOpenAIResponsePromptVariables(root, spans)
+	if text, ok := oracleFirstField(root, "text"); ok {
+		if format, ok := oracleFirstField(text, "format"); ok && oracleJSONHasType(format, "json_schema") {
+			if description, ok := oracleFirstField(format, "description"); ok {
+				oracleAppendString(spans, description, "developer")
+			}
+			if schema, ok := oracleFirstField(format, "schema"); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+	}
+	if tools, ok := oracleFirstField(root, "tools"); ok {
+		oracleForEachArray(tools, func(tool json.RawMessage) {
+			oracleAppendOpenAIResponsesTool(spans, tool, "developer")
+		})
+	}
 	input, ok := oracleFirstField(root, "input")
 	if !ok {
 		return
@@ -934,7 +1306,22 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 	oracleForEachArray(input, func(item json.RawMessage) {
 		if itemType, exists := oracleFirstField(item, "type"); exists {
 			var value string
-			if json.Unmarshal(itemType, &value) != nil || value != "" && value != "message" {
+			if json.Unmarshal(itemType, &value) != nil {
+				return
+			}
+			if value == "additional_tools" {
+				role, ok := oracleStringField(item, "role")
+				if !ok || !allowedCanonicalRole(role) {
+					return
+				}
+				if tools, ok := oracleFirstField(item, "tools"); ok {
+					oracleForEachArray(tools, func(tool json.RawMessage) {
+						oracleAppendOpenAIResponsesTool(spans, tool, role)
+					})
+				}
+				return
+			}
+			if value != "" && value != "message" {
 				return
 			}
 		}
@@ -1116,6 +1503,14 @@ func oracleNextGeminiRole(previousRole string) string {
 	return "model"
 }
 
+func oracleAppendGeminiString(spans *[]oracleProtocolSpan, raw json.RawMessage, role string, signatureBound bool) {
+	before := len(*spans)
+	oracleAppendString(spans, raw, role)
+	if signatureBound && len(*spans) > before {
+		(*spans)[len(*spans)-1].RequiresUnmodified = true
+	}
+}
+
 func oracleGeminiParts(container json.RawMessage, role string, spans *[]oracleProtocolSpan) {
 	parts, ok := oracleFirstField(container, "parts")
 	if !ok {
@@ -1126,7 +1521,7 @@ func oracleGeminiParts(container json.RawMessage, role string, spans *[]oraclePr
 			return
 		}
 		if text, ok := oracleFirstField(part, "text"); ok {
-			oracleAppendString(spans, text, role)
+			oracleAppendGeminiString(spans, text, role, oracleGeminiPartSignatureBound(part))
 		}
 	})
 }
@@ -1260,31 +1655,210 @@ func oracleInteractionPartAllowed(part json.RawMessage) bool {
 			return false
 		}
 	}
-	return !oracleGeminiPartExcluded(part)
+	return !oracleGeminiPartExcluded(part) && !oracleGeminiPartSignatureBound(part)
+}
+
+func oracleRawAppendJSONSchemaDescriptions(spans *[]oracleRawStringToken, schema *oracleRawValue, role string) {
+	if schema == nil || schema.kind != 'o' {
+		return
+	}
+	if description, ok := schema.firstField("description"); ok {
+		oracleRawAppendString(spans, description, role)
+	}
+	for _, key := range []string{"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"} {
+		children, ok := schema.firstField(key)
+		if !ok || children.kind != 'o' {
+			continue
+		}
+		for _, member := range children.object {
+			oracleRawAppendJSONSchemaDescriptions(spans, member.value, role)
+		}
+	}
+	for _, key := range []string{"items", "additionalProperties", "unevaluatedProperties", "propertyNames", "contains", "not", "if", "then", "else"} {
+		if child, ok := schema.firstField(key); ok {
+			oracleRawAppendJSONSchemaDescriptions(spans, child, role)
+		}
+	}
+	for _, key := range []string{"prefixItems", "allOf", "anyOf", "oneOf"} {
+		children, ok := schema.firstField(key)
+		if !ok || children.kind != 'a' {
+			continue
+		}
+		for _, child := range children.array {
+			oracleRawAppendJSONSchemaDescriptions(spans, child, role)
+		}
+	}
+}
+
+func oracleRawJSONHasType(object *oracleRawValue, want string) bool {
+	value, ok := oracleRawStringField(object, "type")
+	return ok && value == want
+}
+
+func oracleRawAppendOpenAIChatTool(spans *[]oracleRawStringToken, tool *oracleRawValue) {
+	typeName, ok := oracleRawStringField(tool, "type")
+	if !ok {
+		return
+	}
+	switch typeName {
+	case "function":
+		function, ok := tool.firstField("function")
+		if !ok {
+			return
+		}
+		if description, ok := function.firstField("description"); ok {
+			oracleRawAppendString(spans, description, "developer")
+		}
+		for _, key := range []string{"parameters", "output_schema"} {
+			if schema, ok := function.firstField(key); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+	case "custom":
+		custom, ok := tool.firstField("custom")
+		if !ok {
+			return
+		}
+		if description, ok := custom.firstField("description"); ok {
+			oracleRawAppendString(spans, description, "developer")
+		}
+	}
 }
 
 func oracleRawOpenAISpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
-	messages, ok := root.firstField("messages")
-	if !ok || messages.kind != 'a' {
+	if messages, ok := root.firstField("messages"); ok && messages.kind == 'a' {
+		for _, message := range messages.array {
+			role, ok := oracleRawStringField(message, "role")
+			if !ok || !oracleRoleEnabled(role) {
+				continue
+			}
+			content, ok := message.firstField("content")
+			if !ok {
+				continue
+			}
+			oracleRawAppendString(spans, content, role)
+			if content.kind != 'a' {
+				continue
+			}
+			for _, part := range content.array {
+				if partType, ok := oracleRawStringField(part, "type"); ok && partType == "text" {
+					if text, ok := part.firstField("text"); ok {
+						oracleRawAppendString(spans, text, role)
+					}
+				}
+			}
+		}
+	}
+	if functions, ok := root.firstField("functions"); ok && functions.kind == 'a' {
+		for _, function := range functions.array {
+			if description, ok := function.firstField("description"); ok {
+				oracleRawAppendString(spans, description, "developer")
+			}
+			for _, key := range []string{"parameters", "output_schema"} {
+				if schema, ok := function.firstField(key); ok {
+					oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+				}
+			}
+		}
+	}
+	if tools, ok := root.firstField("tools"); ok && tools.kind == 'a' {
+		for _, tool := range tools.array {
+			oracleRawAppendOpenAIChatTool(spans, tool)
+		}
+	}
+	if format, ok := root.firstField("response_format"); ok && oracleRawJSONHasType(format, "json_schema") {
+		if jsonSchema, ok := format.firstField("json_schema"); ok {
+			if description, ok := jsonSchema.firstField("description"); ok {
+				oracleRawAppendString(spans, description, "developer")
+			}
+			if schema, ok := jsonSchema.firstField("schema"); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+	}
+}
+
+func oracleRawAppendOpenAIResponsesTool(spans *[]oracleRawStringToken, tool *oracleRawValue, role string) {
+	typeName, ok := oracleRawStringField(tool, "type")
+	if !ok {
 		return
 	}
-	for _, message := range messages.array {
-		role, ok := oracleRawStringField(message, "role")
-		if !ok || !oracleRoleEnabled(role) {
-			continue
+	if typeName == "shell" {
+		environment, ok := tool.firstField("environment")
+		if !ok || !oracleRawJSONHasType(environment, "local") {
+			return
 		}
-		content, ok := message.firstField("content")
-		if !ok {
-			continue
+		skills, ok := environment.firstField("skills")
+		if !ok || skills.kind != 'a' {
+			return
 		}
-		oracleRawAppendString(spans, content, role)
-		if content.kind != 'a' {
-			continue
+		for _, skill := range skills.array {
+			if description, ok := skill.firstField("description"); ok {
+				oracleRawAppendString(spans, description, "user")
+			}
 		}
-		for _, part := range content.array {
-			if partType, ok := oracleRawStringField(part, "type"); ok && partType == "text" {
-				if text, ok := part.firstField("text"); ok {
-					oracleRawAppendString(spans, text, role)
+		return
+	}
+	switch typeName {
+	case "function":
+		if description, ok := tool.firstField("description"); ok {
+			oracleRawAppendString(spans, description, role)
+		}
+		for _, key := range []string{"parameters", "output_schema"} {
+			if schema, ok := tool.firstField(key); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, role)
+			}
+		}
+	case "custom":
+		if description, ok := tool.firstField("description"); ok {
+			oracleRawAppendString(spans, description, role)
+		}
+	case "namespace":
+		if description, ok := tool.firstField("description"); ok {
+			oracleRawAppendString(spans, description, role)
+		}
+		if children, ok := tool.firstField("tools"); ok && children.kind == 'a' {
+			for _, child := range children.array {
+				oracleRawAppendOpenAIResponsesTool(spans, child, role)
+			}
+		}
+	case "tool_search":
+		if description, ok := tool.firstField("description"); ok {
+			oracleRawAppendString(spans, description, role)
+		}
+		if schema, ok := tool.firstField("parameters"); ok {
+			oracleRawAppendJSONSchemaDescriptions(spans, schema, role)
+		}
+	case "mcp":
+		if description, ok := tool.firstField("server_description"); ok {
+			oracleRawAppendString(spans, description, role)
+		}
+	}
+}
+
+func oracleRawOpenAIResponsePromptVariables(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	prompt, ok := root.firstField("prompt")
+	if !ok {
+		return
+	}
+	variables, ok := prompt.firstField("variables")
+	if !ok || variables.kind != 'o' {
+		return
+	}
+	for _, variable := range variables.object {
+		value := variable.value
+		oracleRawAppendString(spans, value, "user")
+		if oracleRawJSONHasType(value, "input_text") {
+			if text, ok := value.firstField("text"); ok {
+				oracleRawAppendString(spans, text, "user")
+			}
+		}
+		if value.kind == 'a' {
+			for _, part := range value.array {
+				if oracleRawJSONHasType(part, "input_text") {
+					if text, ok := part.firstField("text"); ok {
+						oracleRawAppendString(spans, text, "user")
+					}
 				}
 			}
 		}
@@ -1294,6 +1868,22 @@ func oracleRawOpenAISpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 func oracleRawOpenAIResponseSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	if instructions, ok := root.firstField("instructions"); ok {
 		oracleRawAppendString(spans, instructions, "system")
+	}
+	oracleRawOpenAIResponsePromptVariables(root, spans)
+	if text, ok := root.firstField("text"); ok {
+		if format, ok := text.firstField("format"); ok && oracleRawJSONHasType(format, "json_schema") {
+			if description, ok := format.firstField("description"); ok {
+				oracleRawAppendString(spans, description, "developer")
+			}
+			if schema, ok := format.firstField("schema"); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+	}
+	if tools, ok := root.firstField("tools"); ok && tools.kind == 'a' {
+		for _, tool := range tools.array {
+			oracleRawAppendOpenAIResponsesTool(spans, tool, "developer")
+		}
 	}
 	input, ok := root.firstField("input")
 	if !ok {
@@ -1305,7 +1895,22 @@ func oracleRawOpenAIResponseSpans(root *oracleRawValue, spans *[]oracleRawString
 	}
 	for _, item := range input.array {
 		if rawType, exists := item.firstField("type"); exists {
-			if rawType.kind != 's' || rawType.text != "" && rawType.text != "message" {
+			if rawType.kind != 's' {
+				continue
+			}
+			if rawType.text == "additional_tools" {
+				role, ok := oracleRawStringField(item, "role")
+				if !ok || !allowedCanonicalRole(role) {
+					continue
+				}
+				if tools, ok := item.firstField("tools"); ok && tools.kind == 'a' {
+					for _, tool := range tools.array {
+						oracleRawAppendOpenAIResponsesTool(spans, tool, role)
+					}
+				}
+				continue
+			}
+			if rawType.text != "" && rawType.text != "message" {
 				continue
 			}
 		}
@@ -1495,6 +2100,14 @@ func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	}
 }
 
+func oracleRawAppendGeminiString(spans *[]oracleRawStringToken, value *oracleRawValue, role string, signatureBound bool) {
+	before := len(*spans)
+	oracleRawAppendString(spans, value, role)
+	if signatureBound && len(*spans) > before {
+		(*spans)[len(*spans)-1].RequiresUnmodified = true
+	}
+}
+
 func oracleRawGeminiParts(container *oracleRawValue, role string, spans *[]oracleRawStringToken) {
 	parts, ok := container.firstField("parts")
 	if !ok || parts.kind != 'a' {
@@ -1505,7 +2118,7 @@ func oracleRawGeminiParts(container *oracleRawValue, role string, spans *[]oracl
 			continue
 		}
 		if text, ok := part.firstField("text"); ok {
-			oracleRawAppendString(spans, text, role)
+			oracleRawAppendGeminiString(spans, text, role, oracleRawGeminiPartSignatureBound(part))
 		}
 	}
 }
@@ -1622,7 +2235,7 @@ func oracleRawInteractionPartAllowed(part *oracleRawValue) bool {
 			return false
 		}
 	}
-	return !oracleRawGeminiPartExcluded(part)
+	return !oracleRawGeminiPartExcluded(part) && !oracleRawGeminiPartSignatureBound(part)
 }
 
 func oracleRawGeminiPartExcluded(part *oracleRawValue) bool {
@@ -1636,37 +2249,40 @@ func oracleRawGeminiPartExcluded(part *oracleRawValue) bool {
 		}
 		seen[member.key] = struct{}{}
 		switch member.key {
-		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
-			return true
+		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result":
+			if member.value.kind != 'p' || member.value.text != "null" {
+				return true
+			}
 		case "thought":
 			if member.value.kind == 'p' && member.value.text == "true" {
 				return true
 			}
 		}
 	}
-	for _, path := range [][]string{
-		{"functionCall", "thoughtSignature"},
-		{"functionCall", "thought_signature"},
-		{"functionResponse", "thoughtSignature"},
-		{"functionResponse", "thought_signature"},
-		{"extra_content", "google", "thought_signature"},
-	} {
-		if oracleRawJSONFieldPathExists(part, path...) {
-			return true
-		}
-	}
 	return false
 }
 
-func oracleRawJSONFieldPathExists(raw *oracleRawValue, path ...string) bool {
+func oracleRawGeminiPartSignatureBound(part *oracleRawValue) bool {
+	for _, key := range []string{"thoughtSignature", "thought_signature"} {
+		if value, ok := part.firstField(key); ok && (value.kind != 'p' || value.text != "null") {
+			return true
+		}
+	}
+	return oracleRawJSONFieldPathIsNonNull(part, "extra_content", "google", "thought_signature")
+}
+
+func oracleRawJSONFieldPathIsNonNull(raw *oracleRawValue, path ...string) bool {
+	if raw == nil {
+		return false
+	}
 	if len(path) == 0 {
-		return true
+		return raw.kind != 'p' || raw.text != "null"
 	}
 	value, ok := raw.firstField(path[0])
 	if !ok {
 		return false
 	}
-	return len(path) == 1 || oracleRawJSONFieldPathExists(value, path[1:]...)
+	return oracleRawJSONFieldPathIsNonNull(value, path[1:]...)
 }
 
 func boundedTerms(packed string, maxTerms, maxScalars int) []string {
@@ -2168,15 +2784,18 @@ func oracleGeminiExcludedParts(parts json.RawMessage, tokens *[][]byte) {
 	})
 }
 
-func TestOracleGeminiPartExcludesNestedMachineFields(t *testing.T) {
+func TestOracleGeminiPartSeparatesMachineCarriersFromSignatures(t *testing.T) {
 	for _, part := range []json.RawMessage{
 		[]byte(`{"text":"SECRET","functionCall":{"thought_signature":"sig"}}`),
 		[]byte(`{"text":"SECRET","functionResponse":{"thought_signature":"sig"}}`),
-		[]byte(`{"text":"SECRET","extra_content":{"google":{"thought_signature":"sig"}}}`),
 	} {
 		if !oracleGeminiPartExcluded(part) {
 			t.Errorf("oracleGeminiPartExcluded(%s) = false", part)
 		}
+	}
+	signed := json.RawMessage(`{"text":"SECRET","extra_content":{"google":{"thought_signature":"sig"}}}`)
+	if oracleGeminiPartExcluded(signed) || !oracleGeminiPartSignatureBound(signed) {
+		t.Fatalf("signature part = excluded %t signature bound %t", oracleGeminiPartExcluded(signed), oracleGeminiPartSignatureBound(signed))
 	}
 }
 
@@ -2189,8 +2808,8 @@ func oracleGeminiPartExcluded(part json.RawMessage) bool {
 		}
 		seen[key] = struct{}{}
 		switch key {
-		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
-			excluded = true
+		case "functionCall", "functionResponse", "function_call", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result":
+			excluded = excluded || !bytes.Equal(bytes.TrimSpace(value), []byte("null"))
 		case "thought":
 			var thought bool
 			if json.Unmarshal(value, &thought) == nil && thought {
@@ -2198,29 +2817,27 @@ func oracleGeminiPartExcluded(part json.RawMessage) bool {
 			}
 		}
 	})
-	for _, path := range [][]string{
-		{"functionCall", "thoughtSignature"},
-		{"functionCall", "thought_signature"},
-		{"functionResponse", "thoughtSignature"},
-		{"functionResponse", "thought_signature"},
-		{"extra_content", "google", "thought_signature"},
-	} {
-		if oracleJSONFieldPathExists(part, path...) {
-			return true
-		}
-	}
 	return excluded
 }
 
-func oracleJSONFieldPathExists(raw json.RawMessage, path ...string) bool {
+func oracleGeminiPartSignatureBound(part json.RawMessage) bool {
+	for _, key := range []string{"thoughtSignature", "thought_signature"} {
+		if value, ok := oracleFirstField(part, key); ok && !bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return true
+		}
+	}
+	return oracleJSONFieldPathIsNonNull(part, "extra_content", "google", "thought_signature")
+}
+
+func oracleJSONFieldPathIsNonNull(raw json.RawMessage, path ...string) bool {
 	if len(path) == 0 {
-		return true
+		return !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 	}
 	value, ok := oracleFirstField(raw, path[0])
 	if !ok {
 		return false
 	}
-	return len(path) == 1 || oracleJSONFieldPathExists(value, path[1:]...)
+	return oracleJSONFieldPathIsNonNull(value, path[1:]...)
 }
 
 func oracleHasDuplicateJSONMembers(raw []byte) bool {

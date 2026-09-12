@@ -2,6 +2,18 @@ package main
 
 import "github.com/tidwall/gjson"
 
+func appendGeminiTextPart(spans *[]textSpan, part gjson.Result, role string, roles scopeSet) {
+	text, allowed, signatureBound := scanTextPart(part, false)
+	if !allowed {
+		return
+	}
+	before := len(*spans)
+	appendStringSpan(spans, text, role, roles)
+	if signatureBound && len(*spans) != before {
+		(*spans)[len(*spans)-1].RequiresUnmodified = true
+	}
+}
+
 func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	collectParts := func(content gjson.Result, role string) {
 		if !roles.has(role) {
@@ -12,10 +24,7 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			return
 		}
 		parts.ForEach(func(_, part gjson.Result) bool {
-			text, allowed := scanTextPart(part, false)
-			if allowed {
-				appendStringSpan(spans, text, role, roles)
-			}
+			appendGeminiTextPart(spans, part, role, roles)
 			return true
 		})
 	}

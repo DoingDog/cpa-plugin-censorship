@@ -276,6 +276,43 @@ func waitForWebSocketPeerCloseWithTimeout(conn *websocket.Conn, timeout time.Dur
 	return fmt.Errorf("terminal 400 close read: %w", err)
 }
 
+func TestResponsesWebSocketSecondTurnBlocksLoadedToolDefinition(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\nscope:\n  roles: [tool]\n")
+	conn := dialResponsesWebSocket(t, cpa.wsURL, downstreamKey)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	first := []byte(`{"type":"response.create","model":"censorship-integration-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"plain"}]}]}`)
+	if err := conn.WriteMessage(websocket.TextMessage, first); err != nil {
+		t.Fatal(err)
+	}
+	if messages := readUntilCompleted(t, conn); len(messages) == 0 {
+		t.Fatal("first turn returned no completion messages")
+	}
+	if upstream.arrivalCount() != 1 {
+		t.Fatalf("first-turn upstream arrivals = %d, want 1", upstream.arrivalCount())
+	}
+
+	second := []byte(`{"type":"response.create","model":"censorship-integration-model","input":[{"type":"tool_search_output","tools":[{"type":"function","name":"safe","description":"SECRET loaded"}]}]}`)
+	if err := conn.WriteMessage(websocket.TextMessage, second); err != nil {
+		t.Fatal(err)
+	}
+	opcode, event, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeResponsesWebSocketEvent(opcode, event)
+	if err != nil || decoded.Status != 400 {
+		t.Fatalf("event=%s error=%v", event, err)
+	}
+	if err := waitForWebSocketPeerClose(conn); err != nil {
+		t.Fatalf("terminal 400 was not followed by peer closure: %v", err)
+	}
+	if upstream.arrivalCount() != 1 {
+		t.Fatalf("second-turn upstream arrivals = %d, want 1", upstream.arrivalCount())
+	}
+}
+
 func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\n")

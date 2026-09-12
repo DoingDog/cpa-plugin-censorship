@@ -130,9 +130,9 @@ func appendNonEmptyStringSpan(spans *[]textSpan, value gjson.Result, role string
 	}
 }
 
-func scanTextPart(part gjson.Result, requireTextType bool) (text gjson.Result, allowed bool) {
+func scanTextPart(part gjson.Result, requireTextType bool) (text gjson.Result, allowed bool, signatureBound bool) {
 	if !part.IsObject() {
-		return text, false
+		return text, false, false
 	}
 	var partType gjson.Result
 	typePresent := false
@@ -147,21 +147,22 @@ func scanTextPart(part gjson.Result, requireTextType bool) (text gjson.Result, a
 			partType = value
 		case "thought":
 			thought = value.Type == gjson.True
-		case "functionCall", "function_call", "functionResponse", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result", "thoughtSignature", "thought_signature":
+		case "functionCall", "function_call", "functionResponse", "function_response", "inlineData", "inline_data", "fileData", "file_data", "executableCode", "executable_code", "codeExecutionResult", "code_execution_result":
 			machinePart = machinePart || value.Type != gjson.Null
+		case "thoughtSignature", "thought_signature":
+			signatureBound = signatureBound || value.Type != gjson.Null
 		case "extra_content":
-			signature := value.Get("google.thought_signature")
-			machinePart = machinePart || signature.Type != gjson.Null
+			signatureBound = signatureBound || value.Get("google.thought_signature").Type != gjson.Null
 		}
 		return true
 	})
 	if machinePart || thought {
-		return text, false
+		return text, false, signatureBound
 	}
-	if requireTextType && typePresent && (partType.Type != gjson.String || partType.Str != "" && partType.Str != "text") {
-		return text, false
+	if requireTextType && (signatureBound || typePresent && (partType.Type != gjson.String || partType.Str != "" && partType.Str != "text")) {
+		return text, false, signatureBound
 	}
-	return text, true
+	return text, true, signatureBound
 }
 
 func hasDuplicateJSONMembers(root gjson.Result) bool {

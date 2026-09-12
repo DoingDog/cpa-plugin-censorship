@@ -231,6 +231,7 @@ func TestClaudeMinimumLengthFieldsRejectFullStrip(t *testing.T) {
 		{name: "typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"}]}]}`)},
 		{name: "document title", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"SECRET","source":{"type":"text","data":"clean"}}]}]}`)},
 		{name: "document context", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET","source":{"type":"text","data":"clean"}}]}]}`)},
+		{name: "scalar user content", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -270,10 +271,58 @@ func TestClaudeMinimumLengthFieldsAllowPartialStrip(t *testing.T) {
 			body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET context","source":{"type":"text","data":"clean"}}]}]}`),
 			want: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":" context","source":{"type":"text","data":"clean"}}]}]}`),
 		},
+		{
+			name: "scalar user content",
+			body: []byte(`{"messages":[{"role":"user","content":"before SECRET after"}],"decoy":"SECRET"}`),
+			want: []byte(`{"messages":[{"role":"user","content":"before  after"}],"decoy":"SECRET"}`),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+			resp := interceptRPC(t, "claude", tc.body)
+			if resp.Terminate || !bytes.Equal(resp.Body, tc.want) {
+				t.Fatalf("response = %#v, want body %s", resp, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeScalarUserContentControls(t *testing.T) {
+	t.Run("block reports user role", func(t *testing.T) {
+		assertBlockedRole(t, "claude", `{"messages":[{"role":"user","content":"SECRET"}]}`, "user")
+	})
+	t.Run("obfs returns non-empty transformed text", func(t *testing.T) {
+		registerConfig(t, "words:\n  obfs: [SECRET]\nscope:\n  roles: [user]\n")
+		resp := interceptRPC(t, "claude", []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`))
+		content := gjson.GetBytes(resp.Body, "messages.0.content")
+		if resp.Terminate || content.Type != gjson.String || content.Str == "" || content.Str == "SECRET" {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+}
+
+func TestClaudeNonUserScalarContentAllowsFullStrip(t *testing.T) {
+	cases := []struct {
+		name, roles string
+		body, want  []byte
+	}{
+		{
+			name:  "top-level system",
+			roles: "[system]",
+			body:  []byte(`{"system":"SECRET"}`),
+			want:  []byte(`{"system":""}`),
+		},
+		{
+			name:  "assistant prefill",
+			roles: "[assistant]",
+			body:  []byte(`{"messages":[{"role":"assistant","content":"SECRET"}]}`),
+			want:  []byte(`{"messages":[{"role":"assistant","content":""}]}`),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: "+tc.roles+"\n")
 			resp := interceptRPC(t, "claude", tc.body)
 			if resp.Terminate || !bytes.Equal(resp.Body, tc.want) {
 				t.Fatalf("response = %#v, want body %s", resp, tc.want)

@@ -225,6 +225,62 @@ func TestHTTPResponsesBlockStringInput(t *testing.T) {
 	}
 }
 
+func TestHTTPClaudeScalarUserFullStripReturnsLocalInvalidRequest(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  strip: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"model":"censorship-integration-model","max_tokens":16,"messages":[{"role":"user","content":"SECRET"}]}`)
+	status, header, response := postJSON(t, cpa.baseURL+"/v1/messages", body)
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || errorResponse.Error.Code != "censorship_invalid_request" {
+		t.Fatalf("status=%d header=%v body=%s", status, header, response)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("invalid Claude rewrite reached upstream")
+	}
+}
+
+func TestHTTPGeminiSignedHistoryBlockReturnsLocalError(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"contents":[{"role":"model","parts":[{"text":"SECRET signed history","thoughtSignature":"c2ln"}]}]}`)
+	status, _, response := postJSON(t, cpa.baseURL+"/v1beta/models/censorship-integration-model:generateContent", body)
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || errorResponse.Error.Code != "censorship_blocked" || errorResponse.Error.Term != "SECRET" || errorResponse.Error.Role != "assistant" {
+		t.Fatalf("status=%d body=%s", status, response)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("blocked signed Gemini history reached upstream")
+	}
+}
+
+func TestHTTPInteractionsStepListBlockReturnsLocalError(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"model":"censorship-integration-model","input":[{"role":"user","steps":[{"content":"SECRET nested step"}]}]}`)
+	status, _, response := postJSON(t, cpa.baseURL+"/v1beta/interactions", body)
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || errorResponse.Error.Code != "censorship_blocked" || errorResponse.Error.Role != "user" {
+		t.Fatalf("status=%d body=%s", status, response)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("blocked Interactions step list reached upstream")
+	}
+}
+
+func TestHTTPChatToolDescriptionBlockReturnsLocalError(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"model":"censorship-integration-model","messages":[{"role":"user","content":"plain"}],"tools":[{"type":"function","function":{"name":"safe","description":"SECRET description","parameters":{"type":"object"}}}]}`)
+	status, _, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", body)
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || errorResponse.Error.Code != "censorship_blocked" || errorResponse.Error.Role != "developer" {
+		t.Fatalf("status=%d body=%s", status, response)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("blocked OpenAI definition reached upstream")
+	}
+}
+
 func TestHTTPResponsesTransformsStringInput(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")

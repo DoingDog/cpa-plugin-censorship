@@ -557,7 +557,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"Missing Gemini roles follow CPA's user/model alternation.",
 		"Invalid Gemini roles advance CPA's user/model alternation but remain unselected.",
 		"Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent.",
-		"Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers.",
+		"Gemini machine exclusions include camelCase and snake_case non-null function, media, file, and code carriers; signature values remain excluded without excluding same-Part visible text.",
 		"Enabled known formats reject JSON objects with duplicate member names at any nesting depth.",
 		"`obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`",
 		"block checks rules before document order and returns the YAML term with canonical role",
@@ -573,7 +573,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"tool is inspected only for documented OpenAI and Claude result-text paths",
 		"valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel",
 		"invalid reconfiguration keeps the last-known-good snapshot",
-		"Machine exclusions: tool calls, tool schemas, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
+		"Machine exclusions: tool calls, machine schema values, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
 		"1. hook is not raw ingress; document order follows current execution-body spans",
 		"2. preprocessing can observe uncensored input",
 		"3. Responses WebSocket covers only model-executed turns",
@@ -601,6 +601,11 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"0.0.0-dev",
 		"aggregate packaging",
 		"signed-history prefix",
+		"The signature field and value remain excluded, but a non-null `thoughtSignature`",
+		"Scalar Claude user content cannot be stripped to empty",
+		"Responses prompt variables and local shell skill descriptions use canonical `user`",
+		"Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.",
+		"An unknown external hard-link peer of an existing destination is not modified",
 	}
 	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
 		raw, err := os.ReadFile(name)
@@ -621,10 +626,10 @@ func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.2.3 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.3")
+	if !bytes.Contains(raw, []byte("v0.2.4 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.4")
 	}
-	if bytes.Contains(raw, []byte("v0.2.2 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.2")
+	if bytes.Contains(raw, []byte("v0.2.3 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.3")
 	}
 }

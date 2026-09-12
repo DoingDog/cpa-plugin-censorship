@@ -12,14 +12,14 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		case systemInstruction.Type == gjson.String:
 			appendStringSpan(spans, systemInstruction, "system", roles)
 		case systemInstruction.IsObject():
-			text, allowed := scanTextPart(systemInstruction, true)
+			text, allowed, _ := scanTextPart(systemInstruction, true)
 			if allowed {
 				appendStringSpan(spans, text, "system", roles)
 			}
 			parts := systemInstruction.Get("parts")
 			if parts.IsArray() {
 				parts.ForEach(func(_, part gjson.Result) bool {
-					text, allowed := scanTextPart(part, true)
+					text, allowed, _ := scanTextPart(part, true)
 					if allowed {
 						appendStringSpan(spans, text, "system", roles)
 					}
@@ -38,7 +38,7 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		appendStringSpan(spans, input, "user", roles)
 	case input.IsObject():
 		if input.Get("type").String() == "text" {
-			text, allowed := scanTextPart(input, true)
+			text, allowed, _ := scanTextPart(input, true)
 			if allowed {
 				appendStringSpan(spans, text, "user", roles)
 			}
@@ -51,7 +51,7 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				appendStringSpan(spans, item, "user", roles)
 			} else if item.IsObject() {
 				if item.Get("type").String() == "text" {
-					text, allowed := scanTextPart(item, true)
+					text, allowed, _ := scanTextPart(item, true)
 					if allowed {
 						appendStringSpan(spans, text, "user", roles)
 					}
@@ -105,13 +105,13 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 		case content.Type == gjson.String:
 			appendStringSpan(spans, content, role, roles)
 		case content.IsObject():
-			text, allowed := scanTextPart(content, true)
+			text, allowed, _ := scanTextPart(content, true)
 			if allowed {
 				appendStringSpan(spans, text, role, roles)
 			}
 		case content.IsArray():
 			content.ForEach(func(_, part gjson.Result) bool {
-				text, allowed := scanTextPart(part, true)
+				text, allowed, _ := scanTextPart(part, true)
 				if allowed {
 					appendStringSpan(spans, text, role, roles)
 				}
@@ -122,7 +122,7 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 		parts := item.Get("parts")
 		if parts.IsArray() {
 			parts.ForEach(func(_, part gjson.Result) bool {
-				text, allowed := scanTextPart(part, true)
+				text, allowed, _ := scanTextPart(part, true)
 				if allowed {
 					appendStringSpan(spans, text, role, roles)
 				}
