@@ -35,11 +35,11 @@
 - `README.md`、`RELEASE_NOTES.md`：v0.2.3 verified behavior 与 compatibility。
 - `docs/superpowers/specs/2026-09-12-censorship-v0.2.3-functional-fixes-design.md`、本文件：本次唯一 spec/plan。
 
-四个实现域 A-D 文件互斥，可并行 worktree 执行；域 E 在 A-D commit 集成后执行，避免文档与 `main_test.go` 冲突。
+Tasks 1-4 文件互斥，可并行 worktree 执行；Task 5 在 Tasks 1-4 commit 集成后执行，避免文档与 `main_test.go` 冲突。
 
 ---
 
-### Task A: Changed-body Headers、Strict HTTP Oracle 和 zstd Integration
+### Task 1: Changed-body Headers、Strict HTTP Oracle 和 zstd Integration
 
 **Files:**
 - Modify: `main.go:108-145`
@@ -233,7 +233,7 @@ case len(result.Body) != 0:
 
 Do not decode `request.Body` again and do not change no-op/termination branches.
 
-- [ ] **Step 9: gofmt 并运行 Task A GREEN tests**
+- [ ] **Step 9: gofmt 并运行 Task 1 GREEN tests**
 
 ```powershell
 gofmt -w main.go main_test.go integration/http_test.go integration/harness_test.go
@@ -244,7 +244,7 @@ go run ./.github/scripts/integration-runner.go
 
 Expected: all PASS; zstd upstream body is plaintext transformed JSON and header is absent.
 
-- [ ] **Step 10: Commit Task A**
+- [ ] **Step 10: Commit Task 1**
 
 ```powershell
 git add main.go main_test.go integration/http_test.go integration/harness_test.go
@@ -253,7 +253,7 @@ git commit -m "fix: clear stale request body headers"
 
 ---
 
-### Task B: OpenAI Responses string `mcp_call.error`
+### Task 2: OpenAI Responses string `mcp_call.error`
 
 **Files:**
 - Modify: `selectors_openai_test.go:235-337`
@@ -306,7 +306,7 @@ go test . -run '^TestOpenAI' -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task B**
+- [ ] **Step 5: Commit Task 2**
 
 ```powershell
 git add selectors_openai.go selectors_openai_test.go
@@ -315,7 +315,7 @@ git commit -m "fix: inspect OpenAI MCP string errors"
 
 ---
 
-### Task C: Claude required `search_result.title`
+### Task 3: Claude required `search_result.title`
 
 **Files:**
 - Modify: `selectors_claude_test.go:226-283`
@@ -361,7 +361,7 @@ go test . -run '^TestClaude' -count=1
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task C**
+- [ ] **Step 5: Commit Task 3**
 
 ```powershell
 git add selectors_claude.go selectors_claude_test.go
@@ -370,7 +370,7 @@ git commit -m "fix: preserve required Claude search titles"
 
 ---
 
-### Task D: Strict Responses WebSocket Event Oracle
+### Task 4: Strict Responses WebSocket Event Oracle
 
 **Files:**
 - Modify: `integration/websocket_test.go:1-303`
@@ -445,7 +445,7 @@ go run ./.github/scripts/integration-runner.go
 
 Expected: all PASS; existing enabled/disabled WebSocket message traces remain exactly equal.
 
-- [ ] **Step 6: Commit Task D**
+- [ ] **Step 6: Commit Task 4**
 
 ```powershell
 git add integration/websocket_test.go
@@ -454,7 +454,7 @@ git commit -m "test: validate complete WebSocket events"
 
 ---
 
-### Task E: Integrate A-D and Update v0.2.3 Documentation
+### Task 5: Integrate Tasks 1-4 and Update v0.2.3 Documentation
 
 **Files:**
 - Modify: `README.md:104-150`
@@ -462,12 +462,12 @@ git commit -m "test: validate complete WebSocket events"
 - Modify: `main_test.go:472-594`
 
 **Interfaces:**
-- Consumes: committed Task A-D behavior and current spec.
+- Consumes: committed Tasks 1-4 behavior and current spec.
 - Produces: documentation tokens that match selector/header/oracle behavior and compatibility test that targets v0.2.3.
 
 - [ ] **Step 1: Integrate all four implementation commits**
 
-Cherry-pick Task A-D commits onto `fix/v0.2.3-functional-audit`，按 A、B、C、D 顺序使用四个 worker 返回的完整 commit hash 作为一次 `git cherry-pick` 的参数。四个域没有重叠 production files：Task A owns `main*` and HTTP/harness，Task B owns OpenAI，Task C owns Claude，Task D owns WebSocket。执行前逐个运行 `git show --stat --oneline` 并传入实际 hash，核对返回 hash 的文件边界，再运行 cherry-pick。
+Cherry-pick Tasks 1-4 commits onto `fix/v0.2.3-functional-audit`，按 1、2、3、4 顺序使用四个 worker 返回的完整 commit hash 作为一次 `git cherry-pick` 的参数。四个域没有重叠 production files：Task 1 owns `main*` and HTTP/harness，Task 2 owns OpenAI，Task 3 owns Claude，Task 4 owns WebSocket。执行前逐个运行 `git show --stat --oneline` 并传入实际 hash，核对返回 hash 的文件边界，再运行 cherry-pick。
 
 - [ ] **Step 2: Update version-sensitive test first**
 
@@ -526,7 +526,7 @@ go test ./...
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Task E**
+- [ ] **Step 7: Commit Task 5**
 
 ```powershell
 git add README.md RELEASE_NOTES.md main_test.go
@@ -535,7 +535,7 @@ git commit -m "docs: prepare censorship v0.2.3"
 
 ---
 
-### Task F: Spec Compliance Review and Verification
+### Task 6: Spec Compliance Review and Verification
 
 **Files:**
 - Review only: every path changed since `b6d0c92787fea81a52b69549dd00b3b7566200a6`
@@ -587,7 +587,7 @@ Expected: only planned tracked files changed; no `.integration/` or `dist/` trac
 
 ---
 
-### Task G: Merge、Tag 和 Push
+### Task 7: Merge、Tag 和 Push
 
 **Files:**
 - Git refs only; no new source edits.
