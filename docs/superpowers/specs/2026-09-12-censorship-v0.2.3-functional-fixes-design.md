@@ -51,7 +51,7 @@ ClearHeaders = [Content-Encoding, Content-Length, Transfer-Encoding]
 新增一个只负责完整解码 plugin error envelope 的 test helper：
 
 - 使用 `encoding/json.Unmarshal` 解码整个 body 到 typed struct。
-- syntax error、截断、trailing non-whitespace 和被检查字段类型错误均返回 error。
+- syntax error、截断、trailing non-whitespace、top-level/error null，以及 present checked string field 的 JSON null 或其他类型错误均返回 error。
 - 未知字段允许存在。
 - `TestHTTPBlockIncludesTermAndRole`、`TestHTTPRejectsDuplicateJSONMembers` 和 `TestLegacyCompletionsPromptUsesConvertedUserRole` 先严格解码，再比较 `code`、`term`、`role`。
 - helper 自身用 valid、truncated 和 wrong-type bodies 进行 focused test。
@@ -62,11 +62,11 @@ ClearHeaders = [Content-Encoding, Content-Length, Transfer-Encoding]
 
 - 只接受 `websocket.TextMessage`。
 - 使用 `encoding/json.Unmarshal` 解码完整 JSON 文档。
-- `status` 必须能解码为 integer；`type` 必须能解码为 string。
+- present `status` 必须是非 null integer；present `type` 必须是非 null string；top-level JSON null 返回 error。
 - 未知字段允许存在；`error.term` 和 `error.role` 用 presence-preserving raw fields 检查。
 - block event test 和 terminal timeout fixture 使用 typed status。
 - `readUntilCompletedWithTimeout` 对每个 logical message 先执行 strict decoder，仅在 typed `Type == "response.completed"` 时结束。
-- malformed/truncated JSON、string status、fractional status、binary JSON 均返回 error；valid text event 通过。
+- malformed/truncated JSON、top-level null、present null/string/fractional status、present null type 和 binary JSON 均返回 error；valid text event 通过。
 - Gorilla `ReadMessage` 已组合 continuation frames，因此不解析 raw frames，也不改变真实消息转发。
 
 ## 测试与验收
@@ -76,8 +76,8 @@ TDD 顺序：每项 production 或 test-helper 行为先增加会在 `b6d0c927` 
 必须通过：
 
 - changed-body `ClearHeaders` unit test。
-- HTTP strict decoder valid/invalid test。
-- WebSocket strict decoder valid/invalid/opcode test。
+- HTTP strict decoder valid/truncated/wrong-type/null test。
+- WebSocket strict decoder valid/truncated/wrong-type/null/opcode test。
 - `go test ./...`
 - `go test -race ./...`
 - `go vet ./...`

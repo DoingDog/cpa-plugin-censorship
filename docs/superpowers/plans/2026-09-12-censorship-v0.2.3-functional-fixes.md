@@ -28,7 +28,7 @@
 - `main.go`：changed-body `RequestInterceptResponse` 增加精确 `ClearHeaders`。
 - `main_test.go`：changed/no-op header contract 和 release compatibility token。
 - `abi_cgo_test.go`：native ABI response lifetime test 的 changed-body header expectation。
-- `integration/http_test.go`：strict HTTP error decoder、其 unit cases和转换后的 HTTP assertions。
+- `integration/http_test.go`：null-aware strict HTTP error decoder、其 unit cases和转换后的 HTTP assertions。
 - `integration/websocket_test.go`：strict typed Responses WebSocket event decoder 和所有 event assertions。
 - `README.md`、`RELEASE_NOTES.md`：v0.2.3 verified behavior 与 compatibility。
 - `docs/superpowers/specs/2026-09-12-censorship-v0.2.3-functional-fixes-design.md`、本文件：本次唯一 spec/plan。
@@ -43,7 +43,7 @@ Tasks 1-2 文件互斥，可并行 worktree 执行；Task 3 在 Tasks 1-2 commit
 - Modify: `main.go:108-145`
 - Modify: `main_test.go:194-228`
 - Modify: `abi_cgo_test.go:210-240`
-- Modify: `integration/http_test.go:1-124`
+- Modify: `integration/http_test.go:1-170`
 
 **Interfaces:**
 - Consumes: `pluginapi.RequestInterceptResponse{Body, ClearHeaders}`；CLIProxyAPI 在 BeforeAuth callback 中传入已解码 `Body` 和原 request `Headers`。
@@ -102,7 +102,7 @@ Expected: FAIL because `resp.ClearHeaders` is nil.
 
 - [ ] **Step 3: 在 `integration/http_test.go` 写 strict decoder RED test 和调用点**
 
-Add the `encoding/json` import. Add:
+Add the `encoding/json` import and this result shape, but do not add the decoder yet:
 
 ```go
 type integrationCensorshipErrorResponse struct {
@@ -112,27 +112,63 @@ type integrationCensorshipErrorResponse struct {
 		Role string `json:"role"`
 	} `json:"error"`
 }
+```
 
+Add a table test covering complete JSON, missing closing braces, trailing non-whitespace, top-level `null`, `error:null`, numeric `error.term`, and present null `error.code`/`error.term`/`error.role`. It must require only complete, correctly typed JSON to decode while allowing absent optional fields and unknown members. Replace GJSON error field reads in `TestHTTPBlockIncludesTermAndRole`, `TestHTTPRejectsDuplicateJSONMembers`, and `TestLegacyCompletionsPromptUsesConvertedUserRole` with `decodeCensorshipError` and typed comparisons.
+
+- [ ] **Step 4: Run the strict HTTP decoder RED**
+
+```powershell
+go test -tags=integration ./integration -run '^TestDecodeCensorshipError' -count=1
+```
+
+Expected: compile FAIL because `decodeCensorshipError` is undefined.
+
+- [ ] **Step 5: Implement the minimum null-aware strict decoder**
+
+```go
 func decodeCensorshipError(body []byte) (integrationCensorshipErrorResponse, error) {
+	var raw struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return integrationCensorshipErrorResponse{}, err
+	}
+	if bytes.Equal(bytes.TrimSpace(body), []byte("null")) {
+		return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: top-level null")
+	}
+	if len(raw.Error) > 0 {
+		if bytes.Equal(bytes.TrimSpace(raw.Error), []byte("null")) {
+			return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: error is null")
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw.Error, &fields); err != nil {
+			return integrationCensorshipErrorResponse{}, err
+		}
+		for _, name := range []string{"code", "term", "role"} {
+			if value, ok := fields[name]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: error.%s is null", name)
+			}
+		}
+	}
+
 	var response integrationCensorshipErrorResponse
 	err := json.Unmarshal(body, &response)
 	return response, err
 }
 ```
 
-Add a table test covering complete JSON, missing closing braces, trailing non-whitespace, and numeric `error.term`. It must require only complete, correctly typed JSON to decode. Replace GJSON error field reads in `TestHTTPBlockIncludesTermAndRole`, `TestHTTPRejectsDuplicateJSONMembers`, and `TestLegacyCompletionsPromptUsesConvertedUserRole` with `decodeCensorshipError` and typed comparisons.
+Do not use `DisallowUnknownFields`; the second typed unmarshal continues to reject non-null wrong scalar types.
 
-- [ ] **Step 4: 运行 local integration helper tests并记录 RED/GREEN boundary**
-
-The decoder does not exist before Step 3, so compile failure is the first RED. After adding only the decoder and focused test, run:
+- [ ] **Step 6: Run the strict HTTP decoder GREEN**
 
 ```powershell
 go test -tags=integration ./integration -run '^TestDecodeCensorshipError' -count=1
 ```
 
-Expected: PASS for strict decoder cases. The production header test remains RED.
+Expected: PASS. The production header test remains RED.
 
-- [ ] **Step 5: 写最小 production fix**
+- [ ] **Step 7: 写最小 production fix**
 
 Change only the changed-body branch in `main.go`:
 
@@ -146,7 +182,7 @@ case len(result.Body) != 0:
 
 Do not decode `request.Body` again and do not change no-op/termination branches.
 
-- [ ] **Step 6: gofmt 并运行 Task 1 GREEN tests**
+- [ ] **Step 8: gofmt 并运行 Task 1 GREEN tests**
 
 ```powershell
 gofmt -w main.go main_test.go integration/http_test.go
@@ -157,7 +193,7 @@ go test -tags=integration ./integration -run '^(TestHTTPBlockIncludesTermAndRole
 
 Expected: all PASS; changed/no-op response headers remain distinct and HTTP error assertions reject malformed JSON.
 
-- [ ] **Step 7: Run the full unit suite and capture the dependent RED**
+- [ ] **Step 9: Run the full unit suite and capture the dependent RED**
 
 ```powershell
 go test ./...
@@ -165,7 +201,7 @@ go test ./...
 
 Expected before updating `abi_cgo_test.go`: FAIL in `TestBorrowedABIResponseSurvivesHostRequestPoison` because its exact changed-body response still expects `clear_headers:null`.
 
-- [ ] **Step 8: Update the native ABI lifetime test's exact response**
+- [ ] **Step 10: Update the native ABI lifetime test's exact response**
 
 Keep the request-poisoning and byte-lifetime assertions unchanged. Update only the expected response:
 
@@ -176,7 +212,7 @@ Result: pluginapi.RequestInterceptResponse{
 },
 ```
 
-- [ ] **Step 9: Run dependent GREEN tests**
+- [ ] **Step 11: Run dependent GREEN tests**
 
 ```powershell
 gofmt -w abi_cgo_test.go
@@ -186,7 +222,7 @@ go test ./...
 
 Expected: all PASS.
 
-- [ ] **Step 10: Commit Task 1**
+- [ ] **Step 12: Commit Task 1**
 
 ```powershell
 git add main.go main_test.go abi_cgo_test.go integration/http_test.go
@@ -198,7 +234,7 @@ git commit -m "fix: clear stale request body headers"
 ### Task 2: Strict Responses WebSocket Event Oracle
 
 **Files:**
-- Modify: `integration/websocket_test.go:1-303`
+- Modify: `integration/websocket_test.go:1-330`
 
 **Interfaces:**
 - Consumes: Gorilla `ReadMessage()` logical message `(opcode int, payload []byte)`.
@@ -226,6 +262,9 @@ Cases:
 {name: "truncated", opcode: websocket.TextMessage, payload: `{"status":400`, wantErr: true},
 {name: "string status", opcode: websocket.TextMessage, payload: `{"status":"400"}`, wantErr: true},
 {name: "fractional status", opcode: websocket.TextMessage, payload: `{"status":400.9}`, wantErr: true},
+{name: "top-level null", opcode: websocket.TextMessage, payload: `null`, wantErr: true},
+{name: "null type", opcode: websocket.TextMessage, payload: `{"type":null}`, wantErr: true},
+{name: "null status", opcode: websocket.TextMessage, payload: `{"status":null}`, wantErr: true},
 {name: "binary JSON", opcode: websocket.BinaryMessage, payload: `{"status":400}`, wantErr: true},
 ```
 
@@ -243,6 +282,22 @@ Expected: compile FAIL because `decodeResponsesWebSocketEvent` is undefined.
 func decodeResponsesWebSocketEvent(opcode int, payload []byte) (responsesWebSocketEvent, error) {
 	if opcode != websocket.TextMessage {
 		return responsesWebSocketEvent{}, fmt.Errorf("unexpected WebSocket message opcode %d", opcode)
+	}
+	var raw struct {
+		Type   json.RawMessage `json:"type"`
+		Status json.RawMessage `json:"status"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: %w", err)
+	}
+	if bytes.Equal(bytes.TrimSpace(payload), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: top-level null")
+	}
+	if len(raw.Type) > 0 && bytes.Equal(bytes.TrimSpace(raw.Type), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: type is null")
+	}
+	if len(raw.Status) > 0 && bytes.Equal(bytes.TrimSpace(raw.Status), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: status is null")
 	}
 	var event responsesWebSocketEvent
 	if err := json.Unmarshal(payload, &event); err != nil {
