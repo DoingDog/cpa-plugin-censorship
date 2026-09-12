@@ -27,6 +27,7 @@
 
 - `main.go`：changed-body `RequestInterceptResponse` 增加精确 `ClearHeaders`。
 - `main_test.go`：changed/no-op header contract 和 release compatibility token。
+- `abi_cgo_test.go`：native ABI response lifetime test 的 changed-body header expectation。
 - `integration/http_test.go`：strict HTTP error decoder、其 unit cases和转换后的 HTTP assertions。
 - `integration/websocket_test.go`：strict typed Responses WebSocket event decoder 和所有 event assertions。
 - `README.md`、`RELEASE_NOTES.md`：v0.2.3 verified behavior 与 compatibility。
@@ -41,6 +42,7 @@ Tasks 1-2 文件互斥，可并行 worktree 执行；Task 3 在 Tasks 1-2 commit
 **Files:**
 - Modify: `main.go:108-145`
 - Modify: `main_test.go:194-228`
+- Modify: `abi_cgo_test.go:210-240`
 - Modify: `integration/http_test.go:1-124`
 
 **Interfaces:**
@@ -155,10 +157,39 @@ go test -tags=integration ./integration -run '^(TestHTTPBlockIncludesTermAndRole
 
 Expected: all PASS; changed/no-op response headers remain distinct and HTTP error assertions reject malformed JSON.
 
-- [ ] **Step 7: Commit Task 1**
+- [ ] **Step 7: Run the full unit suite and capture the dependent RED**
 
 ```powershell
-git add main.go main_test.go integration/http_test.go
+go test ./...
+```
+
+Expected before updating `abi_cgo_test.go`: FAIL in `TestBorrowedABIResponseSurvivesHostRequestPoison` because its exact changed-body response still expects `clear_headers:null`.
+
+- [ ] **Step 8: Update the native ABI lifetime test's exact response**
+
+Keep the request-poisoning and byte-lifetime assertions unchanged. Update only the expected response:
+
+```go
+Result: pluginapi.RequestInterceptResponse{
+	Body:         []byte(`{"messages":[{"role":"user","content":""}]}`),
+	ClearHeaders: []string{"Content-Encoding", "Content-Length", "Transfer-Encoding"},
+},
+```
+
+- [ ] **Step 9: Run dependent GREEN tests**
+
+```powershell
+gofmt -w abi_cgo_test.go
+go test . -run '^TestBorrowedABIResponseSurvivesHostRequestPoison$' -count=1
+go test ./...
+```
+
+Expected: all PASS.
+
+- [ ] **Step 10: Commit Task 1**
+
+```powershell
+git add main.go main_test.go abi_cgo_test.go integration/http_test.go
 git commit -m "fix: clear stale request body headers"
 ```
 
@@ -261,7 +292,7 @@ git commit -m "test: validate complete WebSocket events"
 
 - [ ] **Step 1: Integrate the two accepted implementation commits**
 
-Cherry-pick the reviewed Task 1 and Task 2 commits onto `fix/v0.2.3-functional-audit` in numeric order, using the complete final commit hashes returned by their workers. Before cherry-pick, run `git show --stat --oneline` for each hash and verify that Task 1 owns `main.go`, `main_test.go`, and `integration/http_test.go` while Task 2 owns only `integration/websocket_test.go`. Do not cherry-pick either rejected selector commit.
+Cherry-pick the reviewed Task 1 and Task 2 commits onto `fix/v0.2.3-functional-audit` in numeric order, using the complete final commit hashes returned by their workers. Before cherry-pick, run `git show --stat --oneline` for each hash and verify that Task 1 owns `main.go`, `main_test.go`, `abi_cgo_test.go`, and `integration/http_test.go` while Task 2 owns only `integration/websocket_test.go`. Do not cherry-pick either rejected selector commit.
 
 - [ ] **Step 2: Update version-sensitive tests first**
 
