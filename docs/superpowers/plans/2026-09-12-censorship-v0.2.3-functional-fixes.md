@@ -356,7 +356,7 @@ go run ./.github/scripts/package-release.go -dist dist -out dist -version v0.2.3
 
 Expected: every command exits 0. Inspect generated `.zip.sha256` and `checksums.txt` through package tests; do not hand-edit them.
 
-- [ ] **Step 3: Run selector and oracle focused regressions explicitly**
+- [ ] **Step 3: Run focused regressions explicitly**
 
 ```powershell
 go test . -run '^(TestBeforeAuthChangedBodyClearsStaleEntityHeaders|TestDocumentationListsConfigAndLimits|TestReleaseNotesCompatibilityTargetsCurrentVersion)$' -count=1
