@@ -224,6 +224,76 @@ func TestAggregateOutputReplacesUnknownHardLink(t *testing.T) {
 	}
 }
 
+func TestPackageExistingArtifactsRemovesMissingPlatformOutputs(t *testing.T) {
+	root := t.TempDir()
+	distA := filepath.Join(root, "dist-a")
+	distB := filepath.Join(root, "dist-b")
+	out := filepath.Join(root, "out")
+	linuxA := filepath.Join(distA, "linux_amd64", "censorship.so")
+	windowsA := filepath.Join(distA, "windows_amd64", "censorship.dll")
+	for _, library := range []string{linuxA, windowsA} {
+		if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(library, []byte("first build"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldVersionArchive := filepath.Join(out, "censorship_1.2.2_windows_amd64.zip")
+	keep := filepath.Join(out, "keep.txt")
+	for path, contents := range map[string][]byte{oldVersionArchive: []byte("old version"), keep: []byte("keep")} {
+		if err := os.WriteFile(path, contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := packageExistingArtifacts("1.2.3", distA, out); err != nil {
+		t.Fatal(err)
+	}
+
+	linuxB := filepath.Join(distB, "linux_amd64", "censorship.so")
+	if err := os.MkdirAll(filepath.Dir(linuxB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linuxB, []byte("second build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := packageExistingArtifacts("1.2.3", distB, out); err != nil {
+		t.Fatal(err)
+	}
+
+	windowsArchive := filepath.Join(out, "censorship_1.2.3_windows_amd64.zip")
+	for _, path := range []string{windowsArchive, windowsArchive + ".sha256"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale output %q stat error = %v, want not exist", path, err)
+		}
+	}
+	linuxArchive := filepath.Join(out, "censorship_1.2.3_linux_amd64.zip")
+	for _, path := range []string{linuxArchive, linuxArchive + ".sha256"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("current output %q stat error = %v", path, err)
+		}
+	}
+	checksums, err := os.ReadFile(filepath.Join(out, "checksums.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}  censorship_1\.2\.3_linux_amd64\.zip\n$`).Match(checksums) {
+		t.Fatalf("checksums = %q", checksums)
+	}
+	for path, want := range map[string][]byte{oldVersionArchive: []byte("old version"), keep: []byte("keep")} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read preserved output %q: %v", path, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("preserved output %q = %q, want %q", path, got, want)
+		}
+	}
+}
+
 func TestReplaceOutputFileRestoresExistingDestinationAfterInstallFailure(t *testing.T) {
 	dir := t.TempDir()
 	destination := filepath.Join(dir, "output")

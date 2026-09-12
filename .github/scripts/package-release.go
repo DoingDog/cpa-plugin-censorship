@@ -79,16 +79,18 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		archive  string
 		checksum string
 	}, 0, len(artifactSpecs()))
+	staleOutputs := make([]string, 0, len(artifactSpecs())*2)
 	for _, artifact := range artifactSpecs() {
+		zipName := fmt.Sprintf("%s_%s_%s_%s.zip", pluginName, version, artifact.osName, artifact.arch)
+		zipPath := filepath.Join(outDir, zipName)
 		binaryPath := artifact.binaryPath(distDir)
 		if _, err := os.Stat(binaryPath); err != nil {
 			if os.IsNotExist(err) {
+				staleOutputs = append(staleOutputs, zipPath, zipPath+".sha256")
 				continue
 			}
 			return fmt.Errorf("stat artifact %s: %w", filepath.ToSlash(binaryPath), err)
 		}
-		zipName := fmt.Sprintf("%s_%s_%s_%s.zip", pluginName, version, artifact.osName, artifact.arch)
-		zipPath := filepath.Join(outDir, zipName)
 		library, archive, checksum, err := validateDirectPackagePaths(binaryPath, zipPath, zipPath+".sha256")
 		if err != nil {
 			return err
@@ -190,6 +192,11 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 			return err
 		}
 		checksumLines = append(checksumLines, line)
+	}
+	for _, path := range staleOutputs {
+		if err := removeOutputFile(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale output %q: %w", path, err)
+		}
 	}
 	return writeChecksums(checksums, checksumLines)
 }
