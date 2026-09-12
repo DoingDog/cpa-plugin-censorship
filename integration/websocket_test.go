@@ -93,6 +93,9 @@ func TestDecodeResponsesWebSocketEvent(t *testing.T) {
 		{name: "string status", opcode: websocket.TextMessage, payload: `{"status":"400"}`, wantErr: true},
 		{name: "fractional status", opcode: websocket.TextMessage, payload: `{"status":400.9}`, wantErr: true},
 		{name: "binary JSON", opcode: websocket.BinaryMessage, payload: `{"status":400}`, wantErr: true},
+		{name: "top-level null", opcode: websocket.TextMessage, payload: `null`, wantErr: true},
+		{name: "null type", opcode: websocket.TextMessage, payload: `{"type":null}`, wantErr: true},
+		{name: "null status", opcode: websocket.TextMessage, payload: `{"status":null}`, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			event, err := decodeResponsesWebSocketEvent(tc.opcode, []byte(tc.payload))
@@ -115,6 +118,22 @@ func TestDecodeResponsesWebSocketEvent(t *testing.T) {
 func decodeResponsesWebSocketEvent(opcode int, payload []byte) (responsesWebSocketEvent, error) {
 	if opcode != websocket.TextMessage {
 		return responsesWebSocketEvent{}, fmt.Errorf("unexpected WebSocket message opcode %d", opcode)
+	}
+	var raw struct {
+		Type   json.RawMessage `json:"type"`
+		Status json.RawMessage `json:"status"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: %w", err)
+	}
+	if bytes.Equal(bytes.TrimSpace(payload), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: top-level null")
+	}
+	if len(raw.Type) > 0 && bytes.Equal(bytes.TrimSpace(raw.Type), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: type is null")
+	}
+	if len(raw.Status) > 0 && bytes.Equal(bytes.TrimSpace(raw.Status), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: status is null")
 	}
 	var event responsesWebSocketEvent
 	if err := json.Unmarshal(payload, &event); err != nil {

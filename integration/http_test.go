@@ -23,6 +23,30 @@ type integrationCensorshipErrorResponse struct {
 }
 
 func decodeCensorshipError(body []byte) (integrationCensorshipErrorResponse, error) {
+	var raw struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return integrationCensorshipErrorResponse{}, err
+	}
+	if bytes.Equal(bytes.TrimSpace(body), []byte("null")) {
+		return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: top-level null")
+	}
+	if len(raw.Error) > 0 {
+		if bytes.Equal(bytes.TrimSpace(raw.Error), []byte("null")) {
+			return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: error is null")
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw.Error, &fields); err != nil {
+			return integrationCensorshipErrorResponse{}, err
+		}
+		for _, name := range []string{"code", "term", "role"} {
+			if value, ok := fields[name]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: error.%s is null", name)
+			}
+		}
+	}
+
 	var response integrationCensorshipErrorResponse
 	err := json.Unmarshal(body, &response)
 	return response, err
@@ -57,6 +81,31 @@ func TestDecodeCensorshipError(t *testing.T) {
 		{
 			name:    "numeric error term",
 			body:    []byte(`{"error":{"code":"censorship_blocked","term":1,"role":"user"}}`),
+			wantErr: true,
+		},
+		{
+			name:    "top-level null",
+			body:    []byte(`null`),
+			wantErr: true,
+		},
+		{
+			name:    "null error",
+			body:    []byte(`{"error":null}`),
+			wantErr: true,
+		},
+		{
+			name:    "null error code",
+			body:    []byte(`{"error":{"code":null}}`),
+			wantErr: true,
+		},
+		{
+			name:    "null error term",
+			body:    []byte(`{"error":{"term":null}}`),
+			wantErr: true,
+		},
+		{
+			name:    "null error role",
+			body:    []byte(`{"error":{"role":null}}`),
 			wantErr: true,
 		},
 	} {
