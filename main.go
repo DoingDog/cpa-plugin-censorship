@@ -138,7 +138,10 @@ func interceptBeforeAuth(raw []byte) ([]byte, error) {
 			Role:    result.Blocked.Role,
 		})
 	case len(result.Body) != 0:
-		return okEnvelope(pluginapi.RequestInterceptResponse{Body: result.Body})
+		return okEnvelope(pluginapi.RequestInterceptResponse{
+			Body:         result.Body,
+			ClearHeaders: []string{"Content-Encoding", "Content-Length", "Transfer-Encoding"},
+		})
 	default:
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}

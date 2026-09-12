@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -211,6 +212,39 @@ func TestBeforeAuthEarlyNoOpsDoNotParseBody(t *testing.T) {
 				t.Fatalf("response = %#v", resp)
 			}
 		})
+	}
+}
+
+func TestBeforeAuthChangedBodyClearsStaleEntityHeaders(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	raw, err := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:    "header-test",
+		SourceFormat: "openai",
+		Headers: http.Header{
+			"Content-Encoding":  {"zstd"},
+			"Content-Length":    {"123"},
+			"Transfer-Encoding": {"chunked"},
+			"Content-Type":      {"application/json"},
+		},
+		Body: []byte(`{"messages":[{"role":"user","content":"SECRET text"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env pluginabi.Envelope
+	decodeEnvelope(t, mustHandle(t, pluginabi.MethodRequestInterceptBefore, raw), &env)
+	resp := decodeResult[pluginapi.RequestInterceptResponse](t, env)
+	wantClear := []string{"Content-Encoding", "Content-Length", "Transfer-Encoding"}
+	if !reflect.DeepEqual(resp.ClearHeaders, wantClear) {
+		t.Fatalf("ClearHeaders = %#v, want %#v", resp.ClearHeaders, wantClear)
+	}
+	if got := string(resp.Body); got != `{"messages":[{"role":"user","content":" text"}]}` {
+		t.Fatalf("body = %s", resp.Body)
+	}
+
+	noChange := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"clean"}]}`))
+	if noChange.ClearHeaders != nil {
+		t.Fatalf("no-op ClearHeaders = %#v, want nil", noChange.ClearHeaders)
 	}
 }
 

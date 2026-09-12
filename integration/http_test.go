@@ -4,20 +4,89 @@ package censorshipintegration
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
+
+type integrationCensorshipErrorResponse struct {
+	Error struct {
+		Code string `json:"code"`
+		Term string `json:"term"`
+		Role string `json:"role"`
+	} `json:"error"`
+}
+
+func decodeCensorshipError(body []byte) (integrationCensorshipErrorResponse, error) {
+	var response integrationCensorshipErrorResponse
+	err := json.Unmarshal(body, &response)
+	return response, err
+}
+
+func TestDecodeCensorshipError(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    []byte
+		want    integrationCensorshipErrorResponse
+		wantErr bool
+	}{
+		{
+			name: "complete JSON",
+			body: []byte(`{"error":{"code":"censorship_blocked","term":"Alpha","role":"user"}}`),
+			want: integrationCensorshipErrorResponse{Error: struct {
+				Code string `json:"code"`
+				Term string `json:"term"`
+				Role string `json:"role"`
+			}{Code: "censorship_blocked", Term: "Alpha", Role: "user"}},
+		},
+		{
+			name:    "missing closing braces",
+			body:    []byte(`{"error":{"code":"censorship_blocked","term":"Alpha","role":"user"`),
+			wantErr: true,
+		},
+		{
+			name:    "trailing non-whitespace",
+			body:    []byte(`{"error":{"code":"censorship_blocked","term":"Alpha","role":"user"}}x`),
+			wantErr: true,
+		},
+		{
+			name:    "numeric error term",
+			body:    []byte(`{"error":{"code":"censorship_blocked","term":1,"role":"user"}}`),
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeCensorshipError(tc.body)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("decodeCensorshipError(%s) unexpectedly succeeded", tc.body)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("decodeCensorshipError(%s) = %#v, want %#v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestHTTPBlockIncludesTermAndRole(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [Alpha]\nignore_case: true\n")
 	status, header, body := postJSON(t, cpa.baseURL+"/v1/chat/completions", []byte(`{"model":"censorship-integration-model","messages":[{"role":"user","content":"aLPHA"}]}`))
-	if status != 400 || header.Get("Content-Type") != "application/json" || gjson.GetBytes(body, "error.term").String() != "Alpha" || gjson.GetBytes(body, "error.role").String() != "user" {
+	errorResponse, err := decodeCensorshipError(body)
+	if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || errorResponse.Error.Term != "Alpha" || errorResponse.Error.Role != "user" {
 		t.Fatalf("status=%d header=%v body=%s", status, header, body)
 	}
 	if upstream.arrivalCount() != 0 {
@@ -30,7 +99,8 @@ func TestHTTPRejectsDuplicateJSONMembers(t *testing.T) {
 	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
 	body := []byte(`{"model":"censorship-integration-model","messages":[],"messages":[{"role":"user","content":"SECRET"}]}`)
 	status, header, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", body)
-	if status != 400 || header.Get("Content-Type") != "application/json" || gjson.GetBytes(response, "error.code").String() != "censorship_invalid_request" {
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || errorResponse.Error.Code != "censorship_invalid_request" {
 		t.Fatalf("status=%d header=%v body=%s", status, header, response)
 	}
 	if upstream.arrivalCount() != 0 {
@@ -42,11 +112,49 @@ func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nignore_case: true\nwords: [Alpha]\n")
 	status, _, body := postJSON(t, cpa.baseURL+"/v1/completions", []byte(`{"model":"censorship-integration-model","prompt":"aLPHA legacy prompt"}`))
-	if status != 400 || gjson.GetBytes(body, "error.term").String() != "Alpha" || gjson.GetBytes(body, "error.role").String() != "user" {
+	errorResponse, err := decodeCensorshipError(body)
+	if err != nil || status != 400 || errorResponse.Error.Term != "Alpha" || errorResponse.Error.Role != "user" {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
 	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked legacy prompt reached upstream")
+	}
+}
+
+func TestHTTPRewrittenZstdRequestClearsContentEncoding(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := encoder.EncodeAll(chatBody("SECRET input", false), nil)
+	encoder.Close()
+
+	request, err := http.NewRequest(http.MethodPost, cpa.baseURL+"/v1/chat/completions", bytes.NewReader(compressed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+downstreamKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Encoding", "zstd")
+	response, err := integrationHTTPClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.StatusCode, responseBody)
+	}
+	if got := gjson.GetBytes(upstream.lastRequest(), "messages.0.content").String(); got != " input" {
+		t.Fatalf("upstream content = %q, body = %s", got, upstream.lastRequest())
+	}
+	if got := upstream.lastHeader().Get("Content-Encoding"); got != "" {
+		t.Fatalf("upstream Content-Encoding = %q, want empty", got)
 	}
 }
 
