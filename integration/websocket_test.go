@@ -282,7 +282,7 @@ func TestResponsesWebSocketSecondTurnBlocksLoadedToolDefinition(t *testing.T) {
 	conn := dialResponsesWebSocket(t, cpa.wsURL, downstreamKey)
 	t.Cleanup(func() { _ = conn.Close() })
 
-	first := []byte(`{"type":"response.create","model":"censorship-integration-model","input":"plain"}`)
+	first := []byte(`{"type":"response.create","model":"censorship-integration-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"plain"}]}]}`)
 	if err := conn.WriteMessage(websocket.TextMessage, first); err != nil {
 		t.Fatal(err)
 	}
