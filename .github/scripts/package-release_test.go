@@ -294,6 +294,56 @@ func TestPackageExistingArtifactsRemovesMissingPlatformOutputs(t *testing.T) {
 	}
 }
 
+func TestPackageExistingArtifactsPreservesMissingPlatformOutputDirectories(t *testing.T) {
+	root := t.TempDir()
+	distA := filepath.Join(root, "dist-a")
+	distB := filepath.Join(root, "dist-b")
+	out := filepath.Join(root, "out")
+	linuxA := filepath.Join(distA, "linux_amd64", "censorship.so")
+	windowsA := filepath.Join(distA, "windows_amd64", "censorship.dll")
+	for _, library := range []string{linuxA, windowsA} {
+		if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(library, []byte("first build"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := packageExistingArtifacts("1.2.3", distA, out); err != nil {
+		t.Fatal(err)
+	}
+
+	windowsArchive := filepath.Join(out, "censorship_1.2.3_windows_amd64.zip")
+	for _, path := range []string{windowsArchive, windowsArchive + ".sha256"} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linuxB := filepath.Join(distB, "linux_amd64", "censorship.so")
+	if err := os.MkdirAll(filepath.Dir(linuxB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linuxB, []byte("second build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := packageExistingArtifacts("1.2.3", distB, out); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{windowsArchive, windowsArchive + ".sha256"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("preserved output directory %q stat error = %v", path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("preserved output %q is not a directory", path)
+		}
+	}
+}
+
 func TestReplaceOutputFileRestoresExistingDestinationAfterInstallFailure(t *testing.T) {
 	dir := t.TempDir()
 	destination := filepath.Join(dir, "output")

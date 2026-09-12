@@ -194,6 +194,16 @@ func packageExistingArtifacts(version, distDir, outDir string) error {
 		checksumLines = append(checksumLines, line)
 	}
 	for _, path := range staleOutputs {
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("inspect stale output %q: %w", path, err)
+		}
+		if info.IsDir() {
+			continue
+		}
 		if err := removeOutputFile(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove stale output %q: %w", path, err)
 		}
