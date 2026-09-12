@@ -4,6 +4,7 @@ package censorshipintegration
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -67,6 +68,78 @@ func TestResponsesWebSocketDialTimesOutDuringStalledUpgrade(t *testing.T) {
 	default:
 		t.Fatal("stalled upgrade did not reach server")
 	}
+}
+
+type responsesWebSocketEvent struct {
+	Type   string `json:"type"`
+	Status int    `json:"status"`
+	Error  struct {
+		Term json.RawMessage `json:"term"`
+		Role json.RawMessage `json:"role"`
+	} `json:"error"`
+}
+
+func TestDecodeResponsesWebSocketEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		opcode     int
+		payload    string
+		wantType   string
+		wantStatus int
+		wantErr    bool
+	}{
+		{name: "valid text", opcode: websocket.TextMessage, payload: `{"type":"response.completed","status":400}`, wantType: "response.completed", wantStatus: 400},
+		{name: "truncated", opcode: websocket.TextMessage, payload: `{"status":400`, wantErr: true},
+		{name: "string status", opcode: websocket.TextMessage, payload: `{"status":"400"}`, wantErr: true},
+		{name: "fractional status", opcode: websocket.TextMessage, payload: `{"status":400.9}`, wantErr: true},
+		{name: "binary JSON", opcode: websocket.BinaryMessage, payload: `{"status":400}`, wantErr: true},
+		{name: "top-level null", opcode: websocket.TextMessage, payload: `null`, wantErr: true},
+		{name: "null type", opcode: websocket.TextMessage, payload: `{"type":null}`, wantErr: true},
+		{name: "null status", opcode: websocket.TextMessage, payload: `{"status":null}`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event, err := decodeResponsesWebSocketEvent(tc.opcode, []byte(tc.payload))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("decode error = nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if event.Type != tc.wantType || event.Status != tc.wantStatus {
+				t.Fatalf("event = %+v, want type=%q status=%d", event, tc.wantType, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func decodeResponsesWebSocketEvent(opcode int, payload []byte) (responsesWebSocketEvent, error) {
+	if opcode != websocket.TextMessage {
+		return responsesWebSocketEvent{}, fmt.Errorf("unexpected WebSocket message opcode %d", opcode)
+	}
+	var raw struct {
+		Type   json.RawMessage `json:"type"`
+		Status json.RawMessage `json:"status"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: %w", err)
+	}
+	if bytes.Equal(bytes.TrimSpace(payload), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: top-level null")
+	}
+	if len(raw.Type) > 0 && bytes.Equal(bytes.TrimSpace(raw.Type), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: type is null")
+	}
+	if len(raw.Status) > 0 && bytes.Equal(bytes.TrimSpace(raw.Status), []byte("null")) {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: status is null")
+	}
+	var event responsesWebSocketEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return responsesWebSocketEvent{}, fmt.Errorf("decode Responses WebSocket event: %w", err)
+	}
+	return event, nil
 }
 
 type wsMessage struct {
@@ -158,11 +231,15 @@ func TestTerminalWebSocketTimeoutIsNotPeerClose(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create"}`)); err != nil {
 		t.Fatal(err)
 	}
-	_, event, err := conn.ReadMessage()
+	opcode, event, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gjson.GetBytes(event, "status").Int() != 400 {
+	decoded, err := decodeResponsesWebSocketEvent(opcode, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Status != 400 {
 		t.Fatalf("terminal event = %s", event)
 	}
 	started := time.Now()
@@ -213,10 +290,14 @@ func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opcode != websocket.TextMessage || gjson.GetBytes(event, "status").Int() != 400 {
+	decoded, err := decodeResponsesWebSocketEvent(opcode, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Status != 400 {
 		t.Fatalf("opcode=%d event=%s", opcode, event)
 	}
-	if gjson.GetBytes(event, "error.term").Exists() || gjson.GetBytes(event, "error.role").Exists() {
+	if len(decoded.Error.Term) != 0 || len(decoded.Error.Role) != 0 {
 		t.Fatalf("WebSocket unexpectedly retained plugin direct body: %s", event)
 	}
 	if err := waitForWebSocketPeerClose(conn); err != nil {
@@ -295,8 +376,12 @@ func readUntilCompletedWithTimeout(conn *websocket.Conn, timeout time.Duration) 
 		if err != nil {
 			return nil, err
 		}
+		decoded, err := decodeResponsesWebSocketEvent(opcode, payload)
+		if err != nil {
+			return nil, err
+		}
 		messages = append(messages, wsMessage{Opcode: opcode, Payload: bytes.Clone(payload)})
-		if gjson.GetBytes(payload, "type").String() == "response.completed" {
+		if decoded.Type == "response.completed" {
 			return messages, nil
 		}
 	}

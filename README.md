@@ -134,7 +134,7 @@ If B is malformed, it is logged and invalid reconfiguration keeps the last-known
 
 ## Build, ABI, and integration
 
-Go 1.26 and a working native or cross CGO compiler for the selected target are required. `make integration` builds against the fixed CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`; its harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling, exact provider paths, SSE, watcher reload, Responses WebSocket, and ABI scenarios.
+Go 1.26 and a working native or cross CGO compiler for the selected target are required. `make integration` builds against the fixed CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`; its harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling, exact provider paths, SSE, watcher reload, Responses WebSocket, and ABI scenarios. The integration oracle strictly validates complete, correctly typed HTTP and Responses WebSocket JSON.
 
 ```bash
 make test
@@ -145,7 +145,7 @@ make integration
 
 Bare `make build` and host-artifact `make package` use `0.0.0-dev`; explicit empty or unsafe `VERSION` remains invalid.
 
-The ABI boundary remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input.
+The ABI boundary remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input. When censorship replaces a decoded request body, it clears `Content-Encoding`, `Content-Length`, and `Transfer-Encoding`; no-op requests preserve headers.
 
 Integration changes: Task 12 writes the watched configuration path in place and uses a bounded marker write/probe handshake; Task 13 reuses the CPA integration checkout; Task 14 hardens release packaging. Tagged CPA integration, runner, and package checks passed for those changes.
 

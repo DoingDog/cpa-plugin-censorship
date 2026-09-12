@@ -225,7 +225,8 @@ func TestBorrowedABIResponseSurvivesHostRequestPoison(t *testing.T) {
 	}{
 		OK: true,
 		Result: pluginapi.RequestInterceptResponse{
-			Body: []byte(`{"messages":[{"role":"user","content":""}]}`),
+			Body:         []byte(`{"messages":[{"role":"user","content":""}]}`),
+			ClearHeaders: []string{"Content-Encoding", "Content-Length", "Transfer-Encoding"},
 		},
 	})
 	if err != nil {

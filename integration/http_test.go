@@ -4,6 +4,7 @@ package censorshipintegration
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"testing"
@@ -13,11 +14,125 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+type integrationCensorshipErrorResponse struct {
+	Error struct {
+		Code string `json:"code"`
+		Term string `json:"term"`
+		Role string `json:"role"`
+	} `json:"error"`
+}
+
+func decodeCensorshipError(body []byte) (integrationCensorshipErrorResponse, error) {
+	var raw struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return integrationCensorshipErrorResponse{}, err
+	}
+	if bytes.Equal(bytes.TrimSpace(body), []byte("null")) {
+		return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: top-level null")
+	}
+	if len(raw.Error) > 0 {
+		if bytes.Equal(bytes.TrimSpace(raw.Error), []byte("null")) {
+			return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: error is null")
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw.Error, &fields); err != nil {
+			return integrationCensorshipErrorResponse{}, err
+		}
+		for _, name := range []string{"code", "term", "role"} {
+			if value, ok := fields[name]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return integrationCensorshipErrorResponse{}, fmt.Errorf("decode censorship error: error.%s is null", name)
+			}
+		}
+	}
+
+	var response integrationCensorshipErrorResponse
+	err := json.Unmarshal(body, &response)
+	return response, err
+}
+
+func TestDecodeCensorshipError(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    []byte
+		want    integrationCensorshipErrorResponse
+		wantErr bool
+	}{
+		{
+			name: "complete JSON",
+			body: []byte(`{"error":{"code":"censorship_blocked","term":"Alpha","role":"user"}}`),
+			want: integrationCensorshipErrorResponse{Error: struct {
+				Code string `json:"code"`
+				Term string `json:"term"`
+				Role string `json:"role"`
+			}{Code: "censorship_blocked", Term: "Alpha", Role: "user"}},
+		},
+		{
+			name:    "missing closing braces",
+			body:    []byte(`{"error":{"code":"censorship_blocked","term":"Alpha","role":"user"`),
+			wantErr: true,
+		},
+		{
+			name:    "trailing non-whitespace",
+			body:    []byte(`{"error":{"code":"censorship_blocked","term":"Alpha","role":"user"}}x`),
+			wantErr: true,
+		},
+		{
+			name:    "numeric error term",
+			body:    []byte(`{"error":{"code":"censorship_blocked","term":1,"role":"user"}}`),
+			wantErr: true,
+		},
+		{
+			name:    "top-level null",
+			body:    []byte(`null`),
+			wantErr: true,
+		},
+		{
+			name:    "null error",
+			body:    []byte(`{"error":null}`),
+			wantErr: true,
+		},
+		{
+			name:    "null error code",
+			body:    []byte(`{"error":{"code":null}}`),
+			wantErr: true,
+		},
+		{
+			name:    "null error term",
+			body:    []byte(`{"error":{"term":null}}`),
+			wantErr: true,
+		},
+		{
+			name:    "null error role",
+			body:    []byte(`{"error":{"role":null}}`),
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeCensorshipError(tc.body)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("decodeCensorshipError(%s) unexpectedly succeeded", tc.body)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("decodeCensorshipError(%s) = %#v, want %#v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHTTPBlockIncludesTermAndRole(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [Alpha]\nignore_case: true\n")
 	status, header, body := postJSON(t, cpa.baseURL+"/v1/chat/completions", []byte(`{"model":"censorship-integration-model","messages":[{"role":"user","content":"aLPHA"}]}`))
-	if status != 400 || header.Get("Content-Type") != "application/json" || gjson.GetBytes(body, "error.term").String() != "Alpha" || gjson.GetBytes(body, "error.role").String() != "user" {
+	errorResponse, err := decodeCensorshipError(body)
+	if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || errorResponse.Error.Term != "Alpha" || errorResponse.Error.Role != "user" {
 		t.Fatalf("status=%d header=%v body=%s", status, header, body)
 	}
 	if upstream.arrivalCount() != 0 {
@@ -30,7 +145,8 @@ func TestHTTPRejectsDuplicateJSONMembers(t *testing.T) {
 	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
 	body := []byte(`{"model":"censorship-integration-model","messages":[],"messages":[{"role":"user","content":"SECRET"}]}`)
 	status, header, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", body)
-	if status != 400 || header.Get("Content-Type") != "application/json" || gjson.GetBytes(response, "error.code").String() != "censorship_invalid_request" {
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || errorResponse.Error.Code != "censorship_invalid_request" {
 		t.Fatalf("status=%d header=%v body=%s", status, header, response)
 	}
 	if upstream.arrivalCount() != 0 {
@@ -42,7 +158,8 @@ func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nignore_case: true\nwords: [Alpha]\n")
 	status, _, body := postJSON(t, cpa.baseURL+"/v1/completions", []byte(`{"model":"censorship-integration-model","prompt":"aLPHA legacy prompt"}`))
-	if status != 400 || gjson.GetBytes(body, "error.term").String() != "Alpha" || gjson.GetBytes(body, "error.role").String() != "user" {
+	errorResponse, err := decodeCensorshipError(body)
+	if err != nil || status != 400 || errorResponse.Error.Term != "Alpha" || errorResponse.Error.Role != "user" {
 		t.Fatalf("status=%d body=%s", status, body)
 	}
 	if upstream.arrivalCount() != 0 {

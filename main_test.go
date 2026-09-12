@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -211,6 +212,39 @@ func TestBeforeAuthEarlyNoOpsDoNotParseBody(t *testing.T) {
 				t.Fatalf("response = %#v", resp)
 			}
 		})
+	}
+}
+
+func TestBeforeAuthChangedBodyClearsStaleEntityHeaders(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
+	raw, err := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:    "header-test",
+		SourceFormat: "openai",
+		Headers: http.Header{
+			"Content-Encoding":  {"zstd"},
+			"Content-Length":    {"123"},
+			"Transfer-Encoding": {"chunked"},
+			"Content-Type":      {"application/json"},
+		},
+		Body: []byte(`{"messages":[{"role":"user","content":"SECRET text"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env pluginabi.Envelope
+	decodeEnvelope(t, mustHandle(t, pluginabi.MethodRequestInterceptBefore, raw), &env)
+	resp := decodeResult[pluginapi.RequestInterceptResponse](t, env)
+	wantClear := []string{"Content-Encoding", "Content-Length", "Transfer-Encoding"}
+	if !reflect.DeepEqual(resp.ClearHeaders, wantClear) {
+		t.Fatalf("ClearHeaders = %#v, want %#v", resp.ClearHeaders, wantClear)
+	}
+	if got := string(resp.Body); got != `{"messages":[{"role":"user","content":" text"}]}` {
+		t.Fatalf("body = %s", resp.Body)
+	}
+
+	noChange := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"clean"}]}`))
+	if noChange.ClearHeaders != nil {
+		t.Fatalf("no-op ClearHeaders = %#v, want nil", noChange.ClearHeaders)
 	}
 }
 
@@ -504,6 +538,8 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"glibc 2.34+",
 		"C.GoBytes",
 		"does not claim pinned Windows host request-pointer liveness has been proven",
+		"When censorship replaces a decoded request body, it clears `Content-Encoding`, `Content-Length`, and `Transfer-Encoding`; no-op requests preserve headers.",
+		"The integration oracle strictly validates complete, correctly typed HTTP and Responses WebSocket JSON.",
 		"optional repository `LICENSE` if one exists",
 		"harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling",
 		"https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png",
@@ -585,10 +621,10 @@ func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.2.2 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.2")
+	if !bytes.Contains(raw, []byte("v0.2.3 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.3")
 	}
-	if bytes.Contains(raw, []byte("v0.2.1 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.1")
+	if bytes.Contains(raw, []byte("v0.2.2 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.2")
 	}
 }
