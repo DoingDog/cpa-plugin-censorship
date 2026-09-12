@@ -442,6 +442,15 @@ func TestOpenAIChatDefinitionRewritePhasesPreserveMachineFields(t *testing.T) {
 	}
 }
 
+func TestOpenAIChatSkipsUnknownPredictionType(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"prediction":{"type":"unknown","content":"SECRET"}}`)
+	resp := interceptRPC(t, "openai", body)
+	if resp.Terminate || len(resp.Body) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestOpenAIResponsesModelVisibleDefinitionsUseDeclaredRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string
@@ -512,11 +521,30 @@ func TestOpenAIResponsesModelVisibleDefinitionsUseDeclaredRoles(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesTopLevelLocalSkillUsesUserScope(t *testing.T) {
+	registerConfig(t, "mode: block\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"tools":[{"type":"shell","environment":{"type":"local","skills":[{"name":"safe","description":"SECRET","path":"/SECRET/path"}]}}]}`)
+	resp := interceptRPC(t, "openai-response", body)
+	if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "user" {
+		t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
+	}
+}
+
 func TestOpenAIResponsesAdditionalToolsSkipsUnsupportedRoles(t *testing.T) {
-	for _, role := range []string{"unknown", "critic", "discriminator", "future"} {
-		t.Run(role, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, role string
+	}{
+		{name: "missing"},
+		{name: "null", role: `"role":null,`},
+		{name: "number", role: `"role":1,`},
+		{name: "unknown", role: `"role":"unknown",`},
+		{name: "critic", role: `"role":"critic",`},
+		{name: "discriminator", role: `"role":"discriminator",`},
+		{name: "future", role: `"role":"future",`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, developer, user, assistant, tool]\n")
-			body := []byte(`{"input":[{"type":"additional_tools","role":"` + role + `","tools":[{"type":"function","name":"SECRET","description":"SECRET","parameters":{"type":"object","description":"SECRET"}}]}]}`)
+			body := []byte(`{"input":[{"type":"additional_tools",` + tc.role + `"tools":[{"type":"function","name":"SECRET","description":"SECRET","parameters":{"type":"object","description":"SECRET"}}]}]}`)
 			resp := interceptRPC(t, "openai-response", body)
 			if resp.Terminate || len(resp.Body) != 0 {
 				t.Fatalf("response = %#v", resp)

@@ -93,7 +93,7 @@ func collectOpenAI(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			return true
 		})
 	}
-	if roles.has("assistant") {
+	if roles.has("assistant") && root.Get("prediction.type").Str == "content" {
 		prediction := root.Get("prediction.content")
 		appendStringSpan(spans, prediction, "assistant", roles)
 		if prediction.IsArray() {
@@ -164,7 +164,24 @@ func appendOpenAIResponsesInputTextOutput(output gjson.Result, roles scopeSet, s
 }
 
 func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role string, roles scopeSet) {
-	if !tool.IsObject() || !roles.has(role) {
+	if !tool.IsObject() {
+		return
+	}
+	if tool.Get("type").Str == "shell" {
+		environment := tool.Get("environment")
+		if environment.Get("type").Str != "local" || !roles.has("user") {
+			return
+		}
+		skills := environment.Get("skills")
+		if skills.IsArray() {
+			skills.ForEach(func(_, skill gjson.Result) bool {
+				appendStringSpan(spans, skill.Get("description"), "user", roles)
+				return true
+			})
+		}
+		return
+	}
+	if !roles.has(role) {
 		return
 	}
 	switch tool.Get("type").Str {
@@ -188,18 +205,6 @@ func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role strin
 		appendJSONSchemaDescriptions(spans, tool.Get("parameters"), role, roles)
 	case "mcp":
 		appendStringSpan(spans, tool.Get("server_description"), role, roles)
-	case "shell":
-		environment := tool.Get("environment")
-		if environment.Get("type").Str != "local" || !roles.has("user") {
-			return
-		}
-		skills := environment.Get("skills")
-		if skills.IsArray() {
-			skills.ForEach(func(_, skill gjson.Result) bool {
-				appendStringSpan(spans, skill.Get("description"), "user", roles)
-				return true
-			})
-		}
 	}
 }
 
@@ -368,6 +373,8 @@ func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan
 			appendStringSpan(spans, format.Get("description"), "developer", roles)
 			appendJSONSchemaDescriptions(spans, format.Get("schema"), "developer", roles)
 		}
+	}
+	if roles.has("developer") || roles.has("user") {
 		tools := root.Get("tools")
 		if tools.IsArray() {
 			tools.ForEach(func(_, tool gjson.Result) bool {
