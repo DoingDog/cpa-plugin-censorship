@@ -1431,6 +1431,11 @@ func TestDocumentationSelectorContractIncludesToolResults(t *testing.T) {
 		}
 		text := string(contents)
 		for _, want := range []string{
+			"Signed Gemini visible text is inspected; matching `strip` or `obfs` returns local `censorship_invalid_request` rather than changing a signature-bound Part.",
+			"Scalar Claude user content cannot be stripped to empty",
+			"OpenAI also selects Chat `prediction.content` of type `content`; Responses `prompt.variables`, supported tool/schema descriptions, loaded tools, and local skill descriptions.",
+			"Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.",
+			"Archive, sidecar, and aggregate destinations replace directory entries without writing an existing hard-linked inode.",
 			"a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text",
 			"`function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text",
 			"Claude unselected tool-result fields",

@@ -573,7 +573,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"tool is inspected only for documented OpenAI and Claude result-text paths",
 		"valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel",
 		"invalid reconfiguration keeps the last-known-good snapshot",
-		"Machine exclusions: tool calls, tool schemas, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
+		"Machine exclusions: tool calls, machine schema values, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
 		"1. hook is not raw ingress; document order follows current execution-body spans",
 		"2. preprocessing can observe uncensored input",
 		"3. Responses WebSocket covers only model-executed turns",
@@ -601,6 +601,11 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"0.0.0-dev",
 		"aggregate packaging",
 		"signed-history prefix",
+		"Signed Gemini visible text is inspected; matching `strip` or `obfs` returns local `censorship_invalid_request` rather than changing a signature-bound Part.",
+		"Scalar Claude user content cannot be stripped to empty",
+		"OpenAI also selects Chat `prediction.content` of type `content`; Responses `prompt.variables`, supported tool/schema descriptions, loaded tools, and local skill descriptions.",
+		"Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.",
+		"Archive, sidecar, and aggregate destinations replace directory entries without writing an existing hard-linked inode.",
 	}
 	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
 		raw, err := os.ReadFile(name)
@@ -621,10 +626,10 @@ func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.2.3 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.3")
+	if !bytes.Contains(raw, []byte("v0.2.4 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.4")
 	}
-	if bytes.Contains(raw, []byte("v0.2.2 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.2")
+	if bytes.Contains(raw, []byte("v0.2.3 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.3")
 	}
 }
