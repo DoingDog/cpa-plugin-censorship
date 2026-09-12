@@ -305,6 +305,9 @@ func TestResponsesWebSocketSecondTurnBlocksLoadedToolDefinition(t *testing.T) {
 	if err != nil || decoded.Status != 400 {
 		t.Fatalf("event=%s error=%v", event, err)
 	}
+	if err := waitForWebSocketPeerClose(conn); err != nil {
+		t.Fatalf("terminal 400 was not followed by peer closure: %v", err)
+	}
 	if upstream.arrivalCount() != 1 {
 		t.Fatalf("second-turn upstream arrivals = %d, want 1", upstream.arrivalCount())
 	}

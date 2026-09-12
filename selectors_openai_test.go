@@ -563,6 +563,113 @@ func TestOpenAIResponsesDefinitionRewritePreservesMachineFields(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesPromptVariableInputTextArrayUsesUserScope(t *testing.T) {
+	registerConfig(t, "mode: block\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"prompt":{"variables":{"customer":[{"type":"input_text","text":"SECRET"},{"type":"input_image","image_url":"SECRET"}]}}}`)
+	resp := interceptRPC(t, "openai-response", body)
+	if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "user" {
+		t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
+	}
+}
+
+func TestOpenAIResponsesAdditionalToolsUseExactCanonicalRole(t *testing.T) {
+	for _, role := range []string{"system", "developer", "user", "assistant", "tool"} {
+		t.Run(role, func(t *testing.T) {
+			registerConfig(t, "mode: block\nwords: [SECRET]\nscope:\n  roles: ["+role+"]\n")
+			body := []byte(`{"input":[{"type":"additional_tools","role":"` + role + `","tools":[{"type":"custom","description":"SECRET","format":{"definition":"SECRET grammar"}}]}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").String() != role {
+				t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesTopLevelDefinitionRewritePhasesPreserveMachineFields(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","name":"SECRET name","description":"SECRET description","parameters":{"type":"object","description":"SECRET schema","required":["SECRET required"],"properties":{"SECRET key":{"type":"string","enum":["SECRET enum"]}}},"output_schema":{"type":"object","description":"SECRET output"}}]}`)
+	for _, tc := range []struct {
+		name, config string
+		changes      []rawReplacement
+	}{
+		{name: "block", config: "mode: block\nwords: [SECRET]\nscope:\n  roles: [developer]\n"},
+		{
+			name: "strip", config: "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n",
+			changes: []rawReplacement{
+				{Before: `"SECRET description"`, After: `" description"`},
+				{Before: `"SECRET schema"`, After: `" schema"`},
+				{Before: `"SECRET output"`, After: `" output"`},
+			},
+		},
+		{
+			name: "obfs", config: "mode: obfs\nwords: [SECRET]\nscope:\n  roles: [developer]\n",
+			changes: []rawReplacement{
+				{Before: `"SECRET description"`, After: `"S​ECRET description"`},
+				{Before: `"SECRET schema"`, After: `"S​ECRET schema"`},
+				{Before: `"SECRET output"`, After: `"S​ECRET output"`},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, tc.config)
+			resp := interceptRPC(t, "openai-response", body)
+			if tc.name == "block" {
+				if !resp.Terminate || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "developer" {
+					t.Fatalf("response = %#v", resp)
+				}
+				return
+			}
+			want := replaceRawTokens(t, body, tc.changes...)
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+			}
+		})
+	}
+}
+
+func TestOpenAIChatSchemaDescriptionTraversalUsesOnlyDocumentedKeywords(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"functions":[{"description":"SECRET function","parameters":{"type":"object","properties":{"p":{"description":"SECRET properties"}},"patternProperties":{"p":{"description":"SECRET pattern"}},"$defs":{"p":{"description":"SECRET defs"}},"definitions":{"p":{"description":"SECRET definitions"}},"dependentSchemas":{"p":{"description":"SECRET dependent"}},"items":{"description":"SECRET items"},"additionalProperties":{"description":"SECRET additional"},"unevaluatedProperties":{"description":"SECRET unevaluated"},"propertyNames":{"description":"SECRET property names"},"contains":{"description":"SECRET contains"},"not":{"description":"SECRET not"},"if":{"description":"SECRET if"},"then":{"description":"SECRET then"},"else":{"description":"SECRET else"},"prefixItems":[{"description":"SECRET prefix"}],"allOf":[{"description":"SECRET all"}],"anyOf":[{"description":"SECRET any"}],"oneOf":[{"description":"SECRET one"}],"x-extension":{"description":"SECRET extension"},"required":["SECRET required"],"enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","examples":["SECRET example"]}}]}`)
+	resp := interceptRPC(t, "openai", body)
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET function"`, After: `" function"`},
+		rawReplacement{Before: `"SECRET properties"`, After: `" properties"`},
+		rawReplacement{Before: `"SECRET pattern"`, After: `" pattern"`},
+		rawReplacement{Before: `"SECRET defs"`, After: `" defs"`},
+		rawReplacement{Before: `"SECRET definitions"`, After: `" definitions"`},
+		rawReplacement{Before: `"SECRET dependent"`, After: `" dependent"`},
+		rawReplacement{Before: `"SECRET items"`, After: `" items"`},
+		rawReplacement{Before: `"SECRET additional"`, After: `" additional"`},
+		rawReplacement{Before: `"SECRET unevaluated"`, After: `" unevaluated"`},
+		rawReplacement{Before: `"SECRET property names"`, After: `" property names"`},
+		rawReplacement{Before: `"SECRET contains"`, After: `" contains"`},
+		rawReplacement{Before: `"SECRET not"`, After: `" not"`},
+		rawReplacement{Before: `"SECRET if"`, After: `" if"`},
+		rawReplacement{Before: `"SECRET then"`, After: `" then"`},
+		rawReplacement{Before: `"SECRET else"`, After: `" else"`},
+		rawReplacement{Before: `"SECRET prefix"`, After: `" prefix"`},
+		rawReplacement{Before: `"SECRET all"`, After: `" all"`},
+		rawReplacement{Before: `"SECRET any"`, After: `" any"`},
+		rawReplacement{Before: `"SECRET one"`, After: `" one"`},
+	)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+	}
+}
+
+func TestOpenAIResponsesDefinitionMachineFieldsRemainUnchanged(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"reasoning":{"content":"SECRET reasoning","summary":"SECRET summary","encrypted_content":"SECRET encrypted"},"tools":[{"type":"function","name":"SECRET function","description":"SECRET function description","parameters":{"type":"object","required":["SECRET required"],"enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","examples":["SECRET example"],"properties":{"SECRET key":{"type":"string"}}}},{"type":"custom","name":"SECRET custom","description":"SECRET custom description","format":{"type":"grammar","definition":"SECRET grammar"}},{"type":"tool_search","description":"SECRET search description","parameters":{"type":"object","properties":{"SECRET key":{"type":"string"}}}},{"type":"shell","environment":{"type":"container","commands":["SECRET command"],"bundle":"SECRET bundle","path":"/SECRET/path","skills":[{"description":"SECRET skill","base64":"SECRET base64"}]}}],"input":[{"type":"function_call","id":"SECRET id","arguments":"SECRET arguments","input":"SECRET input","phase":"SECRET phase","status":"SECRET status","annotations":["SECRET annotation"]},{"type":"custom_tool_call","input":"SECRET custom input"},{"type":"tool_search_call","arguments":"SECRET search arguments"},{"type":"apply_patch_call","patch":"SECRET patch","diff":"SECRET diff","path":"/SECRET/patch"}]}`)
+	resp := interceptRPC(t, "openai-response", body)
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET function description"`, After: `" function description"`},
+		rawReplacement{Before: `"SECRET custom description"`, After: `" custom description"`},
+		rawReplacement{Before: `"SECRET search description"`, After: `" search description"`},
+	)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+	}
+}
+
 func TestOpenAIChatSchemaDescriptionsChangeWithoutMachineFields(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
 	body := []byte(`{"functions":[{"name":"SECRET name","description":"SECRET root","parameters":{"type":"object","description":"SECRET object","properties":{"SECRET property":{"type":"string","description":"SECRET property description","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","examples":["SECRET example"],"x-extra":{"description":"SECRET extension"}}},"items":{"type":"string","description":"SECRET items"},"allOf":[{"description":"SECRET all of"}]}}],"tool_calls":[{"function":{"arguments":"SECRET arguments"}}]}`)

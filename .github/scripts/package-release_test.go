@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -296,9 +297,9 @@ func TestReplaceOutputFileRetainsBackupWhenRollbackFails(t *testing.T) {
 			return originalRename(oldPath, newPath)
 		}
 	}
-	err := replaceOutputFile(temporary, destination)
-	if err == nil || !strings.Contains(err.Error(), installFailure.Error()) || !strings.Contains(err.Error(), rollbackFailure.Error()) {
-		t.Fatalf("replace error = %v", err)
+	replaceErr := replaceOutputFile(temporary, destination)
+	if replaceErr == nil || !strings.Contains(replaceErr.Error(), installFailure.Error()) || !strings.Contains(replaceErr.Error(), rollbackFailure.Error()) {
+		t.Fatalf("replace error = %v", replaceErr)
 	}
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		t.Fatalf("destination stat = %v, want absent", err)
@@ -316,12 +317,196 @@ func TestReplaceOutputFileRetainsBackupWhenRollbackFails(t *testing.T) {
 	if backup == "" {
 		t.Fatal("missing retained rollback backup")
 	}
+	if !strings.Contains(replaceErr.Error(), fmt.Sprintf("%q", backup)) {
+		t.Fatalf("replace error = %v, want recovery path %q", replaceErr, backup)
+	}
 	got, err := os.ReadFile(backup)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, oldContents) {
 		t.Fatalf("backup = %q, want %q", got, oldContents)
+	}
+}
+
+func TestWriteOutputFilePreservesDestinationOnCallbackFailure(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "output")
+	oldContents := []byte("old output")
+	if err := os.WriteFile(destination, oldContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callbackErr := errors.New("callback failure")
+	err = writeOutputFile(destination, 0o644, func(*os.File) error { return callbackErr })
+	if !errors.Is(err, callbackErr) {
+		t.Fatalf("writeOutputFile error = %v, want callback failure", err)
+	}
+	after, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("callback failure replaced destination")
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, oldContents) {
+		t.Fatalf("destination = %q, want %q", got, oldContents)
+	}
+	assertNoReleaseTemporaryEntries(t, dir)
+}
+
+func TestWriteOutputFileJoinsDeferredCleanupErrors(t *testing.T) {
+	dir := t.TempDir()
+	originalClose := closeOutputFile
+	originalRemove := removeOutputFile
+	t.Cleanup(func() {
+		closeOutputFile = originalClose
+		removeOutputFile = originalRemove
+	})
+	closeErr := errors.New("close temporary")
+	removeErr := errors.New("remove temporary")
+	closeOutputFile = func(file *os.File) error {
+		_ = originalClose(file)
+		return closeErr
+	}
+	removeOutputFile = func(path string) error {
+		_ = originalRemove(path)
+		return removeErr
+	}
+	callbackErr := errors.New("callback failure")
+	err := writeOutputFile(filepath.Join(dir, "output"), 0o644, func(*os.File) error { return callbackErr })
+	for _, want := range []error{callbackErr, closeErr, removeErr} {
+		if !errors.Is(err, want) {
+			t.Fatalf("writeOutputFile error = %v, does not include %v", err, want)
+		}
+	}
+	assertNoReleaseTemporaryEntries(t, dir)
+}
+
+func TestWriteOutputFileRejectsDirectoryDestination(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "output")
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := writeOutputFile(destination, 0o644, func(file *os.File) error {
+		_, err := file.Write([]byte("new output"))
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+		t.Fatalf("writeOutputFile error = %v", err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatal("directory destination was replaced")
+	}
+	assertNoReleaseTemporaryEntries(t, dir)
+}
+
+func TestWriteOutputFileLeavesNoTemporaryFilesAfterInstall(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "output")
+	if err := writeOutputFile(destination, 0o600, func(file *os.File) error {
+		_, err := file.Write([]byte("new output"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new output" {
+		t.Fatalf("destination = %q", got)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(destination)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("destination mode = %v, want 0600", info.Mode().Perm())
+		}
+	}
+	assertNoReleaseTemporaryEntries(t, dir)
+}
+
+func TestReserveOutputBackupIncludesCleanupPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "output")
+	originalClose := closeOutputFile
+	t.Cleanup(func() { closeOutputFile = originalClose })
+	closeErr := errors.New("close backup")
+	closeOutputFile = func(file *os.File) error {
+		_ = originalClose(file)
+		return closeErr
+	}
+	_, err := reserveOutputBackup(path)
+	if !errors.Is(err, closeErr) || !strings.Contains(err.Error(), ".output.backup-") {
+		t.Fatalf("reserveOutputBackup error = %v", err)
+	}
+	assertNoReleaseTemporaryEntries(t, dir)
+}
+
+func TestPackageLibraryClosesWriterAfterOptionalFileFailure(t *testing.T) {
+	dir := t.TempDir()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+	library := filepath.Join(dir, "censorship.so")
+	if err := os.WriteFile(library, []byte("library"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalClose := closeZipWriter
+	originalAdd := addOptionalArchiveFile
+	t.Cleanup(func() {
+		closeZipWriter = originalClose
+		addOptionalArchiveFile = originalAdd
+	})
+	closeErr := errors.New("close zip writer")
+	addErr := errors.New("optional file failure")
+	closeCalls := 0
+	closeZipWriter = func(writer *zip.Writer) error {
+		closeCalls++
+		_ = originalClose(writer)
+		return closeErr
+	}
+	addOptionalArchiveFile = func(*zip.Writer, string) error { return addErr }
+	err = packageLibrary(library, filepath.Join(dir, "archive.zip"))
+	if !errors.Is(err, addErr) || !errors.Is(err, closeErr) {
+		t.Fatalf("packageLibrary error = %v", err)
+	}
+	if closeCalls != 1 {
+		t.Fatalf("zip writer close calls = %d, want 1", closeCalls)
+	}
+	assertNoReleaseTemporaryEntries(t, dir)
+}
+
+func assertNoReleaseTemporaryEntries(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".tmp-") || strings.Contains(entry.Name(), ".backup-") {
+			t.Fatalf("unexpected temporary output entry %s", entry.Name())
+		}
 	}
 }
 
@@ -1431,11 +1616,11 @@ func TestDocumentationSelectorContractIncludesToolResults(t *testing.T) {
 		}
 		text := string(contents)
 		for _, want := range []string{
-			"Signed Gemini visible text is inspected; matching `strip` or `obfs` returns local `censorship_invalid_request` rather than changing a signature-bound Part.",
+			"The signature field and value remain excluded, but a non-null `thoughtSignature`",
 			"Scalar Claude user content cannot be stripped to empty",
-			"OpenAI also selects Chat `prediction.content` of type `content`; Responses `prompt.variables`, supported tool/schema descriptions, loaded tools, and local skill descriptions.",
+			"Responses prompt variables and local shell skill descriptions use canonical `user`",
 			"Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.",
-			"Archive, sidecar, and aggregate destinations replace directory entries without writing an existing hard-linked inode.",
+			"An unknown external hard-link peer of an existing destination is not modified",
 			"a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text",
 			"`function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text",
 			"Claude unselected tool-result fields",

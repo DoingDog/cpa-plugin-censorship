@@ -557,7 +557,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"Missing Gemini roles follow CPA's user/model alternation.",
 		"Invalid Gemini roles advance CPA's user/model alternation but remain unselected.",
 		"Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent.",
-		"Gemini machine exclusions include camelCase and snake_case function, signature, media, and code carriers.",
+		"Gemini machine exclusions include camelCase and snake_case non-null function, media, file, and code carriers; signature values remain excluded without excluding same-Part visible text.",
 		"Enabled known formats reject JSON objects with duplicate member names at any nesting depth.",
 		"`obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`",
 		"block checks rules before document order and returns the YAML term with canonical role",
@@ -601,11 +601,11 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"0.0.0-dev",
 		"aggregate packaging",
 		"signed-history prefix",
-		"Signed Gemini visible text is inspected; matching `strip` or `obfs` returns local `censorship_invalid_request` rather than changing a signature-bound Part.",
+		"The signature field and value remain excluded, but a non-null `thoughtSignature`",
 		"Scalar Claude user content cannot be stripped to empty",
-		"OpenAI also selects Chat `prediction.content` of type `content`; Responses `prompt.variables`, supported tool/schema descriptions, loaded tools, and local skill descriptions.",
+		"Responses prompt variables and local shell skill descriptions use canonical `user`",
 		"Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.",
-		"Archive, sidecar, and aggregate destinations replace directory entries without writing an existing hard-linked inode.",
+		"An unknown external hard-link peer of an existing destination is not modified",
 	}
 	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
 		raw, err := os.ReadFile(name)

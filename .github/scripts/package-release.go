@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,8 +18,12 @@ import (
 const pluginName = "censorship"
 
 var (
-	zipModifiedTime  = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
-	renameOutputFile = os.Rename
+	zipModifiedTime        = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
+	renameOutputFile       = os.Rename
+	closeOutputFile        = (*os.File).Close
+	removeOutputFile       = os.Remove
+	closeZipWriter         = (*zip.Writer).Close
+	addOptionalArchiveFile = addOptionalFile
 )
 
 type artifactSpec struct {
@@ -437,12 +442,17 @@ func reserveOutputBackup(path string) (string, error) {
 		return "", err
 	}
 	name := backup.Name()
-	if err := backup.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", err
+	if err := closeOutputFile(backup); err != nil {
+		if cleanupErr := removeOutputFile(name); cleanupErr != nil && !os.IsNotExist(cleanupErr) {
+			return "", errors.Join(
+				fmt.Errorf("close output backup %q: %w", name, err),
+				fmt.Errorf("remove output backup placeholder %q: %w", name, cleanupErr),
+			)
+		}
+		return "", fmt.Errorf("close output backup %q: %w", name, err)
 	}
-	if err := os.Remove(name); err != nil {
-		return "", err
+	if err := removeOutputFile(name); err != nil {
+		return "", fmt.Errorf("remove output backup placeholder %q: %w", name, err)
 	}
 	return name, nil
 }
@@ -471,7 +481,7 @@ func replaceOutputFile(tempPath, destination string) error {
 		}
 		return fmt.Errorf("install output %q: %w", destination, err)
 	}
-	if err := os.Remove(backup); err != nil {
+	if err := removeOutputFile(backup); err != nil {
 		return fmt.Errorf("remove replaced output backup %q: %w", backup, err)
 	}
 	return nil
@@ -487,11 +497,19 @@ func writeOutputFile(path string, perm os.FileMode, write func(*os.File) error) 
 	}
 	temporaryPath := temporary.Name()
 	defer func() {
+		var cleanupErr error
 		if temporary != nil {
-			_ = temporary.Close()
+			if closeErr := closeOutputFile(temporary); closeErr != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("close temporary output %q: %w", temporaryPath, closeErr))
+			}
 		}
 		if temporaryPath != "" {
-			_ = os.Remove(temporaryPath)
+			if removeErr := removeOutputFile(temporaryPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove temporary output %q: %w", temporaryPath, removeErr))
+			}
+		}
+		if cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
 		}
 	}()
 	if err := temporary.Chmod(perm); err != nil {
@@ -500,8 +518,8 @@ func writeOutputFile(path string, perm os.FileMode, write func(*os.File) error) 
 	if err := write(temporary); err != nil {
 		return err
 	}
-	if err := temporary.Close(); err != nil {
-		return err
+	if err := closeOutputFile(temporary); err != nil {
+		return fmt.Errorf("close temporary output %q: %w", temporaryPath, err)
 	}
 	temporary = nil
 	if err := replaceOutputFile(temporaryPath, path); err != nil {
@@ -522,8 +540,13 @@ func packageLibrary(libraryPath, archivePath string) error {
 	if err != nil {
 		return fmt.Errorf("stat library %s: %w", filepath.ToSlash(libraryPath), err)
 	}
-	if err := writeOutputFile(archivePath, 0o644, func(archive *os.File) error {
+	if err := writeOutputFile(archivePath, 0o644, func(archive *os.File) (err error) {
 		writer := zip.NewWriter(archive)
+		defer func() {
+			if closeErr := closeZipWriter(writer); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close zip writer: %w", closeErr))
+			}
+		}()
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return fmt.Errorf("create zip header: %w", err)
@@ -539,11 +562,8 @@ func packageLibrary(libraryPath, archivePath string) error {
 		if _, err := io.Copy(entry, library); err != nil {
 			return fmt.Errorf("write zip entry %s: %w", header.Name, err)
 		}
-		if err := addOptionalFile(writer, "LICENSE"); err != nil {
+		if err := addOptionalArchiveFile(writer, "LICENSE"); err != nil {
 			return err
-		}
-		if err := writer.Close(); err != nil {
-			return fmt.Errorf("close zip writer: %w", err)
 		}
 		return nil
 	}); err != nil {
