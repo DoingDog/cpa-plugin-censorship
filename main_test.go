@@ -610,6 +610,13 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.",
 		"An unknown external hard-link peer of an existing destination is not modified",
 	}
+	forbidden := []string{
+		"request-only; does not inspect model output",
+		"length-changing rewrite to annotated Interactions",
+		"## Seven-platform aggregate",
+		"aggregate packaging run covers all seven supported platform",
+		"and every model response",
+	}
 	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
 		raw, err := os.ReadFile(name)
 		if err != nil {
@@ -619,6 +626,11 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		for _, token := range required {
 			if !bytes.Contains(raw, []byte(token)) {
 				t.Errorf("%s missing %q", name, token)
+			}
+		}
+		for _, token := range forbidden {
+			if bytes.Contains(raw, []byte(token)) {
+				t.Errorf("%s contains superseded %q", name, token)
 			}
 		}
 	}

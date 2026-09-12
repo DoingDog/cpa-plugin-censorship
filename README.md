@@ -122,7 +122,7 @@ Machine exclusions: tool calls, machine schema values, arguments, reasoning, thi
 
 Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.
 
-This also excludes tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude unselected tool-result fields, Gemini `functionResponse`, Interactions function/tool data, and every model response.
+This also excludes tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude unselected tool-result fields, Gemini `functionResponse`, Interactions function/tool data, and every live/current model response and response event. Explicit historical output fields replayed inside a later request remain governed by the request selectors and assistant scope already documented.
 
 Gemini machine exclusions include camelCase and snake_case non-null function, media, file, and code carriers; signature values remain excluded without excluding same-Part visible text. Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Unknown SourceFormat, roles, item types, content blocks, and future protocol shapes are left unchanged.
 
