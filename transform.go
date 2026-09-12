@@ -227,6 +227,11 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 		}
 	}
 
+	original := make([]string, len(spans))
+	for i := range spans {
+		original[i] = spans[i].Text
+	}
+
 	if cfg.IgnoreCase && cfg.RewriteMatcher != nil {
 		for i := range spans {
 			spans[i].SkipFoldRewrite = false
@@ -240,7 +245,6 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 		}
 	}
 
-	changed := false
 	for _, rule := range cfg.Rules[blockEnd:stripEnd] {
 		for i := range spans {
 			if cfg.IgnoreCase && spans[i].SkipFoldRewrite {
@@ -249,8 +253,6 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 			text, matched := stripRule(spans[i].Text, rule, cfg.IgnoreCase)
 			if matched {
 				spans[i].Text = text
-				spans[i].Changed = true
-				changed = true
 			}
 		}
 	}
@@ -262,10 +264,13 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 			text, matched := obfuscateRule(spans[i].Text, rule, cfg.IgnoreCase, cfg.ObfsChar)
 			if matched {
 				spans[i].Text = text
-				spans[i].Changed = true
-				changed = true
 			}
 		}
+	}
+	changed := false
+	for i := range spans {
+		spans[i].Changed = spans[i].Text != original[i]
+		changed = changed || spans[i].Changed
 	}
 	return nil, changed
 }

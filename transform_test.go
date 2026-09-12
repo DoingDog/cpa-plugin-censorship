@@ -53,6 +53,14 @@ func assertBlockedRole(t *testing.T, sourceFormat, body, wantRole string) {
 	}
 }
 
+func TestSignedRewriteCancellationLeavesRequestUntouched(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [\"​\"]\n  obfs: [ab]\nscope:\n  roles: [assistant]\n")
+	resp := interceptRPC(t, "gemini", []byte(`{"contents":[{"role":"model","parts":[{"text":"a​b","thoughtSignature":"c2ln"}]}]}`))
+	if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestMixedRulesBlockOriginalTextBeforeRewrites(t *testing.T) {
 	cfg := &configSnapshot{
 		Mode: modeStrip,
