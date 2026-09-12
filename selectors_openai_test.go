@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestOpenAISelectorChangesOnlyContractedStringTokens(t *testing.T) {
@@ -23,7 +25,7 @@ func TestOpenAISelectorChangesOnlyContractedStringTokens(t *testing.T) {
     {"content":"SECRET missing role"},
     {"role":"user","content":123}
   ],
-  "tools":[{"type":"function","function":{"name":"SECRET","description":"SECRET","parameters":{"SECRET":"SECRET"}}}],
+  "tools":[{"type":"function","function":{"name":"SECRET tool name","description":"SECRET tool description","parameters":{"SECRET property":"SECRET schema value"}}}],
   "tool_calls":[{"function":{"name":"SECRET","arguments":"{\"text\":\"SECRET\"}"}}],
   "image":"data:image/png;base64,%s"
 }`, base64Payload))
@@ -37,6 +39,7 @@ func TestOpenAISelectorChangesOnlyContractedStringTokens(t *testing.T) {
 		rawReplacement{Before: `"SECRET user"`, After: `" user"`},
 		rawReplacement{Before: `"SECRET assistant"`, After: `" assistant"`},
 		rawReplacement{Before: `"SECRET tool"`, After: `" tool"`},
+		rawReplacement{Before: `"SECRET tool description"`, After: `" tool description"`},
 		rawReplacement{Before: `"SECRET excluded tool array"`, After: `" excluded tool array"`},
 	)
 	if !bytes.Equal(resp.Body, want) {
@@ -290,6 +293,7 @@ func TestOpenAIResponsesOutputRoleGate(t *testing.T) {
 			body: []byte(`{"input":[{"type":"mcp_list_tools","id":"SECRET list id","server_label":"SECRET server","error":"SECRET list error","tools":[{"name":"SECRET tool","description":"SECRET description","input_schema":{"note":"SECRET schema"}}]}]}`),
 			replacements: []rawReplacement{
 				{Before: `"SECRET list error"`, After: `" list error"`},
+				{Before: `"SECRET description"`, After: `" description"`},
 			},
 		},
 		{
@@ -409,6 +413,125 @@ func TestOpenAIChatModelVisibleDefinitionsUseDeclaredRoles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { assertBlockedRole(t, "openai", tc.body, tc.role) })
+	}
+}
+
+func TestOpenAIChatDefinitionRewritePhasesPreserveMachineFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, replacement string
+	}{
+		{name: "block", config: "mode: block\nwords: [SECRET]\nscope:\n  roles: [developer]\n"},
+		{name: "strip", config: "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n", replacement: " description"},
+		{name: "obfs", config: "mode: obfs\nwords: [SECRET]\nscope:\n  roles: [developer]\n", replacement: "S​ECRET description"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, tc.config)
+			body := []byte(`{"tools":[{"type":"function","function":{"name":"SECRET name","description":"SECRET description","parameters":{"type":"object","properties":{"SECRET property":{"type":"string"}},"x-grammar":"SECRET grammar"}}}],"tool_calls":[{"function":{"arguments":"SECRET arguments"}}]}`)
+			resp := interceptRPC(t, "openai", body)
+			if tc.name == "block" {
+				if !resp.Terminate || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "developer" {
+					t.Fatalf("response = %#v", resp)
+				}
+				return
+			}
+			want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET description"`, After: `"` + tc.replacement + `"`})
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesModelVisibleDefinitionsUseDeclaredRoles(t *testing.T) {
+	cases := []struct {
+		name, body, role string
+	}{
+		{
+			name: "prompt scalar variable",
+			body: `{"prompt":{"id":"pmpt_safe","variables":{"customer":"SECRET"}}}`,
+			role: "user",
+		},
+		{
+			name: "prompt typed variable",
+			body: `{"prompt":{"id":"pmpt_safe","variables":{"customer":{"type":"input_text","text":"SECRET"}}}}`,
+			role: "user",
+		},
+		{
+			name: "text format",
+			body: `{"text":{"format":{"type":"json_schema","name":"safe","description":"SECRET","schema":{"type":"object","description":"SECRET"}}}}`,
+			role: "developer",
+		},
+		{
+			name: "top level function",
+			body: `{"tools":[{"type":"function","name":"safe","description":"SECRET","parameters":{"type":"object","description":"SECRET"},"output_schema":{"type":"object","description":"SECRET"}}]}`,
+			role: "developer",
+		},
+		{
+			name: "top level custom",
+			body: `{"tools":[{"type":"custom","name":"safe","description":"SECRET","format":{"type":"grammar","definition":"SECRET"}}]}`,
+			role: "developer",
+		},
+		{
+			name: "namespace child",
+			body: `{"tools":[{"type":"namespace","name":"safe","description":"SECRET","tools":[{"type":"function","name":"child","description":"SECRET"}]}]}`,
+			role: "developer",
+		},
+		{
+			name: "tool search",
+			body: `{"tools":[{"type":"tool_search","description":"SECRET","parameters":{"type":"object","description":"SECRET"}}]}`,
+			role: "developer",
+		},
+		{
+			name: "mcp",
+			body: `{"tools":[{"type":"mcp","server_label":"safe","server_description":"SECRET","server_url":"https://SECRET.invalid"}]}`,
+			role: "developer",
+		},
+		{
+			name: "additional tools",
+			body: `{"input":[{"type":"additional_tools","role":"assistant","tools":[{"type":"function","name":"safe","description":"SECRET"}]}]}`,
+			role: "assistant",
+		},
+		{
+			name: "loaded tool search",
+			body: `{"input":[{"type":"tool_search_output","tools":[{"type":"function","name":"safe","description":"SECRET"}]}]}`,
+			role: "tool",
+		},
+		{
+			name: "mcp list tools",
+			body: `{"input":[{"type":"mcp_list_tools","tools":[{"name":"safe","description":"SECRET","input_schema":{"type":"object","description":"SECRET"}}]}]}`,
+			role: "tool",
+		},
+		{
+			name: "local skill",
+			body: `{"tools":[{"type":"shell","environment":{"type":"local","skills":[{"name":"safe","description":"SECRET","path":"/SECRET/path"}]}}]}`,
+			role: "user",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) { assertBlockedRole(t, "openai-response", tc.body, tc.role) })
+	}
+}
+
+func TestOpenAIResponsesAdditionalToolsSkipsUnsupportedRoles(t *testing.T) {
+	for _, role := range []string{"unknown", "critic", "discriminator", "future"} {
+		t.Run(role, func(t *testing.T) {
+			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, developer, user, assistant, tool]\n")
+			body := []byte(`{"input":[{"type":"additional_tools","role":"` + role + `","tools":[{"type":"function","name":"SECRET","description":"SECRET","parameters":{"type":"object","description":"SECRET"}}]}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			if resp.Terminate || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v", resp)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesDefinitionRewritePreservesMachineFields(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [tool]\n")
+	body := []byte(`{"input":[{"type":"tool_search_output","tools":[{"type":"function","name":"SECRET name","description":"SECRET description","parameters":{"type":"object","properties":{"SECRET property":{"type":"string","enum":["SECRET enum"],"default":"SECRET default","examples":["SECRET example"]}}}}],"arguments":"SECRET arguments","input":"SECRET input"}],"reasoning":{"summary":"SECRET reasoning","encrypted_content":"SECRET encrypted"}}`)
+	resp := interceptRPC(t, "openai-response", body)
+	want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET description"`, After: `" description"`})
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
 	}
 }
 

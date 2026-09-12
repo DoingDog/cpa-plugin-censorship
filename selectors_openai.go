@@ -163,6 +163,59 @@ func appendOpenAIResponsesInputTextOutput(output gjson.Result, roles scopeSet, s
 	})
 }
 
+func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role string, roles scopeSet) {
+	if !tool.IsObject() || !roles.has(role) {
+		return
+	}
+	switch tool.Get("type").Str {
+	case "function":
+		appendStringSpan(spans, tool.Get("description"), role, roles)
+		appendJSONSchemaDescriptions(spans, tool.Get("parameters"), role, roles)
+		appendJSONSchemaDescriptions(spans, tool.Get("output_schema"), role, roles)
+	case "custom":
+		appendStringSpan(spans, tool.Get("description"), role, roles)
+	case "namespace":
+		appendStringSpan(spans, tool.Get("description"), role, roles)
+		children := tool.Get("tools")
+		if children.IsArray() {
+			children.ForEach(func(_, child gjson.Result) bool {
+				collectOpenAIResponsesTool(spans, child, role, roles)
+				return true
+			})
+		}
+	case "tool_search":
+		appendStringSpan(spans, tool.Get("description"), role, roles)
+		appendJSONSchemaDescriptions(spans, tool.Get("parameters"), role, roles)
+	case "mcp":
+		appendStringSpan(spans, tool.Get("server_description"), role, roles)
+	case "shell":
+		environment := tool.Get("environment")
+		if environment.Get("type").Str != "local" || !roles.has("user") {
+			return
+		}
+		skills := environment.Get("skills")
+		if skills.IsArray() {
+			skills.ForEach(func(_, skill gjson.Result) bool {
+				appendStringSpan(spans, skill.Get("description"), "user", roles)
+				return true
+			})
+		}
+	}
+}
+
+func openAIAdditionalToolsRole(item gjson.Result) (string, bool) {
+	role := item.Get("role")
+	if role.Type != gjson.String {
+		return "", false
+	}
+	switch role.Str {
+	case "system", "developer", "user", "assistant", "tool":
+		return role.Str, true
+	default:
+		return "", false
+	}
+}
+
 func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *[]textSpan) bool {
 	itemType := item.Get("type")
 	if itemType.Type != gjson.String {
@@ -207,6 +260,38 @@ func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *
 	case "mcp_list_tools":
 		if roles.has("tool") {
 			appendStringSpan(spans, item.Get("error"), "tool", roles)
+			tools := item.Get("tools")
+			if tools.IsArray() {
+				tools.ForEach(func(_, tool gjson.Result) bool {
+					appendStringSpan(spans, tool.Get("description"), "tool", roles)
+					appendJSONSchemaDescriptions(spans, tool.Get("input_schema"), "tool", roles)
+					return true
+				})
+			}
+		}
+		return true
+	case "additional_tools":
+		role, ok := openAIAdditionalToolsRole(item)
+		if !ok {
+			return true
+		}
+		tools := item.Get("tools")
+		if tools.IsArray() {
+			tools.ForEach(func(_, tool gjson.Result) bool {
+				collectOpenAIResponsesTool(spans, tool, role, roles)
+				return true
+			})
+		}
+		return true
+	case "tool_search_output":
+		if roles.has("tool") {
+			tools := item.Get("tools")
+			if tools.IsArray() {
+				tools.ForEach(func(_, tool gjson.Result) bool {
+					collectOpenAIResponsesTool(spans, tool, "tool", roles)
+					return true
+				})
+			}
 		}
 		return true
 	case "program_output":
@@ -247,9 +332,49 @@ func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *
 	}
 }
 
+func collectOpenAIResponsesPromptVariables(spans *[]textSpan, root gjson.Result, roles scopeSet) {
+	if !roles.has("user") {
+		return
+	}
+	variables := root.Get("prompt.variables")
+	if !variables.IsObject() {
+		return
+	}
+	variables.ForEach(func(_, value gjson.Result) bool {
+		appendStringSpan(spans, value, "user", roles)
+		if value.IsObject() && value.Get("type").Str == "input_text" {
+			appendStringSpan(spans, value.Get("text"), "user", roles)
+		}
+		if value.IsArray() {
+			value.ForEach(func(_, part gjson.Result) bool {
+				if part.Get("type").Str == "input_text" {
+					appendStringSpan(spans, part.Get("text"), "user", roles)
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
+
 func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	if roles.has("system") {
 		appendStringSpan(spans, root.Get("instructions"), "system", roles)
+	}
+	collectOpenAIResponsesPromptVariables(spans, root, roles)
+	if roles.has("developer") {
+		format := root.Get("text.format")
+		if format.Get("type").Str == "json_schema" {
+			appendStringSpan(spans, format.Get("description"), "developer", roles)
+			appendJSONSchemaDescriptions(spans, format.Get("schema"), "developer", roles)
+		}
+		tools := root.Get("tools")
+		if tools.IsArray() {
+			tools.ForEach(func(_, tool gjson.Result) bool {
+				collectOpenAIResponsesTool(spans, tool, "developer", roles)
+				return true
+			})
+		}
 	}
 	input := root.Get("input")
 	if input.Type == gjson.String && roles.has("user") {
