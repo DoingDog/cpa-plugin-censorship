@@ -321,6 +321,41 @@ func TestRebuildBodyUsesEncoderDefaultEscaping(t *testing.T) {
 }
 
 var rebuildBodyAllocationSink []byte
+var applyModeAllocationSink bool
+
+func TestApplyModeNonmatchingSinglePhaseDoesNotAllocate(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation ceilings are measured without race instrumentation")
+	}
+	const spanCount = 10_000
+	tests := []struct {
+		name, yaml string
+	}{
+		{name: "block", yaml: "mode: block\nwords: [blocked]\n"},
+		{name: "strip", yaml: "mode: strip\nwords: [stripped]\n"},
+		{name: "obfs", yaml: "mode: obfs\nwords: [obfuscated]\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := mustConfig(t, test.yaml)
+			spans := make([]textSpan, spanCount)
+			for i := range spans {
+				spans[i].Text = "safe"
+			}
+
+			allocations := testing.AllocsPerRun(100, func() {
+				blocked, changed := applyMode(spans, cfg)
+				applyModeAllocationSink = blocked != nil || changed
+			})
+			if applyModeAllocationSink {
+				t.Fatal("applyMode() reported a match for safe spans")
+			}
+			if allocations != 0 {
+				t.Fatalf("allocations = %.1f, want 0", allocations)
+			}
+		})
+	}
+}
 
 func TestRebuildBodyAllocationCeiling(t *testing.T) {
 	if raceDetectorEnabled {
