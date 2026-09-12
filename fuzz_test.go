@@ -359,6 +359,25 @@ func TestOracleApplyMixedRules(t *testing.T) {
 	}
 }
 
+func TestOracleApplyTracksFinalRewriteState(t *testing.T) {
+	cfg := &configSnapshot{
+		Mode:      modeBlock,
+		Rules:     []compiledRule{{Term: "​"}, {Term: "ab"}},
+		BlockEnd:  0,
+		StripEnd:  1,
+		rangesSet: true,
+		ObfsChar:  "​",
+	}
+	if err := compileSnapshot(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	got := oracleApply([]string{"a​b"}, cfg)
+	if got.Changed || got.SpanChanged[0] {
+		t.Fatalf("oracle retained intermediate rewrite state: %#v", got)
+	}
+}
+
 func FuzzRuleEngineAgainstOracle(f *testing.F) {
 	for _, seed := range []struct {
 		text, terms string
@@ -2410,8 +2429,6 @@ func oracleApply(texts []string, cfg *configSnapshot) fuzzRuleResult {
 				next := oracleStrip(text, rule.Term, cfg.IgnoreCase)
 				if next != text {
 					result.Texts[i] = next
-					result.SpanChanged[i] = true
-					result.Changed = true
 				}
 			}
 		}
@@ -2420,45 +2437,43 @@ func oracleApply(texts []string, cfg *configSnapshot) fuzzRuleResult {
 				next := oracleObfuscate(text, rule.Term, cfg.IgnoreCase, cfg.ObfsChar)
 				if next != text {
 					result.Texts[i] = next
-					result.SpanChanged[i] = true
-					result.Changed = true
 				}
 			}
 		}
-		return result
+	} else {
+		switch cfg.Mode {
+		case modeBlock:
+			for _, rule := range cfg.Rules {
+				for i, text := range result.Texts {
+					if oracleContains(text, rule.Term, cfg.IgnoreCase) {
+						result.Blocked = &fuzzBlock{Term: rule.Term, Role: fuzzRole(i)}
+						return result
+					}
+				}
+			}
+		case modeStrip:
+			for _, rule := range cfg.Rules {
+				for i, text := range result.Texts {
+					next := oracleStrip(text, rule.Term, cfg.IgnoreCase)
+					if next != text {
+						result.Texts[i] = next
+					}
+				}
+			}
+		case modeObfs:
+			for _, rule := range cfg.Rules {
+				for i, text := range result.Texts {
+					next := oracleObfuscate(text, rule.Term, cfg.IgnoreCase, cfg.ObfsChar)
+					if next != text {
+						result.Texts[i] = next
+					}
+				}
+			}
+		}
 	}
-	switch cfg.Mode {
-	case modeBlock:
-		for _, rule := range cfg.Rules {
-			for i, text := range result.Texts {
-				if oracleContains(text, rule.Term, cfg.IgnoreCase) {
-					result.Blocked = &fuzzBlock{Term: rule.Term, Role: fuzzRole(i)}
-					return result
-				}
-			}
-		}
-	case modeStrip:
-		for _, rule := range cfg.Rules {
-			for i, text := range result.Texts {
-				next := oracleStrip(text, rule.Term, cfg.IgnoreCase)
-				if next != text {
-					result.Texts[i] = next
-					result.SpanChanged[i] = true
-					result.Changed = true
-				}
-			}
-		}
-	case modeObfs:
-		for _, rule := range cfg.Rules {
-			for i, text := range result.Texts {
-				next := oracleObfuscate(text, rule.Term, cfg.IgnoreCase, cfg.ObfsChar)
-				if next != text {
-					result.Texts[i] = next
-					result.SpanChanged[i] = true
-					result.Changed = true
-				}
-			}
-		}
+	for i := range result.Texts {
+		result.SpanChanged[i] = result.Texts[i] != texts[i]
+		result.Changed = result.Changed || result.SpanChanged[i]
 	}
 	return result
 }
