@@ -7,6 +7,51 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestInteractionsAnnotatedModelOutputRejectsRewrite(t *testing.T) {
+	registerConfig(t, "words:\n  obfs: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"input":[{"type":"model_output","content":[{"type":"text","text":"SECRET","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}]}]}`)
+
+	resp := interceptRPC(t, "interactions", body)
+	if !resp.Terminate || resp.StatusCode != 400 || len(resp.Body) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got := gjson.GetBytes(resp.ResponseBody, "error.code").String(); got != "censorship_invalid_request" {
+		t.Fatalf("error code = %q, want %q", got, "censorship_invalid_request")
+	}
+	if got := gjson.GetBytes(resp.ResponseBody, "error.message").String(); got != "censorship cannot rewrite annotated text" {
+		t.Fatalf("error message = %q, want %q", got, "censorship cannot rewrite annotated text")
+	}
+}
+
+func TestInteractionsAnnotatedModelOutputStillBlocks(t *testing.T) {
+	registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"input":[{"type":"model_output","content":[{"type":"text","text":"SECRET","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}]}]}`)
+
+	resp := interceptRPC(t, "interactions", body)
+	if !resp.Terminate || resp.StatusCode != 400 {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got := gjson.GetBytes(resp.ResponseBody, "error.term").String(); got != "SECRET" {
+		t.Fatalf("error term = %q, want %q", got, "SECRET")
+	}
+	if got := gjson.GetBytes(resp.ResponseBody, "error.role").String(); got != "assistant" {
+		t.Fatalf("error role = %q, want %q", got, "assistant")
+	}
+}
+
+func TestInteractionsEmptyAnnotationsRemainRewritable(t *testing.T) {
+	registerConfig(t, "words:\n  obfs: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"input":[{"type":"model_output","content":[{"type":"text","text":"SECRET","annotations":[]}]}]}`)
+
+	resp := interceptRPC(t, "interactions", body)
+	if resp.Terminate {
+		t.Fatalf("response = %#v", resp)
+	}
+	if got := gjson.GetBytes(resp.Body, "input.0.content.0.text").String(); got != "S​ECRET" {
+		t.Fatalf("text = %q, want %q", got, "S​ECRET")
+	}
+}
+
 func TestInteractionsSelectorRowsRoleInheritanceAndExclusions(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, user, assistant, tool]\n")
 	body := []byte(`{

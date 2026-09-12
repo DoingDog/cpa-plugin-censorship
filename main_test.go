@@ -544,7 +544,8 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer handling",
 		"https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png",
 		"no custom panel, menu, or Management API",
-		"request-only; never inspects or changes model output",
+		"request-only; does not inspect live model output, response bodies, SSE output, or server WebSocket output.",
+		"Explicit historical output fields replayed as later request input may be inspected under assistant scope.",
 		"`enabled`: boolean; host-owned",
 		"`mode`: string; default `block`",
 		"`ignore_case`: boolean; default `false`",
@@ -562,6 +563,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"`obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`",
 		"block checks rules before document order and returns the YAML term with canonical role",
 		"strip and obfs process all leftmost non-overlapping occurrences before the next rule",
+		"A final text or byte change to annotated Interactions `model_output.content` with non-empty annotations returns local `censorship_invalid_request`; exact cancellation back to the original bytes is allowed.",
 		"obfs preserves original case and inserts after the first Unicode scalar",
 		"unicode.SimpleFold",
 		"Alpha/aLPHA",
@@ -600,12 +602,20 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"censorship rewrite would make a text field invalid",
 		"0.0.0-dev",
 		"aggregate packaging",
+		"An aggregate packaging run covers exactly its present source platforms; a complete GitHub release/workflow contains all seven supported platform lines and assets.",
 		"signed-history prefix",
 		"The signature field and value remain excluded, but a non-null `thoughtSignature`",
 		"Scalar Claude user content cannot be stripped to empty",
 		"Responses prompt variables and local shell skill descriptions use canonical `user`",
 		"Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.",
 		"An unknown external hard-link peer of an existing destination is not modified",
+	}
+	forbidden := []string{
+		"request-only; does not inspect model output",
+		"length-changing rewrite to annotated Interactions",
+		"## Seven-platform aggregate",
+		"aggregate packaging run covers all seven supported platform",
+		"and every model response",
 	}
 	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
 		raw, err := os.ReadFile(name)
@@ -618,6 +628,11 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 				t.Errorf("%s missing %q", name, token)
 			}
 		}
+		for _, token := range forbidden {
+			if bytes.Contains(raw, []byte(token)) {
+				t.Errorf("%s contains superseded %q", name, token)
+			}
+		}
 	}
 }
 
@@ -626,10 +641,10 @@ func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.2.4 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.4")
+	if !bytes.Contains(raw, []byte("v0.2.5 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.5")
 	}
-	if bytes.Contains(raw, []byte("v0.2.3 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.3")
+	if bytes.Contains(raw, []byte("v0.2.4 targets CLIProxyAPI v7.2.152")) {
+		t.Fatal("RELEASE_NOTES.md still targets CLIProxyAPI v7.2.152 for v0.2.4")
 	}
 }

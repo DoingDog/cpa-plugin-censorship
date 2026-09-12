@@ -1,19 +1,21 @@
-# Censorship v0.2.4
+# Censorship v0.2.5
 
-## v0.2.4 fixes
+## v0.2.5 fixes
 
-- Inspects visible Gemini text that carries a thought-signature carrier. `block` still blocks it; matching `strip` or `obfs` returns local `censorship_invalid_request` instead of changing signature-bound text.
-- Rejects a full `strip` rewrite of scalar Claude user content before an invalid empty text request reaches the provider.
-- Inspects documented OpenAI Chat prediction and definition text plus Responses prompt variables, schema descriptions, replayed definitions, and local skill descriptions without selecting machine fields.
-- Replaces release archive, sidecar, and aggregate checksum directory entries through same-directory temporary files and backups, preserving unknown hard-link peers.
+- Calculates rewrite state from final text. A rewrite that cancels back to the original bytes returns no replacement body and does not trigger an immutable-text error.
+- Protects annotated Interactions `model_output.content` text: `block` remains allowed. A final text or byte change to annotated Interactions `model_output.content` with non-empty annotations returns local `censorship_invalid_request`; exact cancellation back to the original bytes is allowed. Empty annotations remain rewritable.
+- Keeps long folded rewrites on the KMP path after adjacent leading matches instead of rescanning a near-miss tail.
+- Deletes current-version stale ZIP and checksum sidecars when aggregate packaging reruns without a source platform, while retaining other-version and unknown output files.
+- Overwrites release assets only while an existing release is draft. Published reruns update notes and verify rather than overwrite public assets.
+- Downloads all remote release assets, compares their file set and bytes with `release/`, then verifies individual `.zip.sha256` files and aggregate `checksums.txt` before publication or on a published rerun.
 
 Claims below are limited to verified behavior.
 
-Censorship remains a pure CLIProxyAPI `RequestInterceptor`: it is request-only; never inspects or changes model output, response bodies, SSE chunks, or server WebSocket events. It has no custom panel, menu, or Management API.
+Censorship remains a pure CLIProxyAPI `RequestInterceptor`: it is request-only; does not inspect live model output, response bodies, SSE output, or server WebSocket output. Explicit historical output fields replayed as later request input may be inspected under assistant scope. It has no custom panel, menu, or Management API.
 
 ## Compatibility
 
-v0.2.4 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.2.5 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Object configuration panel
 
@@ -76,7 +78,9 @@ With `ignore_case: false`, matching is a case-sensitive literal substring operat
 - Kelvin sign `K` matches `K`.
 - straße/STRASSE does not match because full case folding can change scalar count.
 
-There is no Unicode normalization and no full case folding. `strip` removes the actual source bytes; obfs preserves original case and inserts after the first Unicode scalar.
+There is no Unicode normalization and no full case folding. `strip` removes the actual source bytes; obfs preserves original case and inserts after the first Unicode scalar. Long folded rewrites remain on the KMP scan after adjacent leading matches instead of rescanning a near-miss tail.
+
+Rewrite state is calculated from each span's final text. A rewrite that cancels back to the original bytes returns no replacement body and does not trigger a signature-bound or annotated-text immutable-text error.
 
 ## Explicit provider paths
 
@@ -85,7 +89,7 @@ Selectors enter only documented text leaves; there is no recursive fallback stri
 - OpenAI explicit text paths: Chat `messages[*]` string `content`, typed `text` content parts, `refusal` text, `prediction.content` only when `prediction.type == "content"`, documented `tool` and legacy `function` result text, legacy `functions[*]` descriptions/schema descriptions, `tools[*].function` and `tools[*].custom` descriptions/schema descriptions, and `response_format.json_schema` descriptions/schema descriptions. Chat prediction uses canonical `assistant`; Chat definitions use canonical `developer`. Responses top-level `instructions`, top-level string `input`, message `content`, `input_text`, `output_text`, and `refusal`, `prompt.variables` scalar or `input_text` values, `text.format` JSON-schema descriptions, top-level tool descriptions/schema descriptions, `additional_tools` definitions with only documented canonical roles, and `tool_search_output`/`mcp_list_tools` loaded definitions, plus documented `function`, `custom-tool`, `shell`, `apply-patch`, `MCP`, and `program` result-output text: `program_output.result`, `mcp_call.output`, `mcp_call.error.message` only for `mcp_protocol_error` and `http_error`, scalar `mcp_list_tools.error`, `file_search_call.results[*].text`, and `code_interpreter_call.outputs[type=logs].logs`. Responses prompt variables and local shell skill descriptions use canonical `user`; text format and top-level definitions use canonical `developer`; loaded definitions and result-text leaves use canonical `tool`; `additional_tools` uses only its exact documented canonical role. Legacy `/v1/completions` prompts arrive as canonical `user` messages after CPA conversion. Unsupported error/output variants and machine siblings remain unchanged.
 - Claude explicit text paths: top-level string or typed-text `system`, enabled message string or typed-text content, direct user `search_result.title`, `document.title`, `document.context`, and scalar `document.source.content` when `source.type == "content"`, and a user `tool_result`'s string content or nested `text`, `search_result`, and `document` text. Direct user blocks use `user` and nested tool-result blocks use `tool`.
 - Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role. The signature field and value remain excluded, but a non-null `thoughtSignature`, `thought_signature`, or `extra_content.google.thought_signature` does not exclude visible text in the same Part. A JSON `null` carrier is unset. A non-null function, media, file, or code carrier still excludes the whole Part. A matching `block` handles signed visible text normally; a matching `strip` or `obfs` never changes it and returns local `censorship_invalid_request` with `censorship cannot rewrite signature-bound text`.
-- Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content.
+- Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content. Annotated `model_output.content` text remains blockable. A final text or byte change to annotated Interactions `model_output.content` with non-empty annotations returns local `censorship_invalid_request`; exact cancellation back to the original bytes is allowed. Empty annotations add no restriction.
 
 OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Gemini `model` maps to `assistant`.
 
@@ -97,7 +101,7 @@ Machine exclusions: tool calls, machine schema values, arguments, reasoning, thi
 
 Machine arguments, grammar definitions, names, IDs, paths, schema values, and reasoning state remain excluded.
 
-Tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude unselected tool-result fields, Gemini `functionResponse`, Interactions function/tool data, and every model response remain excluded. Gemini machine exclusions include camelCase and snake_case non-null function, media, file, and code carriers; signature values remain excluded without excluding same-Part visible text.
+Tool names and IDs, protocol discriminators, model names, metadata, control fields, thought signatures, URL/media fields, multipart headers and boundaries, function-call arguments, Claude unselected tool-result fields, Gemini `functionResponse`, Interactions function/tool data, and every live/current model response and response event remain excluded. Explicit historical output fields replayed inside a later request remain governed by the request selectors and assistant scope already documented. Gemini machine exclusions include camelCase and snake_case non-null function, media, file, and code carriers; signature values remain excluded without excluding same-Part visible text.
 
 Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Unknown SourceFormat, roles, item types, content blocks, and future protocol shapes are left unchanged. Enabled known formats reject JSON objects with duplicate member names at any nesting depth. JSON text inside a string remains ordinary text rather than a nested request object. Scalar Claude user content cannot be stripped to empty: a matching rewrite terminates locally with `censorship_invalid_request`: censorship rewrite would make a text field invalid. The same response applies if a rewrite empties a Claude `TextBlockParam.text`, present `document.title`, or present `document.context`.
 
@@ -131,7 +135,7 @@ The integration harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer h
 
 ## Artifacts
 
-Seven platform archives are produced:
+A complete GitHub release/workflow produces seven platform archives:
 
 ```plaintext
 censorship_<version>_<goos>_<goarch>.zip
@@ -140,4 +144,6 @@ censorship_<version>_<goos>_<goarch>.zip.sha256
 
 Supported tuples are `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`, `windows/amd64`, `windows/arm64`, and `freebsd/amd64`. Raw tag, `VERSION`, and packager `-version` inputs must be safe ASCII filename components. One lowercase ASCII `v` is then removed exactly once.
 
-Direct and aggregate packaging rejects library/archive/checksum input/output aliases and aliases of known release outputs before changing those paths. Direct `-library`/`-archive`/`-checksum` mode rejects archive/checksum symlinks, known hard links, junctions, and ASCII case aliases. An unknown external hard-link peer of an existing destination is not modified: packaging replaces only the destination directory entry. Packaging produces deterministic ZIP archives. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. `checksums.txt` aggregates all seven lines.
+Direct and aggregate packaging rejects library/archive/checksum input/output aliases and aliases of known release outputs before changing those paths. Direct `-library`/`-archive`/`-checksum` mode rejects archive/checksum symlinks, known hard links, junctions, and ASCII case aliases. An unknown external hard-link peer of an existing destination is not modified: packaging replaces only the destination directory entry. Packaging produces deterministic ZIP archives. Each ZIP contains the platform library and an optional repository `LICENSE` if one exists. Each `.zip.sha256` line contains 64 lowercase hex characters, two spaces, and the archive basename. An aggregate packaging run covers exactly its present source platforms; a complete GitHub release/workflow contains all seven supported platform lines and assets. Aggregate packaging deletes a current-version ZIP and sidecar checksum when its source platform is absent on a rerun; other-version and unknown output files remain unchanged.
+
+The release workflow overwrites assets only for an existing draft. A published-release rerun updates notes, downloads the remote assets, compares their exact files and bytes with `release/`, and verifies every sidecar checksum plus aggregate `checksums.txt` without overwriting public assets.

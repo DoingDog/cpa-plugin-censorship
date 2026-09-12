@@ -2,6 +2,21 @@ package main
 
 import "github.com/tidwall/gjson"
 
+func appendInteractionTextPart(spans *[]textSpan, part gjson.Result, role string, roles scopeSet) {
+	text, allowed, _ := scanTextPart(part, true)
+	if !allowed {
+		return
+	}
+	before := len(*spans)
+	appendStringSpan(spans, text, role, roles)
+	annotations := part.Get("annotations")
+	if len(*spans) != before && annotations.IsArray() && annotations.Get("#").Int() > 0 {
+		span := &(*spans)[len(*spans)-1]
+		span.RequiresUnmodified = true
+		span.UnmodifiedMessage = "censorship cannot rewrite annotated text"
+	}
+}
+
 func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	if roles.has("system") {
 		systemInstruction := root.Get("system_instruction")
@@ -12,17 +27,11 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		case systemInstruction.Type == gjson.String:
 			appendStringSpan(spans, systemInstruction, "system", roles)
 		case systemInstruction.IsObject():
-			text, allowed, _ := scanTextPart(systemInstruction, true)
-			if allowed {
-				appendStringSpan(spans, text, "system", roles)
-			}
+			appendInteractionTextPart(spans, systemInstruction, "system", roles)
 			parts := systemInstruction.Get("parts")
 			if parts.IsArray() {
 				parts.ForEach(func(_, part gjson.Result) bool {
-					text, allowed, _ := scanTextPart(part, true)
-					if allowed {
-						appendStringSpan(spans, text, "system", roles)
-					}
+					appendInteractionTextPart(spans, part, "system", roles)
 					return true
 				})
 			}
@@ -38,10 +47,7 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		appendStringSpan(spans, input, "user", roles)
 	case input.IsObject():
 		if input.Get("type").String() == "text" {
-			text, allowed, _ := scanTextPart(input, true)
-			if allowed {
-				appendStringSpan(spans, text, "user", roles)
-			}
+			appendInteractionTextPart(spans, input, "user", roles)
 		} else {
 			collectInteractionItem(input, "user", roles, spans)
 		}
@@ -51,10 +57,7 @@ func collectInteractions(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				appendStringSpan(spans, item, "user", roles)
 			} else if item.IsObject() {
 				if item.Get("type").String() == "text" {
-					text, allowed, _ := scanTextPart(item, true)
-					if allowed {
-						appendStringSpan(spans, text, "user", roles)
-					}
+					appendInteractionTextPart(spans, item, "user", roles)
 				} else {
 					collectInteractionItem(item, "user", roles, spans)
 				}
@@ -105,16 +108,10 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 		case content.Type == gjson.String:
 			appendStringSpan(spans, content, role, roles)
 		case content.IsObject():
-			text, allowed, _ := scanTextPart(content, true)
-			if allowed {
-				appendStringSpan(spans, text, role, roles)
-			}
+			appendInteractionTextPart(spans, content, role, roles)
 		case content.IsArray():
 			content.ForEach(func(_, part gjson.Result) bool {
-				text, allowed, _ := scanTextPart(part, true)
-				if allowed {
-					appendStringSpan(spans, text, role, roles)
-				}
+				appendInteractionTextPart(spans, part, role, roles)
 				return true
 			})
 		}
@@ -122,10 +119,7 @@ func collectInteractionItem(item gjson.Result, inheritedRole string, roles scope
 		parts := item.Get("parts")
 		if parts.IsArray() {
 			parts.ForEach(func(_, part gjson.Result) bool {
-				text, allowed, _ := scanTextPart(part, true)
-				if allowed {
-					appendStringSpan(spans, text, role, roles)
-				}
+				appendInteractionTextPart(spans, part, role, roles)
 				return true
 			})
 		}

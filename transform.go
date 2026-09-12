@@ -16,6 +16,7 @@ type textSpan struct {
 	SkipFoldRewrite    bool
 	RequiresNonEmpty   bool
 	RequiresUnmodified bool
+	UnmodifiedMessage  string
 }
 
 const (
@@ -72,10 +73,11 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	}
 	for _, span := range spans {
 		if span.Changed && span.RequiresUnmodified {
-			return transformResult{
-				Invalid:        true,
-				InvalidMessage: "censorship cannot rewrite signature-bound text",
-			}, nil
+			message := span.UnmodifiedMessage
+			if message == "" {
+				message = "censorship cannot rewrite signature-bound text"
+			}
+			return transformResult{Invalid: true, InvalidMessage: message}, nil
 		}
 		if span.Changed && span.RequiresNonEmpty && span.Text == "" {
 			return transformResult{
@@ -227,6 +229,19 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 		}
 	}
 
+	retainOriginal := blockEnd < stripEnd && stripEnd < len(cfg.Rules)
+	var original []string
+	if retainOriginal {
+		original = make([]string, len(spans))
+		for i := range spans {
+			original[i] = spans[i].Text
+		}
+	} else {
+		for i := range spans {
+			spans[i].Changed = false
+		}
+	}
+
 	if cfg.IgnoreCase && cfg.RewriteMatcher != nil {
 		for i := range spans {
 			spans[i].SkipFoldRewrite = false
@@ -249,8 +264,10 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 			text, matched := stripRule(spans[i].Text, rule, cfg.IgnoreCase)
 			if matched {
 				spans[i].Text = text
-				spans[i].Changed = true
-				changed = true
+				if !retainOriginal {
+					spans[i].Changed = true
+					changed = true
+				}
 			}
 		}
 	}
@@ -262,9 +279,17 @@ func applyMode(spans []textSpan, cfg *configSnapshot) (*blockMatch, bool) {
 			text, matched := obfuscateRule(spans[i].Text, rule, cfg.IgnoreCase, cfg.ObfsChar)
 			if matched {
 				spans[i].Text = text
-				spans[i].Changed = true
-				changed = true
+				if !retainOriginal {
+					spans[i].Changed = true
+					changed = true
+				}
 			}
+		}
+	}
+	if retainOriginal {
+		for i := range spans {
+			spans[i].Changed = spans[i].Text != original[i]
+			changed = changed || spans[i].Changed
 		}
 	}
 	return nil, changed

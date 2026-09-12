@@ -350,11 +350,6 @@ func rewriteFoldedKMP(text string, rule compiledRule, char string, obfuscate boo
 			_, size = utf8.DecodeLastRuneInString(text[:start])
 			start -= size
 		}
-		if !matched && start == 0 && scan < len(text) {
-			if _, adjacent := foldMatchEnd(text, scan, pattern); adjacent {
-				return rewriteFolded(text, pattern, char, obfuscate)
-			}
-		}
 		if !matched {
 			capacity := len(text)
 			if obfuscate {

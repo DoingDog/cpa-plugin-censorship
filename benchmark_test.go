@@ -93,6 +93,33 @@ func BenchmarkFoldObfuscateDense(b *testing.B) {
 	}
 }
 
+func BenchmarkFoldedRewriteAdjacentPrefixTail(b *testing.B) {
+	pattern := strings.Repeat("a", 127) + "b"
+	rule := benchmarkSnapshot(modeStrip, true, []compiledRule{{Term: pattern}}).Rules[0]
+	tail := strings.Repeat("a", 64<<10)
+	for _, tc := range []struct {
+		name    string
+		leading int
+	}{
+		{name: "one-leading", leading: 1},
+		{name: "two-leading", leading: 2},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			text := strings.Repeat(pattern, tc.leading) + tail
+			got, matched := stripRule(text, rule, true)
+			if !matched || got != tail {
+				b.Fatalf("stripRule() = %q, %t; want tail, true", got, matched)
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(text)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchmarkStringSink, benchmarkBoolSink = stripRule(text, rule, true)
+			}
+		})
+	}
+}
+
 func BenchmarkTransformScenarios(b *testing.B) {
 	cases := []struct {
 		name, yaml, text string

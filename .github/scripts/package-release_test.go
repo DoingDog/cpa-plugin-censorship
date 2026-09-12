@@ -224,6 +224,126 @@ func TestAggregateOutputReplacesUnknownHardLink(t *testing.T) {
 	}
 }
 
+func TestPackageExistingArtifactsRemovesMissingPlatformOutputs(t *testing.T) {
+	root := t.TempDir()
+	distA := filepath.Join(root, "dist-a")
+	distB := filepath.Join(root, "dist-b")
+	out := filepath.Join(root, "out")
+	linuxA := filepath.Join(distA, "linux_amd64", "censorship.so")
+	windowsA := filepath.Join(distA, "windows_amd64", "censorship.dll")
+	for _, library := range []string{linuxA, windowsA} {
+		if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(library, []byte("first build"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldVersionArchive := filepath.Join(out, "censorship_1.2.2_windows_amd64.zip")
+	keep := filepath.Join(out, "keep.txt")
+	for path, contents := range map[string][]byte{oldVersionArchive: []byte("old version"), keep: []byte("keep")} {
+		if err := os.WriteFile(path, contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := packageExistingArtifacts("1.2.3", distA, out); err != nil {
+		t.Fatal(err)
+	}
+
+	linuxB := filepath.Join(distB, "linux_amd64", "censorship.so")
+	if err := os.MkdirAll(filepath.Dir(linuxB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linuxB, []byte("second build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := packageExistingArtifacts("1.2.3", distB, out); err != nil {
+		t.Fatal(err)
+	}
+
+	windowsArchive := filepath.Join(out, "censorship_1.2.3_windows_amd64.zip")
+	for _, path := range []string{windowsArchive, windowsArchive + ".sha256"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale output %q stat error = %v, want not exist", path, err)
+		}
+	}
+	linuxArchive := filepath.Join(out, "censorship_1.2.3_linux_amd64.zip")
+	for _, path := range []string{linuxArchive, linuxArchive + ".sha256"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("current output %q stat error = %v", path, err)
+		}
+	}
+	checksums, err := os.ReadFile(filepath.Join(out, "checksums.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}  censorship_1\.2\.3_linux_amd64\.zip\n$`).Match(checksums) {
+		t.Fatalf("checksums = %q", checksums)
+	}
+	for path, want := range map[string][]byte{oldVersionArchive: []byte("old version"), keep: []byte("keep")} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read preserved output %q: %v", path, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("preserved output %q = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestPackageExistingArtifactsPreservesMissingPlatformOutputDirectories(t *testing.T) {
+	root := t.TempDir()
+	distA := filepath.Join(root, "dist-a")
+	distB := filepath.Join(root, "dist-b")
+	out := filepath.Join(root, "out")
+	linuxA := filepath.Join(distA, "linux_amd64", "censorship.so")
+	windowsA := filepath.Join(distA, "windows_amd64", "censorship.dll")
+	for _, library := range []string{linuxA, windowsA} {
+		if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(library, []byte("first build"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := packageExistingArtifacts("1.2.3", distA, out); err != nil {
+		t.Fatal(err)
+	}
+
+	windowsArchive := filepath.Join(out, "censorship_1.2.3_windows_amd64.zip")
+	for _, path := range []string{windowsArchive, windowsArchive + ".sha256"} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	linuxB := filepath.Join(distB, "linux_amd64", "censorship.so")
+	if err := os.MkdirAll(filepath.Dir(linuxB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(linuxB, []byte("second build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := packageExistingArtifacts("1.2.3", distB, out); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{windowsArchive, windowsArchive + ".sha256"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("preserved output directory %q stat error = %v", path, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("preserved output %q is not a directory", path)
+		}
+	}
+}
+
 func TestReplaceOutputFileRestoresExistingDestinationAfterInstallFailure(t *testing.T) {
 	dir := t.TempDir()
 	destination := filepath.Join(dir, "output")
@@ -1860,15 +1980,56 @@ func TestBuildWorkflowContract(t *testing.T) {
 		release.If != releaseCondition ||
 		!jobUses(release, "actions/checkout@v5") ||
 		jobActionWith(release, "actions/download-artifact@v4", "path") != "release" ||
-		!jobActionWithBool(release, "actions/download-artifact@v4", "merge-multiple") ||
-		!jobRunContains(release, "cat release/*.sha256 | sort > release/checksums.txt") ||
-		!jobRunContains(release, "gh release upload") ||
-		!jobRunContains(release, "--clobber") ||
-		!jobRunContains(release, "gh release create") ||
-		!jobRunContains(release, "--verify-tag") ||
-		!jobRunContains(release, `gh release edit "$tag" --notes-file RELEASE_NOTES.md`) ||
-		!jobRunContains(release, "--notes-file RELEASE_NOTES.md") {
+		!jobActionWithBool(release, "actions/download-artifact@v4", "merge-multiple") {
 		t.Fatalf("release job = %#v", release)
+	}
+
+	var releaseRun string
+	for _, step := range release.Steps {
+		if strings.Contains(step.Run, "cat release/*.sha256 | sort > release/checksums.txt") {
+			releaseRun = step.Run
+			break
+		}
+	}
+	for _, want := range []string{
+		"--json isDraft --jq .isDraft",
+		"--draft",
+		`if [[ "${release_state}" == "true" ]]`,
+		`gh release edit "$tag" --draft=false`,
+		`gh release download "$tag"`,
+		"diff -qr release",
+		"sha256sum --check checksums.txt",
+		"*.zip.sha256",
+		"verify_release() {",
+		"mktemp -d",
+		`trap 'rm -rf "$verify_dir"' EXIT`,
+	} {
+		if !strings.Contains(releaseRun, want) {
+			t.Fatalf("release run omits %q:\n%s", want, releaseRun)
+		}
+	}
+
+	const draftBranch = "if [[ \"${release_state}\" == \"true\" ]]; then\n" +
+		"    gh release upload \"$tag\" release/*.zip release/*.sha256 release/checksums.txt --clobber\n" +
+		"    verify_release\n" +
+		"    gh release edit \"$tag\" --draft=false\n" +
+		"  else\n" +
+		"    verify_release\n" +
+		"  fi"
+	if !strings.Contains(releaseRun, draftBranch) {
+		t.Fatalf("release run does not isolate the draft and published branches:\n%s", releaseRun)
+	}
+	if strings.Count(releaseRun, "gh release upload") != 1 || strings.Count(releaseRun, "--clobber") != 1 {
+		t.Fatalf("release run allows upload or --clobber outside the draft branch:\n%s", releaseRun)
+	}
+
+	const newReleaseBranch = "else\n" +
+		"  gh release create \"$tag\" release/*.zip release/*.sha256 release/checksums.txt --draft --verify-tag --notes-file RELEASE_NOTES.md\n" +
+		"  verify_release\n" +
+		"  gh release edit \"$tag\" --draft=false\n" +
+		"fi"
+	if !strings.Contains(releaseRun, newReleaseBranch) {
+		t.Fatalf("release run does not create, verify, and publish a new draft:\n%s", releaseRun)
 	}
 }
 
