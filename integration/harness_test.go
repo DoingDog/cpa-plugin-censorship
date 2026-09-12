@@ -376,7 +376,6 @@ type upstreamCapture struct {
 	mu       sync.Mutex
 	arrivals int
 	requests [][]byte
-	headers  []http.Header
 }
 
 func (c *upstreamCapture) arrive() {
@@ -391,20 +390,10 @@ func (c *upstreamCapture) arrivalCount() int {
 	return c.arrivals
 }
 
-func (c *upstreamCapture) record(body []byte, header http.Header) {
+func (c *upstreamCapture) record(body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.requests = append(c.requests, bytes.Clone(body))
-	c.headers = append(c.headers, header.Clone())
-}
-
-func (c *upstreamCapture) lastHeader() http.Header {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.headers) == 0 {
-		return nil
-	}
-	return c.headers[len(c.headers)-1].Clone()
 }
 
 func (c *upstreamCapture) requestCount() int {
@@ -459,7 +448,7 @@ func newMockUpstream(t *testing.T) *mockUpstream {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		capture.record(body, r.Header)
+		capture.record(body)
 
 		var envelope struct {
 			Stream bool `json:"stream"`

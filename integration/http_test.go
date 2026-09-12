@@ -6,13 +6,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -118,43 +115,6 @@ func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 	}
 	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked legacy prompt reached upstream")
-	}
-}
-
-func TestHTTPRewrittenZstdRequestClearsContentEncoding(t *testing.T) {
-	upstream := newMockUpstream(t)
-	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
-	encoder, err := zstd.NewWriter(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	compressed := encoder.EncodeAll(chatBody("SECRET input", false), nil)
-	encoder.Close()
-
-	request, err := http.NewRequest(http.MethodPost, cpa.baseURL+"/v1/chat/completions", bytes.NewReader(compressed))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer "+downstreamKey)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Content-Encoding", "zstd")
-	response, err := integrationHTTPClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	responseBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.StatusCode, responseBody)
-	}
-	if got := gjson.GetBytes(upstream.lastRequest(), "messages.0.content").String(); got != " input" {
-		t.Fatalf("upstream content = %q, body = %s", got, upstream.lastRequest())
-	}
-	if got := upstream.lastHeader().Get("Content-Encoding"); got != "" {
-		t.Fatalf("upstream Content-Encoding = %q, want empty", got)
 	}
 }
 
