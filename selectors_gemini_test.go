@@ -24,7 +24,7 @@ func TestGeminiSelectorRowsAndMachineExclusions(t *testing.T) {
 			{"text":"SECRET thought false","thought":false},
 			{"text":"SECRET thought","thought":true}
 		]},
-		"system_instruction":{"parts":[{"text":"SECRET snake"},{"text":"SECRET signed","thoughtSignature":"sig"}]},
+		"system_instruction":{"parts":[{"text":"SECRET snake"},{"text":"signed","thoughtSignature":"sig"}]},
 		"contents":[
 			{"parts":[{"text":"SECRET inherited"}]},
 			{"role":"user","parts":[{"text":"SECRET user"}]},
@@ -114,10 +114,8 @@ func TestGeminiInvalidRolesAdvanceCanonicalAlternation(t *testing.T) {
 func TestGeminiSelectorExcludesSnakeCaseMachineParts(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
 	body := []byte(`{"contents":[{"role":"model","parts":[
-		{"text":"SECRET thought_signature","thought_signature":"sig"},
 		{"text":"SECRET nested functionCall","functionCall":{"thought_signature":"sig"}},
 		{"text":"SECRET nested functionResponse","functionResponse":{"thought_signature":"sig"}},
-		{"text":"SECRET extra_content","extra_content":{"google":{"thought_signature":"sig"}}},
 		{"text":"SECRET function_call","function_call":{"name":"tool"}},
 		{"text":"SECRET function_response","function_response":{"response":{}}},
 		{"text":"SECRET executable_code","executable_code":{"code":"SECRET"}},
@@ -177,26 +175,117 @@ func TestGeminiSelectorCanonicalRoles(t *testing.T) {
 	}
 }
 
+func TestGeminiSignedVisibleTextUsesCanonicalRole(t *testing.T) {
+	cases := []struct {
+		name, body, role string
+	}{
+		{"camel system", `{"systemInstruction":{"parts":[{"text":"SECRET","thoughtSignature":"sig"}]}}`, "system"},
+		{"snake assistant", `{"contents":[{"role":"model","parts":[{"text":"SECRET","thought_signature":"sig"}]}]}`, "assistant"},
+		{"compatibility carrier", `{"contents":[{"role":"user","parts":[{"text":"SECRET","extra_content":{"google":{"thought_signature":"sig"}}}]}]}`, "user"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assertBlockedRole(t, "gemini", tc.body, tc.role)
+		})
+	}
+}
+
+func TestGeminiSignatureBoundVisibleTextRejectsRewrite(t *testing.T) {
+	carriers := []string{
+		`"thoughtSignature":"c2lnXHUwMDQx"`,
+		`"thought_signature":"c2ln"`,
+		`"extra_content":{"google":{"thought_signature":"c2ln"}}`,
+	}
+	for _, mode := range []string{"strip", "obfs"} {
+		for _, carrier := range carriers {
+			t.Run(mode+"/"+carrier, func(t *testing.T) {
+				registerConfig(t, "words:\n  "+mode+": [SECRET]\nscope:\n  roles: [assistant]\n")
+				body := []byte(`{"contents":[{"role":"model","parts":[{"text":"SECRET visible",` + carrier + `,"decoy":"SECRET"}]}]}`)
+				resp := interceptRPC(t, "gemini", body)
+				if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").String() != "censorship_invalid_request" || gjson.GetBytes(resp.ResponseBody, "error.message").String() != "censorship cannot rewrite signature-bound text" {
+					t.Fatalf("response = %#v", resp)
+				}
+			})
+		}
+	}
+}
+
+func TestGeminiSignatureBoundVisibleTextNoMatchLeavesBodyUntouched(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"contents":[{"role":"model","parts":[{"text":"visible","thoughtSignature":"c2lnXHUwMDQx","decoy":"SECRET"}]}]}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestGeminiNullMachineDiscriminatorsRemainSelectable(t *testing.T) {
-	keys := []string{
+	machineKeys := []string{
 		"functionCall", "function_call", "functionResponse", "function_response",
 		"inlineData", "inline_data", "fileData", "file_data",
 		"executableCode", "executable_code", "codeExecutionResult", "code_execution_result",
-		"thoughtSignature", "thought_signature",
 	}
-	for _, key := range keys {
+	for _, key := range machineKeys {
 		t.Run(key+" null", func(t *testing.T) {
-			part := gjson.Parse(`{"text":"SECRET","` + key + `":null}`)
-			text, allowed := scanTextPart(part, false)
-			if !allowed || text.Str != "SECRET" {
-				t.Fatalf("scanTextPart() = %q, %t", text.Str, allowed)
+			text, allowed, signatureBound := scanTextPart(gjson.Parse(`{"text":"SECRET","`+key+`":null}`), false)
+			if !allowed || signatureBound || text.Str != "SECRET" {
+				t.Fatalf("scanTextPart() = %q, %t, %t", text.Str, allowed, signatureBound)
 			}
 		})
 		t.Run(key+" object", func(t *testing.T) {
-			_, allowed := scanTextPart(gjson.Parse(`{"text":"SECRET","`+key+`":{}}`), false)
+			_, allowed, _ := scanTextPart(gjson.Parse(`{"text":"SECRET","`+key+`":{}}`), false)
 			if allowed {
 				t.Fatal("non-null machine member remained selectable")
 			}
 		})
+	}
+
+	signatures := []string{
+		`"thoughtSignature":null`,
+		`"thought_signature":null`,
+		`"extra_content":{"google":{"thought_signature":null}}`,
+	}
+	for _, signature := range signatures {
+		t.Run(signature, func(t *testing.T) {
+			text, allowed, signatureBound := scanTextPart(gjson.Parse(`{"text":"SECRET",`+signature+`}`), false)
+			if !allowed || signatureBound || text.Str != "SECRET" {
+				t.Fatalf("scanTextPart() = %q, %t, %t", text.Str, allowed, signatureBound)
+			}
+		})
+	}
+}
+
+func TestGeminiSignatureBoundMachineDiscriminatorsRemainExcluded(t *testing.T) {
+	signatures := []string{
+		`"thoughtSignature":"sig"`,
+		`"thought_signature":"sig"`,
+		`"extra_content":{"google":{"thought_signature":"sig"}}`,
+	}
+	discriminators := []struct {
+		name, member string
+	}{
+		{"thought", `"thought":true`},
+		{"functionCall", `"functionCall":{}`},
+		{"function_call", `"function_call":{}`},
+		{"functionResponse", `"functionResponse":{}`},
+		{"function_response", `"function_response":{}`},
+		{"inlineData", `"inlineData":{}`},
+		{"inline_data", `"inline_data":{}`},
+		{"fileData", `"fileData":{}`},
+		{"file_data", `"file_data":{}`},
+		{"executableCode", `"executableCode":{}`},
+		{"executable_code", `"executable_code":{}`},
+		{"codeExecutionResult", `"codeExecutionResult":{}`},
+		{"code_execution_result", `"code_execution_result":{}`},
+	}
+	for _, signature := range signatures {
+		for _, discriminator := range discriminators {
+			t.Run(signature+"/"+discriminator.name, func(t *testing.T) {
+				_, allowed, _ := scanTextPart(gjson.Parse(`{"text":"SECRET",`+signature+`,`+discriminator.member+`}`), false)
+				if allowed {
+					t.Fatal("signature-bound machine part remained selectable")
+				}
+			})
+		}
 	}
 }

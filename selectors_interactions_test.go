@@ -235,7 +235,8 @@ func TestScanTextPartPreservesProtocolRules(t *testing.T) {
 		{name: "camel nested functionResponse thought signature", part: `{"text":"accepted","functionResponse":{"thoughtSignature":null}}`, allowed: false},
 		{name: "snake nested functionResponse thought signature", part: `{"text":"accepted","functionResponse":{"thought_signature":null}}`, allowed: false},
 		{name: "extra content Google thought signature null", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":null}}}`, allowed: true},
-		{name: "extra content Google thought signature non-null", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":"sig"}}}`, allowed: false},
+		{name: "Gemini extra content Google thought signature non-null", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":"sig"}}}`, allowed: true},
+		{name: "Interactions extra content Google thought signature non-null", part: `{"text":"accepted","extra_content":{"google":{"thought_signature":"sig"}}}`, requireTextType: true, allowed: false},
 		{name: "ordinary extra content", part: `{"text":"accepted","extra_content":{"google":{"note":"value"}}}`, requireTextType: true, allowed: true},
 		{name: "escaped machine key", part: `{"text":"accepted","\u0066unctionCall":null}`, requireTextType: true, allowed: true},
 	}
@@ -273,7 +274,7 @@ func TestScanTextPartPreservesProtocolRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			part := gjson.Parse(tc.part)
 			wantText := part.Get("text")
-			gotText, gotAllowed := scanTextPart(part, tc.requireTextType)
+			gotText, gotAllowed, _ := scanTextPart(part, tc.requireTextType)
 			if gotAllowed != tc.allowed {
 				t.Fatalf("allowed = %t, want %t", gotAllowed, tc.allowed)
 			}

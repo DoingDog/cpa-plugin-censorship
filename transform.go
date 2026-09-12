@@ -8,13 +8,14 @@ import (
 )
 
 type textSpan struct {
-	RawStart         int
-	RawEnd           int
-	Text             string
-	Role             string
-	Changed          bool
-	SkipFoldRewrite  bool
-	RequiresNonEmpty bool
+	RawStart           int
+	RawEnd             int
+	Text               string
+	Role               string
+	Changed            bool
+	SkipFoldRewrite    bool
+	RequiresNonEmpty   bool
+	RequiresUnmodified bool
 }
 
 const (
@@ -70,6 +71,12 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 		return transformResult{}, nil
 	}
 	for _, span := range spans {
+		if span.Changed && span.RequiresUnmodified {
+			return transformResult{
+				Invalid:        true,
+				InvalidMessage: "censorship cannot rewrite signature-bound text",
+			}, nil
+		}
 		if span.Changed && span.RequiresNonEmpty && span.Text == "" {
 			return transformResult{
 				Invalid:        true,
