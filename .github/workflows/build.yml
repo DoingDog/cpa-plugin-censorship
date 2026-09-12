@@ -209,9 +209,31 @@ jobs:
         run: |
           cat release/*.sha256 | sort > release/checksums.txt
           tag="${GITHUB_REF_NAME}"
-          if gh release view "$tag" >/dev/null 2>&1; then
+          verify_dir="$(mktemp -d)"
+          trap 'rm -rf "$verify_dir"' EXIT
+          verify_release() {
+            gh release download "$tag" --dir "$verify_dir"
+            diff -qr release "$verify_dir"
+            (
+              cd "$verify_dir"
+              for checksum in *.zip.sha256; do
+                sha256sum --check "$checksum"
+              done
+              sha256sum --check checksums.txt
+            )
+          }
+          if release_state="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)"; then
             gh release edit "$tag" --notes-file RELEASE_NOTES.md
-            gh release upload "$tag" release/*.zip release/*.sha256 release/checksums.txt --clobber
+            if [[ "${release_state}" == "true" ]]; then
+              gh release upload "$tag" release/*.zip release/*.sha256 release/checksums.txt --clobber
+              verify_release
+              gh release edit "$tag" --draft=false
+            else
+              verify_release
+            fi
           else
-            gh release create "$tag" release/*.zip release/*.sha256 release/checksums.txt --verify-tag --notes-file RELEASE_NOTES.md
+            gh release create "$tag" release/*.zip release/*.sha256 release/checksums.txt --draft --verify-tag --notes-file RELEASE_NOTES.md
+            verify_release
+            gh release edit "$tag" --draft=false
           fi
+          test "$(gh release view "$tag" --json isDraft --jq .isDraft)" = "false"

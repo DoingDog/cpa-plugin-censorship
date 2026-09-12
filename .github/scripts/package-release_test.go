@@ -1980,15 +1980,56 @@ func TestBuildWorkflowContract(t *testing.T) {
 		release.If != releaseCondition ||
 		!jobUses(release, "actions/checkout@v5") ||
 		jobActionWith(release, "actions/download-artifact@v4", "path") != "release" ||
-		!jobActionWithBool(release, "actions/download-artifact@v4", "merge-multiple") ||
-		!jobRunContains(release, "cat release/*.sha256 | sort > release/checksums.txt") ||
-		!jobRunContains(release, "gh release upload") ||
-		!jobRunContains(release, "--clobber") ||
-		!jobRunContains(release, "gh release create") ||
-		!jobRunContains(release, "--verify-tag") ||
-		!jobRunContains(release, `gh release edit "$tag" --notes-file RELEASE_NOTES.md`) ||
-		!jobRunContains(release, "--notes-file RELEASE_NOTES.md") {
+		!jobActionWithBool(release, "actions/download-artifact@v4", "merge-multiple") {
 		t.Fatalf("release job = %#v", release)
+	}
+
+	var releaseRun string
+	for _, step := range release.Steps {
+		if strings.Contains(step.Run, "cat release/*.sha256 | sort > release/checksums.txt") {
+			releaseRun = step.Run
+			break
+		}
+	}
+	for _, want := range []string{
+		"--json isDraft --jq .isDraft",
+		"--draft",
+		`if [[ "${release_state}" == "true" ]]`,
+		`gh release edit "$tag" --draft=false`,
+		`gh release download "$tag"`,
+		"diff -qr release",
+		"sha256sum --check checksums.txt",
+		"*.zip.sha256",
+		"verify_release() {",
+		"mktemp -d",
+		`trap 'rm -rf "$verify_dir"' EXIT`,
+	} {
+		if !strings.Contains(releaseRun, want) {
+			t.Fatalf("release run omits %q:\n%s", want, releaseRun)
+		}
+	}
+
+	const draftBranch = "if [[ \"${release_state}\" == \"true\" ]]; then\n" +
+		"    gh release upload \"$tag\" release/*.zip release/*.sha256 release/checksums.txt --clobber\n" +
+		"    verify_release\n" +
+		"    gh release edit \"$tag\" --draft=false\n" +
+		"  else\n" +
+		"    verify_release\n" +
+		"  fi"
+	if !strings.Contains(releaseRun, draftBranch) {
+		t.Fatalf("release run does not isolate the draft and published branches:\n%s", releaseRun)
+	}
+	if strings.Count(releaseRun, "gh release upload") != 1 || strings.Count(releaseRun, "--clobber") != 1 {
+		t.Fatalf("release run allows upload or --clobber outside the draft branch:\n%s", releaseRun)
+	}
+
+	const newReleaseBranch = "else\n" +
+		"  gh release create \"$tag\" release/*.zip release/*.sha256 release/checksums.txt --draft --verify-tag --notes-file RELEASE_NOTES.md\n" +
+		"  verify_release\n" +
+		"  gh release edit \"$tag\" --draft=false\n" +
+		"fi"
+	if !strings.Contains(releaseRun, newReleaseBranch) {
+		t.Fatalf("release run does not create, verify, and publish a new draft:\n%s", releaseRun)
 	}
 }
 
