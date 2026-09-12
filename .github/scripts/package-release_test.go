@@ -102,6 +102,229 @@ func TestPackageLibraryAndChecksumContract(t *testing.T) {
 	}
 }
 
+func TestDirectOutputsReplaceUnknownHardLinksWithoutChangingPeer(t *testing.T) {
+	for _, output := range []string{"archive", "checksum"} {
+		t.Run(output, func(t *testing.T) {
+			dir := t.TempDir()
+			old, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chdir(dir); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chdir(old) })
+			if err := os.WriteFile("LICENSE", []byte("license\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			library := filepath.Join(dir, "censorship.so")
+			archive := filepath.Join(dir, "censorship.zip")
+			checksum := archive + ".sha256"
+			if err := os.WriteFile(library, []byte("library"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if output == "checksum" {
+				if err := packageLibrary(library, archive); err != nil {
+					t.Fatal(err)
+				}
+			}
+			destination := archive
+			if output == "checksum" {
+				destination = checksum
+			}
+			sentinel := filepath.Join(dir, "sentinel")
+			original := []byte("unrelated hard-link peer")
+			if err := os.WriteFile(sentinel, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(sentinel, destination); err != nil {
+				t.Fatal(err)
+			}
+			if output == "archive" {
+				err = packageLibrary(library, archive)
+			} else {
+				_, err = writeChecksum(checksum, archive)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(sentinel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, original) {
+				t.Fatalf("unknown peer = %q, want %q", got, original)
+			}
+			destinationInfo, err := os.Stat(destination)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sentinelInfo, err := os.Stat(sentinel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if os.SameFile(destinationInfo, sentinelInfo) {
+				t.Fatal("output still aliases unknown peer")
+			}
+		})
+	}
+}
+
+func TestAggregateOutputReplacesUnknownHardLink(t *testing.T) {
+	dir := t.TempDir()
+	dist := filepath.Join(dir, "dist")
+	out := filepath.Join(dir, "out")
+	library := filepath.Join(dist, "linux_amd64", "censorship.so")
+	if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(library, []byte("library"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(dir, "sentinel")
+	original := []byte("aggregate peer")
+	if err := os.WriteFile(sentinel, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aggregate := filepath.Join(out, "checksums.txt")
+	if err := os.Link(sentinel, aggregate); err != nil {
+		t.Fatal(err)
+	}
+	if err := packageExistingArtifacts("1.2.3", dist, out); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("unknown aggregate peer = %q, want %q", got, original)
+	}
+	aggregateInfo, err := os.Stat(aggregate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinelInfo, err := os.Stat(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(aggregateInfo, sentinelInfo) {
+		t.Fatal("aggregate still aliases unknown peer")
+	}
+	contents, err := os.ReadFile(aggregate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}  censorship_1\.2\.3_linux_amd64\.zip\n$`).Match(contents) {
+		t.Fatalf("aggregate = %q", contents)
+	}
+}
+
+func TestReplaceOutputFileRestoresExistingDestinationAfterInstallFailure(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "output")
+	temporary := filepath.Join(dir, "temporary")
+	oldContents := []byte("old output")
+	if err := os.WriteFile(destination, oldContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(temporary, []byte("new output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalRename := renameOutputFile
+	t.Cleanup(func() { renameOutputFile = originalRename })
+	installFailure := fmt.Errorf("install failure")
+	calls := 0
+	renameOutputFile = func(oldPath, newPath string) error {
+		calls++
+		if calls == 2 {
+			return installFailure
+		}
+		return originalRename(oldPath, newPath)
+	}
+	if err := replaceOutputFile(temporary, destination); err == nil || !strings.Contains(err.Error(), installFailure.Error()) {
+		t.Fatalf("replace error = %v", err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, oldContents) {
+		t.Fatalf("destination = %q, want %q", got, oldContents)
+	}
+	if _, err := os.Stat(temporary); err != nil {
+		t.Fatalf("temporary = %v, want retained for caller cleanup", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".backup-") {
+			t.Fatalf("backup remained after successful rollback: %s", entry.Name())
+		}
+	}
+}
+
+func TestReplaceOutputFileRetainsBackupWhenRollbackFails(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "output")
+	temporary := filepath.Join(dir, "temporary")
+	oldContents := []byte("old output")
+	if err := os.WriteFile(destination, oldContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(temporary, []byte("new output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalRename := renameOutputFile
+	t.Cleanup(func() { renameOutputFile = originalRename })
+	installFailure := fmt.Errorf("install failure")
+	rollbackFailure := fmt.Errorf("rollback failure")
+	calls := 0
+	renameOutputFile = func(oldPath, newPath string) error {
+		calls++
+		switch calls {
+		case 2:
+			return installFailure
+		case 3:
+			return rollbackFailure
+		default:
+			return originalRename(oldPath, newPath)
+		}
+	}
+	err := replaceOutputFile(temporary, destination)
+	if err == nil || !strings.Contains(err.Error(), installFailure.Error()) || !strings.Contains(err.Error(), rollbackFailure.Error()) {
+		t.Fatalf("replace error = %v", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("destination stat = %v, want absent", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backup string
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".backup-") {
+			backup = filepath.Join(dir, entry.Name())
+		}
+	}
+	if backup == "" {
+		t.Fatal("missing retained rollback backup")
+	}
+	got, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, oldContents) {
+		t.Fatalf("backup = %q, want %q", got, oldContents)
+	}
+}
+
 func TestPackageLibraryIsDeterministicAcrossSourceMtimes(t *testing.T) {
 	script, err := filepath.Abs("package-release.go")
 	if err != nil {

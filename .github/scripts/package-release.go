@@ -16,7 +16,10 @@ import (
 
 const pluginName = "censorship"
 
-var zipModifiedTime = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
+var (
+	zipModifiedTime  = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
+	renameOutputFile = os.Rename
+)
 
 type artifactSpec struct {
 	osName string
@@ -428,6 +431,86 @@ func existingPathAncestor(path string) (os.FileInfo, []string, error) {
 	}
 }
 
+func reserveOutputBackup(path string) (string, error) {
+	backup, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".backup-*")
+	if err != nil {
+		return "", err
+	}
+	name := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := os.Remove(name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+func replaceOutputFile(tempPath, destination string) error {
+	info, err := os.Lstat(destination)
+	if os.IsNotExist(err) {
+		return renameOutputFile(tempPath, destination)
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("release output %q is not a regular file", destination)
+	}
+	backup, err := reserveOutputBackup(destination)
+	if err != nil {
+		return fmt.Errorf("reserve output backup %q: %w", destination, err)
+	}
+	if err := renameOutputFile(destination, backup); err != nil {
+		return fmt.Errorf("stage existing output %q: %w", destination, err)
+	}
+	if err := renameOutputFile(tempPath, destination); err != nil {
+		if rollbackErr := renameOutputFile(backup, destination); rollbackErr != nil {
+			return fmt.Errorf("install output %q: %w; restore failed: %v; old output retained at %q", destination, err, rollbackErr, backup)
+		}
+		return fmt.Errorf("install output %q: %w", destination, err)
+	}
+	if err := os.Remove(backup); err != nil {
+		return fmt.Errorf("remove replaced output backup %q: %w", backup, err)
+	}
+	return nil
+}
+
+func writeOutputFile(path string, perm os.FileMode, write func(*os.File) error) (err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() {
+		if temporary != nil {
+			_ = temporary.Close()
+		}
+		if temporaryPath != "" {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(perm); err != nil {
+		return err
+	}
+	if err := write(temporary); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	temporary = nil
+	if err := replaceOutputFile(temporaryPath, path); err != nil {
+		return err
+	}
+	temporaryPath = ""
+	return nil
+}
+
 func packageLibrary(libraryPath, archivePath string) error {
 	library, err := os.Open(libraryPath)
 	if err != nil {
@@ -439,46 +522,33 @@ func packageLibrary(libraryPath, archivePath string) error {
 	if err != nil {
 		return fmt.Errorf("stat library %s: %w", filepath.ToSlash(libraryPath), err)
 	}
-	if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
-		return fmt.Errorf("create archive directory: %w", err)
-	}
-	archive, err := os.Create(archivePath)
-	if err != nil {
-		return fmt.Errorf("create archive %s: %w", filepath.ToSlash(archivePath), err)
-	}
-	archiveClosed := false
-	defer func() {
-		if !archiveClosed {
-			_ = archive.Close()
+	if err := writeOutputFile(archivePath, 0o644, func(archive *os.File) error {
+		writer := zip.NewWriter(archive)
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return fmt.Errorf("create zip header: %w", err)
 		}
-	}()
-
-	writer := zip.NewWriter(archive)
-	header, err := zip.FileInfoHeader(info)
-	if err != nil {
-		return fmt.Errorf("create zip header: %w", err)
+		header.Modified = zipModifiedTime
+		header.Name = filepath.Base(libraryPath)
+		header.Method = zip.Deflate
+		header.SetMode(0o755)
+		entry, err := writer.CreateHeader(header)
+		if err != nil {
+			return fmt.Errorf("create zip entry %s: %w", header.Name, err)
+		}
+		if _, err := io.Copy(entry, library); err != nil {
+			return fmt.Errorf("write zip entry %s: %w", header.Name, err)
+		}
+		if err := addOptionalFile(writer, "LICENSE"); err != nil {
+			return err
+		}
+		if err := writer.Close(); err != nil {
+			return fmt.Errorf("close zip writer: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("write archive %s: %w", filepath.ToSlash(archivePath), err)
 	}
-	header.Modified = zipModifiedTime
-	header.Name = filepath.Base(libraryPath)
-	header.Method = zip.Deflate
-	header.SetMode(0o755)
-	entry, err := writer.CreateHeader(header)
-	if err != nil {
-		return fmt.Errorf("create zip entry %s: %w", header.Name, err)
-	}
-	if _, err := io.Copy(entry, library); err != nil {
-		return fmt.Errorf("write zip entry %s: %w", header.Name, err)
-	}
-	if err := addOptionalFile(writer, "LICENSE"); err != nil {
-		return err
-	}
-	if err := writer.Close(); err != nil {
-		return fmt.Errorf("close zip writer: %w", err)
-	}
-	if err := archive.Close(); err != nil {
-		return fmt.Errorf("close archive %s: %w", filepath.ToSlash(archivePath), err)
-	}
-	archiveClosed = true
 	return nil
 }
 
@@ -514,22 +584,26 @@ func addOptionalFile(writer *zip.Writer, path string) error {
 }
 
 func writeChecksum(checksumPath, archivePath string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(checksumPath), 0o755); err != nil {
-		return "", fmt.Errorf("create checksum directory: %w", err)
-	}
 	checksum, err := sha256File(archivePath)
 	if err != nil {
 		return "", err
 	}
 	line := fmt.Sprintf("%s  %s\n", checksum, filepath.Base(archivePath))
-	if err := os.WriteFile(checksumPath, []byte(line), 0o644); err != nil {
+	if err := writeOutputFile(checksumPath, 0o644, func(file *os.File) error {
+		_, err := io.WriteString(file, line)
+		return err
+	}); err != nil {
 		return "", fmt.Errorf("write checksum %s: %w", filepath.ToSlash(checksumPath), err)
 	}
 	return line, nil
 }
 
 func writeChecksums(path string, checksumLines []string) error {
-	if err := os.WriteFile(path, []byte(strings.Join(checksumLines, "")), 0o644); err != nil {
+	contents := strings.Join(checksumLines, "")
+	if err := writeOutputFile(path, 0o644, func(file *os.File) error {
+		_, err := io.WriteString(file, contents)
+		return err
+	}); err != nil {
 		return fmt.Errorf("write checksums %s: %w", path, err)
 	}
 	return nil
