@@ -45,7 +45,11 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		}
 
 		content := message.Get("content")
-		appendStringSpan(spans, content, role.Str, roles)
+		if role.Str == "user" {
+			appendNonEmptyStringSpan(spans, content, role.Str, roles)
+		} else {
+			appendStringSpan(spans, content, role.Str, roles)
+		}
 		if !content.IsArray() {
 			return true
 		}
