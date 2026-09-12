@@ -110,7 +110,6 @@ Selectors enter only the explicit text leaves listed here. There is no recursive
 - Gemini explicit text paths: text parts in `systemInstruction` or `system_instruction` and `contents`, subject to the selected canonical role. The signature field and value remain excluded, but a non-null `thoughtSignature`, `thought_signature`, or `extra_content.google.thought_signature` does not exclude visible text in the same Part. A JSON `null` carrier is unset. A non-null function, media, file, or code carrier still excludes the whole Part. A matching `block` handles signed visible text normally; a matching `strip` or `obfs` never changes it and returns local `censorship_invalid_request` with `censorship cannot rewrite signature-bound text`.
 - Interactions explicit text paths: documented `system_instruction` or fallback camel-case `systemInstruction`, recursive documented input text subsets, and direct input object or array items with exact `type: "text"` and text content.
 
-
 OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Gemini `model` maps to `assistant`.
 
 assistant is inspected only when explicitly listed in scope.roles. This applies only to assistant history carried in a later request and never to live output. tool is inspected only for documented OpenAI and Claude result-text paths, including OpenAI string tool content and Claude selected tool_result text.
@@ -149,7 +148,6 @@ make integration
 Bare `make build` and host-artifact `make package` use `0.0.0-dev`; explicit empty or unsafe `VERSION` remains invalid.
 
 The ABI boundary remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input. When censorship replaces a decoded request body, it clears `Content-Encoding`, `Content-Length`, and `Transfer-Encoding`; no-op requests preserve headers.
-
 
 ## Accepted pure-plugin limits
 

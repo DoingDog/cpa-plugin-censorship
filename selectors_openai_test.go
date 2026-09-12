@@ -535,6 +535,7 @@ func TestOpenAIResponsesAdditionalToolsSkipsUnsupportedRoles(t *testing.T) {
 		name, role string
 	}{
 		{name: "missing"},
+		{name: "empty", role: `"role":"",`},
 		{name: "null", role: `"role":null,`},
 		{name: "number", role: `"role":1,`},
 		{name: "unknown", role: `"role":"unknown",`},
@@ -626,6 +627,53 @@ func TestOpenAIResponsesTopLevelDefinitionRewritePhasesPreserveMachineFields(t *
 	}
 }
 
+func TestOpenAIResponsesDeferredToolSearchDefinitionsUseOnlyToolScope(t *testing.T) {
+	body := []byte(`{"input":[{"type":"tool_search_output","name":"SECRET result name","arguments":"SECRET arguments","input":"SECRET input","tools":[{"type":"function","name":"SECRET tool name","description":"SECRET description","parameters":{"type":"object","description":"SECRET schema description","properties":{"SECRET property":{"type":"string","enum":["SECRET enum"],"default":"SECRET default"}}}}]}]}`)
+	for _, tc := range []struct {
+		name, config string
+		changes      []rawReplacement
+	}{
+		{name: "block", config: "mode: block\nwords: [SECRET]\nscope:\n  roles: [tool]\n"},
+		{
+			name:   "strip",
+			config: "mode: strip\nwords: [SECRET]\nscope:\n  roles: [tool]\n",
+			changes: []rawReplacement{
+				{Before: `"SECRET description"`, After: `" description"`},
+				{Before: `"SECRET schema description"`, After: `" schema description"`},
+			},
+		},
+		{
+			name:   "obfs",
+			config: "mode: obfs\nwords: [SECRET]\nscope:\n  roles: [tool]\n",
+			changes: []rawReplacement{
+				{Before: `"SECRET description"`, After: `"S​ECRET description"`},
+				{Before: `"SECRET schema description"`, After: `"S​ECRET schema description"`},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, tc.config)
+			resp := interceptRPC(t, "openai-response", body)
+			if tc.name == "block" {
+				if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "tool" {
+					t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
+				}
+				return
+			}
+			want := replaceRawTokens(t, body, tc.changes...)
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+			}
+		})
+	}
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	resp := interceptRPC(t, "openai-response", body)
+	if resp.Terminate || len(resp.Body) != 0 {
+		t.Fatalf("user-only response = %#v", resp)
+	}
+}
+
 func TestOpenAIChatSchemaDescriptionTraversalUsesOnlyDocumentedKeywords(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
 	body := []byte(`{"functions":[{"description":"SECRET function","parameters":{"type":"object","properties":{"p":{"description":"SECRET properties"}},"patternProperties":{"p":{"description":"SECRET pattern"}},"$defs":{"p":{"description":"SECRET defs"}},"definitions":{"p":{"description":"SECRET definitions"}},"dependentSchemas":{"p":{"description":"SECRET dependent"}},"items":{"description":"SECRET items"},"additionalProperties":{"description":"SECRET additional"},"unevaluatedProperties":{"description":"SECRET unevaluated"},"propertyNames":{"description":"SECRET property names"},"contains":{"description":"SECRET contains"},"not":{"description":"SECRET not"},"if":{"description":"SECRET if"},"then":{"description":"SECRET then"},"else":{"description":"SECRET else"},"prefixItems":[{"description":"SECRET prefix"}],"allOf":[{"description":"SECRET all"}],"anyOf":[{"description":"SECRET any"}],"oneOf":[{"description":"SECRET one"}],"x-extension":{"description":"SECRET extension"},"required":["SECRET required"],"enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","examples":["SECRET example"]}}]}`)
@@ -658,12 +706,13 @@ func TestOpenAIChatSchemaDescriptionTraversalUsesOnlyDocumentedKeywords(t *testi
 
 func TestOpenAIResponsesDefinitionMachineFieldsRemainUnchanged(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
-	body := []byte(`{"reasoning":{"content":"SECRET reasoning","summary":"SECRET summary","encrypted_content":"SECRET encrypted"},"tools":[{"type":"function","name":"SECRET function","description":"SECRET function description","parameters":{"type":"object","required":["SECRET required"],"enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","examples":["SECRET example"],"properties":{"SECRET key":{"type":"string"}}}},{"type":"custom","name":"SECRET custom","description":"SECRET custom description","format":{"type":"grammar","definition":"SECRET grammar"}},{"type":"tool_search","description":"SECRET search description","parameters":{"type":"object","properties":{"SECRET key":{"type":"string"}}}},{"type":"shell","environment":{"type":"container","commands":["SECRET command"],"bundle":"SECRET bundle","path":"/SECRET/path","skills":[{"description":"SECRET skill","base64":"SECRET base64"}]}}],"input":[{"type":"function_call","id":"SECRET id","arguments":"SECRET arguments","input":"SECRET input","phase":"SECRET phase","status":"SECRET status","annotations":["SECRET annotation"]},{"type":"custom_tool_call","input":"SECRET custom input"},{"type":"tool_search_call","arguments":"SECRET search arguments"},{"type":"apply_patch_call","patch":"SECRET patch","diff":"SECRET diff","path":"/SECRET/patch"}]}`)
+	body := []byte(`{"reasoning":{"content":"SECRET reasoning","summary":"SECRET summary","encrypted_content":"SECRET encrypted"},"tools":[{"type":"function","name":"SECRET function","description":"SECRET function description","parameters":{"type":"object","required":["SECRET required"],"enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","examples":["SECRET example"],"properties":{"SECRET key":{"type":"string"}}}},{"type":"custom","name":"SECRET custom","description":"SECRET custom description","format":{"type":"grammar","definition":"SECRET grammar"}},{"type":"tool_search","description":"SECRET search description","parameters":{"type":"object","properties":{"SECRET key":{"type":"string"}}}},{"type":"shell","environment":{"type":"container","commands":["SECRET command"],"bundle":"SECRET bundle","path":"/SECRET/path","skills":[{"id":"SECRET hosted skill id","version":"SECRET hosted skill version","zip":"SECRET inline ZIP","base64":"SECRET inline base64","description":"SECRET skill"}]}},{"type":"mcp","server_id":"SECRET mcp id","server_label":"SECRET mcp label","server_description":"SECRET mcp description","server_url":"https://SECRET.invalid","approval_mode":"SECRET approval mode","require_approval":"SECRET require approval","error":{"type":"SECRET error type","message":"SECRET error message"}}],"input":[{"type":"function_call","id":"SECRET id","arguments":"SECRET arguments","input":"SECRET input","phase":"SECRET phase","status":"SECRET status","annotations":["SECRET annotation"]},{"type":"custom_tool_call","input":"SECRET custom input"},{"type":"tool_search_call","arguments":"SECRET search arguments"},{"type":"apply_patch_call","patch":"SECRET patch","diff":"SECRET diff","path":"/SECRET/patch"}]}`)
 	resp := interceptRPC(t, "openai-response", body)
 	want := replaceRawTokens(t, body,
 		rawReplacement{Before: `"SECRET function description"`, After: `" function description"`},
 		rawReplacement{Before: `"SECRET custom description"`, After: `" custom description"`},
 		rawReplacement{Before: `"SECRET search description"`, After: `" search description"`},
+		rawReplacement{Before: `"SECRET mcp description"`, After: `" mcp description"`},
 	)
 	if resp.Terminate || !bytes.Equal(resp.Body, want) {
 		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)

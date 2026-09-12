@@ -413,6 +413,58 @@ func TestWriteOutputFileRejectsDirectoryDestination(t *testing.T) {
 	assertNoReleaseTemporaryEntries(t, dir)
 }
 
+func TestWriteOutputFileRejectsSymlinkDestination(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	destination := filepath.Join(dir, "output")
+	oldContents := []byte("old output")
+	if err := os.WriteFile(target, oldContents, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(target), destination); err != nil {
+		if os.IsPermission(err) {
+			t.Skipf("symlink not permitted: %v", err)
+		}
+		t.Fatal(err)
+	}
+	beforeTarget, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeLink, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeOutputFile(destination, 0o644, func(file *os.File) error {
+		_, err := file.Write([]byte("new output"))
+		return err
+	}); err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+		t.Fatalf("writeOutputFile error = %v", err)
+	}
+	afterTarget, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(beforeTarget, afterTarget) {
+		t.Fatal("symlink destination changed target inode")
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, oldContents) {
+		t.Fatalf("target = %q, want %q", got, oldContents)
+	}
+	afterLink, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterLink.Mode()&os.ModeSymlink == 0 || !os.SameFile(beforeLink, afterLink) {
+		t.Fatal("symlink destination directory entry changed")
+	}
+	assertNoReleaseTemporaryEntries(t, dir)
+}
+
 func TestWriteOutputFileLeavesNoTemporaryFilesAfterInstall(t *testing.T) {
 	dir := t.TempDir()
 	destination := filepath.Join(dir, "output")
