@@ -71,6 +71,7 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		{name: "document title", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"SECRET"}]}]}`)},
 		{name: "document context", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET"}]}]}`)},
 		{name: "document source content typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":[{"type":"text","text":"SECRET"}]}}]}]}`)},
+		{name: "canonical user scalar content", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)},
 	}
 	for _, tc := range accepted {
 		if err := checkProtocolResult("claude", tc.body, modeStrip, tc.fold, invalid); err != nil {
@@ -87,7 +88,6 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 	}{
 		{name: "OpenAI typed text", format: "openai", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
 		{name: "OpenAI string text", format: "openai", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`), mode: modeStrip, got: invalid},
-		{name: "Claude generic string content", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude assistant typed text", format: "claude", body: []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude search result title", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"SECRET"}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude document source scalar text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","data":"SECRET","text":"unselected"}}]}]}`), mode: modeStrip, got: invalid},
@@ -530,6 +530,13 @@ func oracleClaudeRequiredFieldWouldBeEmpty(body []byte, fold bool) bool {
 		content, ok := oracleFirstField(message, "content")
 		if !ok {
 			return
+		}
+		if role == "user" {
+			var scalar string
+			if json.Unmarshal(content, &scalar) == nil && oracleWouldEmptyAfterStrip(scalar, fold) {
+				found = true
+				return
+			}
 		}
 		oracleForEachArray(content, func(block json.RawMessage) {
 			if found {
