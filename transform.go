@@ -16,6 +16,7 @@ type textSpan struct {
 	SkipFoldRewrite    bool
 	RequiresNonEmpty   bool
 	RequiresUnmodified bool
+	UnmodifiedMessage  string
 }
 
 const (
@@ -72,10 +73,11 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	}
 	for _, span := range spans {
 		if span.Changed && span.RequiresUnmodified {
-			return transformResult{
-				Invalid:        true,
-				InvalidMessage: "censorship cannot rewrite signature-bound text",
-			}, nil
+			message := span.UnmodifiedMessage
+			if message == "" {
+				message = "censorship cannot rewrite signature-bound text"
+			}
+			return transformResult{Invalid: true, InvalidMessage: message}, nil
 		}
 		if span.Changed && span.RequiresNonEmpty && span.Text == "" {
 			return transformResult{

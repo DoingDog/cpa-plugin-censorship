@@ -36,6 +36,7 @@ type oracleProtocolSpan struct {
 	Text               string
 	Role               string
 	RequiresUnmodified bool
+	UnmodifiedMessage  string
 }
 
 func TestValidJSONObjectRejectsNonJSONWhitespace(t *testing.T) {
@@ -521,6 +522,7 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "openai-response", body: []byte(`{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}},"tools":[{"type":"function","description":"SECRET"}]}`)},
 		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"SECRET"}]}]}`)},
 		{format: "interactions", body: interactionStepsSeed(64)},
+		{format: "interactions", body: []byte(`{"input":[{"type":"model_output","content":[{"type":"text","text":"SECRET","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}]}]}`)},
 		{format: "interactions", body: []byte(`{"input":{"type":"user_input","content":[{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}]}}`)},
 		{format: "interactions", body: []byte(`{"input":[{"type":"function_result","content":"SECRET"}]}`)},
 		{format: "openai", body: []byte(`not-json`)},
@@ -585,6 +587,11 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 			oracleGeminiSignatureBoundSpanMatches(body, fold) {
 			return nil
 		}
+		if format == "interactions" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 &&
+			got.InvalidMessage == "censorship cannot rewrite annotated text" &&
+			oracleInteractionsAnnotatedSpanMatches(body, fold) {
+			return nil
+		}
 		return fmt.Errorf("valid JSON object marked invalid: %s", body)
 	}
 
@@ -598,7 +605,8 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 	}
 	for i := range before {
 		if beforeRaw[i].Role != before[i].Role || beforeRaw[i].Text != before[i].Text ||
-			beforeRaw[i].RequiresUnmodified != before[i].RequiresUnmodified {
+			beforeRaw[i].RequiresUnmodified != before[i].RequiresUnmodified ||
+			beforeRaw[i].UnmodifiedMessage != before[i].UnmodifiedMessage {
 			return fmt.Errorf("oracle raw span %d = %#v, want %#v", i, beforeRaw[i], before[i])
 		}
 	}
@@ -668,7 +676,8 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 			return fmt.Errorf("eligible span %d = %#v, want role %q text %q", i, after[i], before[i].Role, want)
 		}
 		if afterRaw[i].Role != after[i].Role || afterRaw[i].Text != after[i].Text ||
-			afterRaw[i].RequiresUnmodified != after[i].RequiresUnmodified {
+			afterRaw[i].RequiresUnmodified != after[i].RequiresUnmodified ||
+			afterRaw[i].UnmodifiedMessage != after[i].UnmodifiedMessage {
 			return fmt.Errorf("oracle raw span %d = %#v, want %#v", i, afterRaw[i], after[i])
 		}
 		if oracleContains(beforeRaw[i].Text, "SECRET", fold) {
@@ -692,6 +701,19 @@ func oracleGeminiSignatureBoundSpanMatches(body []byte, fold bool) bool {
 	}
 	for _, span := range spans {
 		if span.RequiresUnmodified && oracleContains(span.Text, "SECRET", fold) {
+			return true
+		}
+	}
+	return false
+}
+
+func oracleInteractionsAnnotatedSpanMatches(body []byte, fold bool) bool {
+	spans, ok := oracleProtocolSpans("interactions", body)
+	if !ok {
+		return false
+	}
+	for _, span := range spans {
+		if span.RequiresUnmodified && span.UnmodifiedMessage == "censorship cannot rewrite annotated text" && oracleContains(span.Text, "SECRET", fold) {
 			return true
 		}
 	}
@@ -847,6 +869,7 @@ type oracleRawStringToken struct {
 	Text               string
 	Role               string
 	RequiresUnmodified bool
+	UnmodifiedMessage  string
 	Start              int
 	End                int
 }
@@ -1655,12 +1678,27 @@ func oracleInteractionParts(container json.RawMessage, role string, spans *[]ora
 	})
 }
 
+func oracleAppendInteractionString(spans *[]oracleProtocolSpan, part, text json.RawMessage, role string) {
+	before := len(*spans)
+	oracleAppendString(spans, text, role)
+	annotations, ok := oracleFirstField(part, "annotations")
+	if len(*spans) == before || !ok {
+		return
+	}
+	count := 0
+	if oracleForEachArray(annotations, func(json.RawMessage) { count++ }) && count > 0 {
+		span := &(*spans)[len(*spans)-1]
+		span.RequiresUnmodified = true
+		span.UnmodifiedMessage = "censorship cannot rewrite annotated text"
+	}
+}
+
 func oracleInteractionPart(part json.RawMessage, role string, spans *[]oracleProtocolSpan) {
 	if !oracleInteractionPartAllowed(part) {
 		return
 	}
 	if text, ok := oracleFirstField(part, "text"); ok {
-		oracleAppendString(spans, text, role)
+		oracleAppendInteractionString(spans, part, text, role)
 	}
 }
 
@@ -2236,12 +2274,24 @@ func oracleRawInteractionParts(container *oracleRawValue, role string, spans *[]
 	}
 }
 
+func oracleRawAppendInteractionString(spans *[]oracleRawStringToken, part, text *oracleRawValue, role string) {
+	before := len(*spans)
+	oracleRawAppendString(spans, text, role)
+	annotations, ok := part.firstField("annotations")
+	if len(*spans) == before || !ok || annotations.kind != 'a' || len(annotations.array) == 0 {
+		return
+	}
+	span := &(*spans)[len(*spans)-1]
+	span.RequiresUnmodified = true
+	span.UnmodifiedMessage = "censorship cannot rewrite annotated text"
+}
+
 func oracleRawInteractionPart(part *oracleRawValue, role string, spans *[]oracleRawStringToken) {
 	if !oracleRawInteractionPartAllowed(part) {
 		return
 	}
 	if text, ok := part.firstField("text"); ok {
-		oracleRawAppendString(spans, text, role)
+		oracleRawAppendInteractionString(spans, part, text, role)
 	}
 }
 
