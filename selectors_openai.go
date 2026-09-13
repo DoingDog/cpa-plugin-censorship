@@ -169,13 +169,13 @@ func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role strin
 	}
 	if tool.Get("type").Str == "shell" {
 		environment := tool.Get("environment")
-		if environment.Get("type").Str != "local" || !roles.has("user") {
+		if environment.Get("type").Str != "local" || !roles.has(role) {
 			return
 		}
 		skills := environment.Get("skills")
 		if skills.IsArray() {
 			skills.ForEach(func(_, skill gjson.Result) bool {
-				appendStringSpan(spans, skill.Get("description"), "user", roles)
+				appendStringSpan(spans, skill.Get("description"), role, roles)
 				return true
 			})
 		}
@@ -332,6 +332,11 @@ func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *
 			})
 		}
 		return true
+	case "mcp_approval_response":
+		if roles.has("user") {
+			appendStringSpan(spans, item.Get("reason"), "user", roles)
+		}
+		return true
 	default:
 		return false
 	}
@@ -378,7 +383,11 @@ func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan
 		tools := root.Get("tools")
 		if tools.IsArray() {
 			tools.ForEach(func(_, tool gjson.Result) bool {
-				collectOpenAIResponsesTool(spans, tool, "developer", roles)
+				role := "developer"
+				if tool.Get("type").Str == "shell" {
+					role = "user"
+				}
+				collectOpenAIResponsesTool(spans, tool, role, roles)
 				return true
 			})
 		}

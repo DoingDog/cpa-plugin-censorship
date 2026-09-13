@@ -65,8 +65,10 @@ func selectorHasEnabledRole(sourceFormat string, roles scopeSet) bool {
 		return roles.has("system") || roles.has("developer") || roles.has("user") || roles.has("assistant") || roles.has("tool")
 	case "claude":
 		return roles.has("system") || roles.has("user") || roles.has("assistant") || roles.has("tool")
-	case "gemini", "interactions":
+	case "gemini":
 		return roles.has("system") || roles.has("user") || roles.has("assistant")
+	case "interactions":
+		return roles.has("system") || roles.has("developer") || roles.has("user") || roles.has("assistant") || roles.has("tool")
 	default:
 		return false
 	}

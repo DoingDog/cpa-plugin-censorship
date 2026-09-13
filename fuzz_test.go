@@ -252,6 +252,115 @@ func TestProtocolOracleCoversDefaultScopeOpenAIDefinitions(t *testing.T) {
 	}
 }
 
+func TestProtocolOraclesAgreeOnProviderDefaultsAndCallerAnnotations(t *testing.T) {
+	for _, tc := range []struct {
+		name, format              string
+		body                      []byte
+		want                      []oracleProtocolSpan
+		productionNoEligibleMatch bool
+	}{
+		{
+			name:   "OpenAI local developer skill and approval reason",
+			format: "openai-response",
+			body:   []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"shell","environment":{"type":"local","skills":[{"description":"SECRET"}]}}]},{"type":"mcp_approval_response","approve":true,"approval_request_id":"id","reason":"SECRET"}]}`),
+			want: []oracleProtocolSpan{
+				{Text: "SECRET", Role: "developer"},
+				{Text: "SECRET", Role: "user"},
+			},
+		},
+		{
+			name:   "Anthropic compaction while beta MCP result remains tool-gated",
+			format: "claude",
+			body:   []byte(`{"context_management":{"edits":[{"type":"compact_20260112","instructions":"SECRET"}]},"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "system"}},
+		},
+		{
+			name:   "Interactions developer definitions while results remain tool-gated",
+			format: "interactions",
+			body:   []byte(`{"tools":[{"type":"function","description":"SECRET","parameters":{"description":"SECRET"}}],"response_format":{"type":"text","schema":{"description":"SECRET"}},"input":[{"type":"function_result","result":"SECRET"},{"type":"mcp_server_tool_result","result":[{"type":"text","text":"SECRET"}]},{"type":"code_execution_result","result":"SECRET","signature":"sig"}]}`),
+			want: []oracleProtocolSpan{
+				{Text: "SECRET", Role: "developer"},
+				{Text: "SECRET", Role: "developer"},
+				{Text: "SECRET", Role: "developer"},
+			},
+		},
+		{
+			name:   "Interactions caller annotation is mutable",
+			format: "interactions",
+			body:   []byte(`{"input":{"type":"text","text":"SECRET","annotations":[{"type":"url_citation"}]}}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "user"}},
+		},
+		{
+			name:   "Interactions input array caller annotation is mutable",
+			format: "interactions",
+			body:   []byte(`{"input":[{"type":"text","text":"SECRET","annotations":[{"type":"url_citation"}]}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "user"}},
+		},
+		{
+			name:   "OpenAI null approval reason is not text",
+			format: "openai-response",
+			body:   []byte(`{"input":[{"type":"mcp_approval_response","reason":null}]}`),
+			want:   nil,
+		},
+		{
+			name:                      "Interactions null type is not text",
+			format:                    "interactions",
+			body:                      []byte(`{"input":[{"type":null,"content":"SECRET"}]}`),
+			want:                      nil,
+			productionNoEligibleMatch: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			standard, ok := oracleProtocolSpans(tc.format, tc.body)
+			if !ok {
+				t.Fatal("standard oracle rejected valid body")
+			}
+			if !reflect.DeepEqual(standard, tc.want) {
+				t.Errorf("standard oracle spans = %#v, want %#v", standard, tc.want)
+			}
+
+			raw, ok := oracleRawProtocolSpans(tc.format, tc.body)
+			if !ok {
+				t.Fatal("raw oracle rejected valid body")
+			}
+			if len(raw) != len(tc.want) {
+				t.Fatalf("raw oracle spans = %#v, want %#v", raw, tc.want)
+			}
+			for i, rawSpan := range raw {
+				if rawSpan.Start < 0 || rawSpan.End <= rawSpan.Start || rawSpan.End > len(tc.body) {
+					t.Fatalf("raw oracle span %d range = [%d:%d], want JSON string token range", i, rawSpan.Start, rawSpan.End)
+				}
+				var text string
+				if err := json.Unmarshal(tc.body[rawSpan.Start:rawSpan.End], &text); err != nil || text != rawSpan.Text {
+					t.Fatalf("raw oracle span %d token = %q, decoded text = %q, error = %v", i, tc.body[rawSpan.Start:rawSpan.End], text, err)
+				}
+				got := oracleProtocolSpan{
+					Text:               rawSpan.Text,
+					Role:               rawSpan.Role,
+					RequiresUnmodified: rawSpan.RequiresUnmodified,
+					UnmodifiedMessage:  rawSpan.UnmodifiedMessage,
+				}
+				if got != tc.want[i] {
+					t.Fatalf("raw oracle span %d = %#v, want %#v", i, got, tc.want[i])
+				}
+			}
+			if len(standard) != len(raw) {
+				t.Errorf("standard and raw oracle span counts = %d and %d", len(standard), len(raw))
+			}
+			if tc.productionNoEligibleMatch {
+				cfg := mustConfig(t, "mode: block\nwords: [SECRET]\n")
+				got, err := transformRequest(tc.body, tc.format, cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Invalid || got.Blocked != nil || len(got.Body) != 0 {
+					t.Fatalf("production selected null type item: %#v", got)
+				}
+			}
+		})
+	}
+}
+
 func TestProtocolOracleAcceptsClaudeResultBlockTransforms(t *testing.T) {
 	const invalidMessage = "censorship rewrite would make a text field invalid"
 	for _, tc := range []struct {
@@ -521,6 +630,11 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "openai", body: []byte(`{"functions":[{"description":"SECRET"}],"response_format":{"type":"json_schema","json_schema":{"schema":{"type":"object","description":"SECRET"}}}}`)},
 		{format: "openai-response", body: []byte(`{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}},"tools":[{"type":"function","description":"SECRET"}]}`)},
 		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"SECRET"}]}]}`)},
+		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"shell","environment":{"type":"local","skills":[{"description":"SECRET"}]}}]},{"type":"mcp_approval_response","approve":true,"approval_request_id":"id","reason":"SECRET"}]}`)},
+		{format: "claude", body: []byte(`{"context_management":{"edits":[{"type":"compact_20260112","instructions":"SECRET"}]},"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`)},
+		{format: "interactions", body: []byte(`{"tools":[{"type":"function","description":"SECRET","parameters":{"description":"SECRET"}}],"response_format":{"type":"text","schema":{"description":"SECRET"}},"input":[{"type":"function_result","result":"SECRET"},{"type":"mcp_server_tool_result","result":[{"type":"text","text":"SECRET"}]},{"type":"code_execution_result","result":"SECRET","signature":"sig"}]}`)},
+		{format: "interactions", body: []byte(`{"input":{"type":"text","text":"SECRET","annotations":[{"type":"url_citation"}]}}`)},
+		{format: "interactions", body: []byte(`{"input":[{"type":"text","text":"SECRET","annotations":[{"type":"url_citation"}]}]}`)},
 		{format: "interactions", body: interactionStepsSeed(64)},
 		{format: "interactions", body: []byte(`{"input":[{"type":"model_output","content":[{"type":"text","text":"SECRET","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}]}]}`)},
 		{format: "interactions", body: []byte(`{"input":{"type":"user_input","content":[{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}]}}`)},
@@ -587,10 +701,17 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 			oracleGeminiSignatureBoundSpanMatches(body, fold) {
 			return nil
 		}
-		if format == "interactions" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 &&
-			got.InvalidMessage == "censorship cannot rewrite annotated text" &&
-			oracleInteractionsAnnotatedSpanMatches(body, fold) {
-			return nil
+		if format == "interactions" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 {
+			switch got.InvalidMessage {
+			case "censorship cannot rewrite annotated text":
+				if oracleInteractionsAnnotatedSpanMatches(body, fold) {
+					return nil
+				}
+			case "censorship cannot rewrite signature-bound text":
+				if oracleInteractionsSignatureBoundSpanMatches(body, fold) {
+					return nil
+				}
+			}
 		}
 		return fmt.Errorf("valid JSON object marked invalid: %s", body)
 	}
@@ -714,6 +835,19 @@ func oracleInteractionsAnnotatedSpanMatches(body []byte, fold bool) bool {
 	}
 	for _, span := range spans {
 		if span.RequiresUnmodified && span.UnmodifiedMessage == "censorship cannot rewrite annotated text" && oracleContains(span.Text, "SECRET", fold) {
+			return true
+		}
+	}
+	return false
+}
+
+func oracleInteractionsSignatureBoundSpanMatches(body []byte, fold bool) bool {
+	spans, ok := oracleProtocolSpans("interactions", body)
+	if !ok {
+		return false
+	}
+	for _, span := range spans {
+		if span.RequiresUnmodified && span.UnmodifiedMessage == "" && oracleContains(span.Text, "SECRET", fold) {
 			return true
 		}
 	}
@@ -1085,14 +1219,23 @@ func oracleRoleEnabled(role string) bool {
 	return role == "system" || role == "developer" || role == "user"
 }
 
+func oracleStrictJSONString(raw json.RawMessage) (string, bool) {
+	var value *string
+	if json.Unmarshal(raw, &value) != nil || value == nil {
+		return "", false
+	}
+	return *value, true
+}
+
 func oracleAppendString(spans *[]oracleProtocolSpan, raw json.RawMessage, role string) {
 	if !oracleRoleEnabled(role) {
 		return
 	}
-	var text string
-	if json.Unmarshal(raw, &text) == nil {
-		*spans = append(*spans, oracleProtocolSpan{Text: text, Role: role})
+	text, ok := oracleStrictJSONString(raw)
+	if !ok {
+		return
 	}
+	*spans = append(*spans, oracleProtocolSpan{Text: text, Role: role})
 }
 
 func oracleFirstField(object []byte, field string) (json.RawMessage, bool) {
@@ -1112,11 +1255,7 @@ func oracleStringField(object []byte, field string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	var value string
-	if json.Unmarshal(raw, &value) != nil {
-		return "", false
-	}
-	return value, true
+	return oracleStrictJSONString(raw)
 }
 
 func oracleAppendJSONSchemaDescriptions(spans *[]oracleProtocolSpan, schema json.RawMessage, role string) {
@@ -1252,7 +1391,7 @@ func oracleAppendOpenAIResponsesTool(spans *[]oracleProtocolSpan, tool json.RawM
 		}
 		oracleForEachArray(skills, func(skill json.RawMessage) {
 			if description, ok := oracleFirstField(skill, "description"); ok {
-				oracleAppendString(spans, description, "user")
+				oracleAppendString(spans, description, role)
 			}
 		})
 		return
@@ -1337,7 +1476,11 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 	}
 	if tools, ok := oracleFirstField(root, "tools"); ok {
 		oracleForEachArray(tools, func(tool json.RawMessage) {
-			oracleAppendOpenAIResponsesTool(spans, tool, "developer")
+			role := "developer"
+			if oracleJSONHasType(tool, "shell") {
+				role = "user"
+			}
+			oracleAppendOpenAIResponsesTool(spans, tool, role)
 		})
 	}
 	input, ok := oracleFirstField(root, "input")
@@ -1347,8 +1490,8 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 	oracleAppendString(spans, input, "user")
 	oracleForEachArray(input, func(item json.RawMessage) {
 		if itemType, exists := oracleFirstField(item, "type"); exists {
-			var value string
-			if json.Unmarshal(itemType, &value) != nil {
+			value, ok := oracleStrictJSONString(itemType)
+			if !ok {
 				return
 			}
 			if value == "additional_tools" {
@@ -1360,6 +1503,12 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 					oracleForEachArray(tools, func(tool json.RawMessage) {
 						oracleAppendOpenAIResponsesTool(spans, tool, role)
 					})
+				}
+				return
+			}
+			if value == "mcp_approval_response" {
+				if reason, ok := oracleFirstField(item, "reason"); ok {
+					oracleAppendString(spans, reason, "user")
 				}
 				return
 			}
@@ -1380,9 +1529,11 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 			partRole := role
 			partType := ""
 			if rawType, exists := oracleFirstField(part, "type"); exists {
-				if json.Unmarshal(rawType, &partType) != nil {
+				value, ok := oracleStrictJSONString(rawType)
+				if !ok {
 					return
 				}
+				partType = value
 			}
 			switch partType {
 			case "output_text", "refusal":
@@ -1413,13 +1564,24 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 			}
 		})
 	}
+	if contextManagement, ok := oracleFirstField(root, "context_management"); ok {
+		if edits, ok := oracleFirstField(contextManagement, "edits"); ok {
+			oracleForEachArray(edits, func(edit json.RawMessage) {
+				if oracleJSONHasType(edit, "compact_20260112") {
+					if instructions, ok := oracleFirstField(edit, "instructions"); ok {
+						oracleAppendString(spans, instructions, "system")
+					}
+				}
+			})
+		}
+	}
 	messages, ok := oracleFirstField(root, "messages")
 	if !ok {
 		return
 	}
 	oracleForEachArray(messages, func(message json.RawMessage) {
 		role, ok := oracleStringField(message, "role")
-		if !ok || role != "system" && role != "user" {
+		if !ok || role != "system" && role != "user" && role != "assistant" {
 			return
 		}
 		content, ok := oracleFirstField(message, "content")
@@ -1439,6 +1601,19 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 				return
 			}
 			if role != "user" {
+				return
+			}
+			if blockType == "mcp_tool_result" {
+				if toolContent, ok := oracleFirstField(block, "content"); ok {
+					oracleAppendString(spans, toolContent, "tool")
+					oracleForEachArray(toolContent, func(part json.RawMessage) {
+						if oracleClaudeBlockHasType(part, "text") {
+							if text, ok := oracleFirstField(part, "text"); ok {
+								oracleAppendString(spans, text, "tool")
+							}
+						}
+					})
+				}
 				return
 			}
 			switch blockType {
@@ -1586,6 +1761,33 @@ func TestOracleInteractionsExcludesMachineSystemText(t *testing.T) {
 }
 
 func oracleInteractionsSpans(root []byte, spans *[]oracleProtocolSpan) {
+	if tools, ok := oracleFirstField(root, "tools"); ok {
+		oracleForEachArray(tools, func(tool json.RawMessage) {
+			if !oracleJSONHasType(tool, "function") {
+				return
+			}
+			if description, ok := oracleFirstField(tool, "description"); ok {
+				oracleAppendString(spans, description, "developer")
+			}
+			if parameters, ok := oracleFirstField(tool, "parameters"); ok {
+				oracleAppendJSONSchemaDescriptions(spans, parameters, "developer")
+			}
+		})
+	}
+	if responseFormat, ok := oracleFirstField(root, "response_format"); ok {
+		if oracleJSONHasType(responseFormat, "text") {
+			if schema, ok := oracleFirstField(responseFormat, "schema"); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+		oracleForEachArray(responseFormat, func(format json.RawMessage) {
+			if oracleJSONHasType(format, "text") {
+				if schema, ok := oracleFirstField(format, "schema"); ok {
+					oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+				}
+			}
+		})
+	}
 	system, ok := oracleFirstField(root, "system_instruction")
 	if !ok {
 		system, ok = oracleFirstField(root, "systemInstruction")
@@ -1605,13 +1807,21 @@ func oracleInteractionsSpans(root []byte, spans *[]oracleProtocolSpan) {
 	}
 	oracleAppendString(spans, input, "user")
 	if bytes.HasPrefix(bytes.TrimSpace(input), []byte("{")) {
-		oracleInteractionItem(input, "user", spans, 0)
+		if oracleJSONHasType(input, "text") {
+			oracleInteractionPart(input, "user", spans, false)
+		} else {
+			oracleInteractionItem(input, "user", spans, 0)
+		}
 		return
 	}
 	oracleForEachArray(input, func(item json.RawMessage) {
 		oracleAppendString(spans, item, "user")
 		if bytes.HasPrefix(bytes.TrimSpace(item), []byte("{")) {
-			oracleInteractionItem(item, "user", spans, 0)
+			if oracleJSONHasType(item, "text") {
+				oracleInteractionPart(item, "user", spans, false)
+			} else {
+				oracleInteractionItem(item, "user", spans, 0)
+			}
 		}
 	})
 }
@@ -1620,10 +1830,37 @@ func oracleInteractionItem(item json.RawMessage, inheritedRole string, spans *[]
 	if depth > maxFuzzJSONDepth {
 		return
 	}
+	itemType := ""
+	if rawType, exists := oracleFirstField(item, "type"); exists {
+		value, ok := oracleStrictJSONString(rawType)
+		if !ok {
+			return
+		}
+		itemType = value
+		switch itemType {
+		case "function_result", "mcp_server_tool_result":
+			if result, ok := oracleFirstField(item, "result"); ok {
+				oracleAppendInteractionResult(spans, result)
+			}
+			return
+		case "code_execution_result":
+			before := len(*spans)
+			if result, ok := oracleFirstField(item, "result"); ok {
+				oracleAppendString(spans, result, "tool")
+			}
+			if len(*spans) == before {
+				return
+			}
+			if signature, ok := oracleFirstField(item, "signature"); ok && !bytes.Equal(bytes.TrimSpace(signature), []byte("null")) {
+				(*spans)[len(*spans)-1].RequiresUnmodified = true
+			}
+			return
+		}
+	}
 	role := inheritedRole
 	if rawRole, exists := oracleFirstField(item, "role"); exists {
-		var value string
-		if json.Unmarshal(rawRole, &value) != nil {
+		value, ok := oracleStrictJSONString(rawRole)
+		if !ok {
 			return
 		}
 		switch value {
@@ -1635,26 +1872,23 @@ func oracleInteractionItem(item json.RawMessage, inheritedRole string, spans *[]
 			return
 		}
 	}
-	if rawType, exists := oracleFirstField(item, "type"); exists {
-		var value string
-		if json.Unmarshal(rawType, &value) != nil {
-			return
-		}
-		switch value {
-		case "", "user_input":
+	if itemType != "" {
+		switch itemType {
+		case "user_input":
 		case "model_output":
 			role = "assistant"
 		default:
 			return
 		}
 	}
+	protectAnnotations := itemType == "model_output"
 	if content, ok := oracleFirstField(item, "content"); ok {
 		oracleAppendString(spans, content, role)
 		if bytes.HasPrefix(bytes.TrimSpace(content), []byte("{")) {
-			oracleInteractionPart(content, role, spans)
+			oracleInteractionPart(content, role, spans, protectAnnotations)
 		} else {
 			oracleForEachArray(content, func(part json.RawMessage) {
-				oracleInteractionPart(part, role, spans)
+				oracleInteractionPart(part, role, spans, protectAnnotations)
 			})
 		}
 	}
@@ -1668,21 +1902,33 @@ func oracleInteractionItem(item json.RawMessage, inheritedRole string, spans *[]
 	}
 }
 
+func oracleAppendInteractionResult(spans *[]oracleProtocolSpan, result json.RawMessage) {
+	oracleAppendString(spans, result, "tool")
+	oracleForEachArray(result, func(part json.RawMessage) {
+		if oracleJSONHasType(part, "text") {
+			oracleInteractionPart(part, "tool", spans, false)
+		}
+	})
+}
+
 func oracleInteractionParts(container json.RawMessage, role string, spans *[]oracleProtocolSpan) {
 	parts, ok := oracleFirstField(container, "parts")
 	if !ok {
 		return
 	}
 	oracleForEachArray(parts, func(part json.RawMessage) {
-		oracleInteractionPart(part, role, spans)
+		oracleInteractionPart(part, role, spans, false)
 	})
 }
 
-func oracleAppendInteractionString(spans *[]oracleProtocolSpan, part, text json.RawMessage, role string) {
+func oracleAppendInteractionString(spans *[]oracleProtocolSpan, part, text json.RawMessage, role string, protectAnnotations bool) {
 	before := len(*spans)
 	oracleAppendString(spans, text, role)
+	if !protectAnnotations || len(*spans) == before {
+		return
+	}
 	annotations, ok := oracleFirstField(part, "annotations")
-	if len(*spans) == before || !ok {
+	if !ok {
 		return
 	}
 	count := 0
@@ -1693,12 +1939,12 @@ func oracleAppendInteractionString(spans *[]oracleProtocolSpan, part, text json.
 	}
 }
 
-func oracleInteractionPart(part json.RawMessage, role string, spans *[]oracleProtocolSpan) {
+func oracleInteractionPart(part json.RawMessage, role string, spans *[]oracleProtocolSpan, protectAnnotations bool) {
 	if !oracleInteractionPartAllowed(part) {
 		return
 	}
 	if text, ok := oracleFirstField(part, "text"); ok {
-		oracleAppendInteractionString(spans, part, text, role)
+		oracleAppendInteractionString(spans, part, text, role, protectAnnotations)
 	}
 }
 
@@ -1707,8 +1953,8 @@ func oracleInteractionPartAllowed(part json.RawMessage) bool {
 		return false
 	}
 	if partType, exists := oracleFirstField(part, "type"); exists {
-		var value string
-		if json.Unmarshal(partType, &value) != nil || value != "" && value != "text" {
+		value, ok := oracleStrictJSONString(partType)
+		if !ok || value != "" && value != "text" {
 			return false
 		}
 	}
@@ -1851,7 +2097,7 @@ func oracleRawAppendOpenAIResponsesTool(spans *[]oracleRawStringToken, tool *ora
 		}
 		for _, skill := range skills.array {
 			if description, ok := skill.firstField("description"); ok {
-				oracleRawAppendString(spans, description, "user")
+				oracleRawAppendString(spans, description, role)
 			}
 		}
 		return
@@ -1939,7 +2185,11 @@ func oracleRawOpenAIResponseSpans(root *oracleRawValue, spans *[]oracleRawString
 	}
 	if tools, ok := root.firstField("tools"); ok && tools.kind == 'a' {
 		for _, tool := range tools.array {
-			oracleRawAppendOpenAIResponsesTool(spans, tool, "developer")
+			role := "developer"
+			if oracleRawJSONHasType(tool, "shell") {
+				role = "user"
+			}
+			oracleRawAppendOpenAIResponsesTool(spans, tool, role)
 		}
 	}
 	input, ok := root.firstField("input")
@@ -1964,6 +2214,12 @@ func oracleRawOpenAIResponseSpans(root *oracleRawValue, spans *[]oracleRawString
 					for _, tool := range tools.array {
 						oracleRawAppendOpenAIResponsesTool(spans, tool, role)
 					}
+				}
+				continue
+			}
+			if rawType.text == "mcp_approval_response" {
+				if reason, ok := item.firstField("reason"); ok {
+					oracleRawAppendString(spans, reason, "user")
 				}
 				continue
 			}
@@ -2023,13 +2279,24 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 			}
 		}
 	}
+	if contextManagement, ok := root.firstField("context_management"); ok {
+		if edits, ok := contextManagement.firstField("edits"); ok && edits.kind == 'a' {
+			for _, edit := range edits.array {
+				if oracleRawJSONHasType(edit, "compact_20260112") {
+					if instructions, ok := edit.firstField("instructions"); ok {
+						oracleRawAppendString(spans, instructions, "system")
+					}
+				}
+			}
+		}
+	}
 	messages, ok := root.firstField("messages")
 	if !ok || messages.kind != 'a' {
 		return
 	}
 	for _, message := range messages.array {
 		role, ok := oracleRawStringField(message, "role")
-		if !ok || role != "system" && role != "user" {
+		if !ok || role != "system" && role != "user" && role != "assistant" {
 			continue
 		}
 		content, ok := message.firstField("content")
@@ -2052,6 +2319,21 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 				continue
 			}
 			if role != "user" {
+				continue
+			}
+			if blockType == "mcp_tool_result" {
+				if toolContent, ok := block.firstField("content"); ok {
+					oracleRawAppendString(spans, toolContent, "tool")
+					if toolContent.kind == 'a' {
+						for _, part := range toolContent.array {
+							if oracleRawJSONHasType(part, "text") {
+								if text, ok := part.firstField("text"); ok {
+									oracleRawAppendString(spans, text, "tool")
+								}
+							}
+						}
+					}
+				}
 				continue
 			}
 			switch blockType {
@@ -2181,6 +2463,35 @@ func oracleRawGeminiParts(container *oracleRawValue, role string, spans *[]oracl
 }
 
 func oracleRawInteractionsSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	if tools, ok := root.firstField("tools"); ok && tools.kind == 'a' {
+		for _, tool := range tools.array {
+			if !oracleRawJSONHasType(tool, "function") {
+				continue
+			}
+			if description, ok := tool.firstField("description"); ok {
+				oracleRawAppendString(spans, description, "developer")
+			}
+			if parameters, ok := tool.firstField("parameters"); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, parameters, "developer")
+			}
+		}
+	}
+	if responseFormat, ok := root.firstField("response_format"); ok {
+		if oracleRawJSONHasType(responseFormat, "text") {
+			if schema, ok := responseFormat.firstField("schema"); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+		if responseFormat.kind == 'a' {
+			for _, format := range responseFormat.array {
+				if oracleRawJSONHasType(format, "text") {
+					if schema, ok := format.firstField("schema"); ok {
+						oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+					}
+				}
+			}
+		}
+	}
 	system, ok := root.firstField("system_instruction")
 	if !ok {
 		system, ok = root.firstField("systemInstruction")
@@ -2200,7 +2511,11 @@ func oracleRawInteractionsSpans(root *oracleRawValue, spans *[]oracleRawStringTo
 	}
 	oracleRawAppendString(spans, input, "user")
 	if input.kind == 'o' {
-		oracleRawInteractionItem(input, "user", spans, 0)
+		if oracleRawJSONHasType(input, "text") {
+			oracleRawInteractionPart(input, "user", spans, false)
+		} else {
+			oracleRawInteractionItem(input, "user", spans, 0)
+		}
 		return
 	}
 	if input.kind != 'a' {
@@ -2209,7 +2524,11 @@ func oracleRawInteractionsSpans(root *oracleRawValue, spans *[]oracleRawStringTo
 	for _, item := range input.array {
 		oracleRawAppendString(spans, item, "user")
 		if item.kind == 'o' {
-			oracleRawInteractionItem(item, "user", spans, 0)
+			if oracleRawJSONHasType(item, "text") {
+				oracleRawInteractionPart(item, "user", spans, false)
+			} else {
+				oracleRawInteractionItem(item, "user", spans, 0)
+			}
 		}
 	}
 }
@@ -2217,6 +2536,32 @@ func oracleRawInteractionsSpans(root *oracleRawValue, spans *[]oracleRawStringTo
 func oracleRawInteractionItem(item *oracleRawValue, inheritedRole string, spans *[]oracleRawStringToken, depth int) {
 	if depth > maxFuzzJSONDepth || item == nil || item.kind != 'o' {
 		return
+	}
+	itemType := ""
+	if rawType, exists := item.firstField("type"); exists {
+		if rawType.kind != 's' {
+			return
+		}
+		itemType = rawType.text
+		switch itemType {
+		case "function_result", "mcp_server_tool_result":
+			if result, ok := item.firstField("result"); ok {
+				oracleRawAppendInteractionResult(spans, result)
+			}
+			return
+		case "code_execution_result":
+			before := len(*spans)
+			if result, ok := item.firstField("result"); ok {
+				oracleRawAppendString(spans, result, "tool")
+			}
+			if len(*spans) == before {
+				return
+			}
+			if signature, ok := item.firstField("signature"); ok && (signature.kind != 'p' || signature.text != "null") {
+				(*spans)[len(*spans)-1].RequiresUnmodified = true
+			}
+			return
+		}
 	}
 	role := inheritedRole
 	if rawRole, exists := item.firstField("role"); exists {
@@ -2232,25 +2577,23 @@ func oracleRawInteractionItem(item *oracleRawValue, inheritedRole string, spans 
 			return
 		}
 	}
-	if rawType, exists := item.firstField("type"); exists {
-		if rawType.kind != 's' {
-			return
-		}
-		switch rawType.text {
-		case "", "user_input":
+	if itemType != "" {
+		switch itemType {
+		case "user_input":
 		case "model_output":
 			role = "assistant"
 		default:
 			return
 		}
 	}
+	protectAnnotations := itemType == "model_output"
 	if content, ok := item.firstField("content"); ok {
 		oracleRawAppendString(spans, content, role)
 		if content.kind == 'o' {
-			oracleRawInteractionPart(content, role, spans)
+			oracleRawInteractionPart(content, role, spans, protectAnnotations)
 		} else if content.kind == 'a' {
 			for _, part := range content.array {
-				oracleRawInteractionPart(part, role, spans)
+				oracleRawInteractionPart(part, role, spans, protectAnnotations)
 			}
 		}
 	}
@@ -2264,21 +2607,36 @@ func oracleRawInteractionItem(item *oracleRawValue, inheritedRole string, spans 
 	}
 }
 
+func oracleRawAppendInteractionResult(spans *[]oracleRawStringToken, result *oracleRawValue) {
+	oracleRawAppendString(spans, result, "tool")
+	if result == nil || result.kind != 'a' {
+		return
+	}
+	for _, part := range result.array {
+		if oracleRawJSONHasType(part, "text") {
+			oracleRawInteractionPart(part, "tool", spans, false)
+		}
+	}
+}
+
 func oracleRawInteractionParts(container *oracleRawValue, role string, spans *[]oracleRawStringToken) {
 	parts, ok := container.firstField("parts")
 	if !ok || parts.kind != 'a' {
 		return
 	}
 	for _, part := range parts.array {
-		oracleRawInteractionPart(part, role, spans)
+		oracleRawInteractionPart(part, role, spans, false)
 	}
 }
 
-func oracleRawAppendInteractionString(spans *[]oracleRawStringToken, part, text *oracleRawValue, role string) {
+func oracleRawAppendInteractionString(spans *[]oracleRawStringToken, part, text *oracleRawValue, role string, protectAnnotations bool) {
 	before := len(*spans)
 	oracleRawAppendString(spans, text, role)
+	if !protectAnnotations || len(*spans) == before {
+		return
+	}
 	annotations, ok := part.firstField("annotations")
-	if len(*spans) == before || !ok || annotations.kind != 'a' || len(annotations.array) == 0 {
+	if !ok || annotations.kind != 'a' || len(annotations.array) == 0 {
 		return
 	}
 	span := &(*spans)[len(*spans)-1]
@@ -2286,12 +2644,12 @@ func oracleRawAppendInteractionString(spans *[]oracleRawStringToken, part, text 
 	span.UnmodifiedMessage = "censorship cannot rewrite annotated text"
 }
 
-func oracleRawInteractionPart(part *oracleRawValue, role string, spans *[]oracleRawStringToken) {
+func oracleRawInteractionPart(part *oracleRawValue, role string, spans *[]oracleRawStringToken, protectAnnotations bool) {
 	if !oracleRawInteractionPartAllowed(part) {
 		return
 	}
 	if text, ok := part.firstField("text"); ok {
-		oracleRawAppendInteractionString(spans, part, text, role)
+		oracleRawAppendInteractionString(spans, part, text, role, protectAnnotations)
 	}
 }
 
@@ -2736,7 +3094,7 @@ func oracleExcludedTokens(format string, body []byte) [][]byte {
 			case "system_instruction", "systemInstruction":
 				oracleInteractionExcludedParts(value, &tokens)
 			case "input":
-				oracleInteractionsExcluded(value, "user", &tokens, 0)
+				oracleInteractionsExcluded(value, "user", &tokens, 0, true)
 			}
 		}
 	})
@@ -2755,25 +3113,37 @@ func oracleInteractionExcludedParts(container json.RawMessage, tokens *[][]byte)
 	})
 }
 
-func oracleInteractionsExcluded(raw json.RawMessage, inheritedRole string, tokens *[][]byte, depth int) {
+func oracleInteractionsExcluded(raw json.RawMessage, inheritedRole string, tokens *[][]byte, depth int, directInput bool) {
 	if depth > maxFuzzJSONDepth {
 		return
 	}
 	trimmed := bytes.TrimSpace(raw)
 	if bytes.HasPrefix(trimmed, []byte("[")) {
 		oracleForEachArray(raw, func(item json.RawMessage) {
-			oracleInteractionsExcluded(item, inheritedRole, tokens, depth)
+			if directInput && oracleJSONHasType(item, "text") {
+				if !oracleInteractionPartAllowed(item) {
+					appendOracleToken(tokens, item)
+				}
+				return
+			}
+			oracleInteractionsExcluded(item, inheritedRole, tokens, depth, false)
 		})
 		return
 	}
 	if !bytes.HasPrefix(trimmed, []byte("{")) {
 		return
 	}
+	if directInput && oracleJSONHasType(raw, "text") {
+		if !oracleInteractionPartAllowed(raw) {
+			appendOracleToken(tokens, raw)
+		}
+		return
+	}
 
 	role := inheritedRole
 	if rawRole, exists := oracleFirstField(raw, "role"); exists {
-		var value string
-		if json.Unmarshal(rawRole, &value) != nil {
+		value, ok := oracleStrictJSONString(rawRole)
+		if !ok {
 			appendOracleToken(tokens, raw)
 			return
 		}
@@ -2788,8 +3158,8 @@ func oracleInteractionsExcluded(raw json.RawMessage, inheritedRole string, token
 		}
 	}
 	if rawType, exists := oracleFirstField(raw, "type"); exists {
-		var value string
-		if json.Unmarshal(rawType, &value) != nil {
+		value, ok := oracleStrictJSONString(rawType)
+		if !ok {
 			appendOracleToken(tokens, raw)
 			return
 		}
@@ -2820,7 +3190,7 @@ func oracleInteractionsExcluded(raw json.RawMessage, inheritedRole string, token
 	oracleInteractionExcludedParts(raw, tokens)
 	if steps, ok := oracleFirstField(raw, "steps"); ok {
 		oracleForEachArray(steps, func(step json.RawMessage) {
-			oracleInteractionsExcluded(step, role, tokens, depth+1)
+			oracleInteractionsExcluded(step, role, tokens, depth+1, false)
 		})
 	}
 }
@@ -2947,8 +3317,8 @@ func oracleUniqueStringField(object json.RawMessage, field string) (string, bool
 			return
 		}
 		count++
-		if count == 1 && json.Unmarshal(raw, &value) == nil {
-			valid = true
+		if count == 1 {
+			value, valid = oracleStrictJSONString(raw)
 		}
 	}) {
 		return "", false

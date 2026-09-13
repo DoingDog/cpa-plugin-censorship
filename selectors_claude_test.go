@@ -64,6 +64,47 @@ func TestClaudeTopLevelSystemStringAndToolScope(t *testing.T) {
 	}
 }
 
+func TestClaudeCompactionInstructionsUseSystemScope(t *testing.T) {
+	body := []byte(`{"context_management":{"edits":[{"type":"compact_20260112","instructions":"SECRET instructions","trigger":{"type":"input_tokens","value":1000},"pause_after_compaction":true},{"type":"future","instructions":"SECRET future"},{"type":"compact_20260112","instructions":null}]}}`)
+	want := []byte(`{"context_management":{"edits":[{"type":"compact_20260112","instructions":" instructions","trigger":{"type":"input_tokens","value":1000},"pause_after_compaction":true},{"type":"future","instructions":"SECRET future"},{"type":"compact_20260112","instructions":null}]}}`)
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system]\n")
+	resp := interceptRPC(t, "claude", body)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+	}
+
+	assertBlockedRole(t, "claude", string(body), "system")
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	resp = interceptRPC(t, "claude", body)
+	if resp.Terminate || resp.Body != nil {
+		t.Fatalf("user-only response = %#v", resp)
+	}
+}
+
+func TestClaudeBetaMCPToolResult(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"mcp_tool_result","tool_use_id":"SECRET id","is_error":false,"content":"SECRET scalar","name":"SECRET name"},{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET typed"},{"type":"image","source":{"data":"SECRET image"}},{"type":"document","title":"SECRET document"},{"type":"unknown","text":"SECRET unknown"},{"text":"SECRET missing type"},{"type":null,"text":"SECRET null type"},{"type":42,"text":"SECRET numeric type"},{"type":"text","text":null},{"type":"text","text":42}]},{"type":"mcp_tool_result","content":{"text":"SECRET object"}},{"type":"mcp_tool_result","content":null},{"type":"mcp_tool_result","content":42}]}]}`)
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET scalar"`, After: `" scalar"`},
+		rawReplacement{Before: `"SECRET typed"`, After: `" typed"`},
+	)
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [tool]\n")
+	resp := interceptRPC(t, "claude", body)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+	}
+
+	assertBlockedRole(t, "claude", string(body), "tool")
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	resp = interceptRPC(t, "claude", body)
+	if resp.Terminate || resp.Body != nil {
+		t.Fatalf("user-only response = %#v", resp)
+	}
+}
+
 func TestClaudeSelectorCanonicalRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string
