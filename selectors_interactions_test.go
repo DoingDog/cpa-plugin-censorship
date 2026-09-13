@@ -285,6 +285,16 @@ func TestInteractionsCallerAnnotationsRemainRewritable(t *testing.T) {
 	}
 }
 
+func TestInteractionsDirectInputAnnotationsRemainRewritable(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"input":{"type":"text","text":"SECRET user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/user"}]}}`)
+	want := `{"input":{"type":"text","text":" user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/user"}]}}`
+	resp := interceptRPC(t, "interactions", body)
+	if resp.Terminate || string(resp.Body) != want {
+		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+	}
+}
+
 func TestInteractionsDocumentedToolResults(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [tool]\n")
 	body := []byte(`{"input":[
