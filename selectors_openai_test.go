@@ -530,6 +530,57 @@ func TestOpenAIResponsesTopLevelLocalSkillUsesUserScope(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesAdditionalToolsLocalSkillUsesItemRole(t *testing.T) {
+	body := []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"shell","environment":{"type":"local","skills":[{"name":"SECRET name","path":"/SECRET/path","description":"SECRET description"}]}}]}]}`)
+	want := []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"shell","environment":{"type":"local","skills":[{"name":"SECRET name","path":"/SECRET/path","description":" description"}]}}]}]}`)
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
+	resp := interceptRPC(t, "openai-response", body)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+	}
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	resp = interceptRPC(t, "openai-response", body)
+	if resp.Terminate || len(resp.Body) != 0 {
+		t.Fatalf("user-only response = %#v body = %s", resp, resp.Body)
+	}
+}
+
+func TestOpenAIResponsesMCPApprovalReasonUsesUserScope(t *testing.T) {
+	body := []byte(`{"input":[{"type":"mcp_approval_response","approval_request_id":"SECRET request","approve":true,"id":"SECRET id","reason":"SECRET reason","extra":"SECRET extra"}]}`)
+	want := []byte(`{"input":[{"type":"mcp_approval_response","approval_request_id":"SECRET request","approve":true,"id":"SECRET id","reason":" reason","extra":"SECRET extra"}]}`)
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	resp := interceptRPC(t, "openai-response", body)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s want = %s", resp, resp.Body, want)
+	}
+
+	registerConfig(t, "mode: block\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	resp = interceptRPC(t, "openai-response", body)
+	if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "user" {
+		t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
+	}
+
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
+	resp = interceptRPC(t, "openai-response", body)
+	if resp.Terminate || len(resp.Body) != 0 {
+		t.Fatalf("developer-only response = %#v body = %s", resp, resp.Body)
+	}
+
+	for _, reason := range []string{"null", "1", `{"message":"SECRET"}`, `["SECRET"]`} {
+		t.Run(reason, func(t *testing.T) {
+			registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+			body := []byte(`{"input":[{"type":"mcp_approval_response","reason":` + reason + `}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			if resp.Terminate || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v body = %s", resp, resp.Body)
+			}
+		})
+	}
+}
+
 func TestOpenAIResponsesAdditionalToolsSkipsUnsupportedRoles(t *testing.T) {
 	for _, tc := range []struct {
 		name, role string
