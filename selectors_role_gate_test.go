@@ -21,7 +21,7 @@ func TestSelectorHasEnabledRoleByFormat(t *testing.T) {
 		{name: "openai-response", enabled: scopeSet{"system": struct{}{}, "developer": struct{}{}, "user": struct{}{}, "assistant": struct{}{}, "tool": struct{}{}}},
 		{name: "claude", enabled: scopeSet{"system": struct{}{}, "user": struct{}{}, "assistant": struct{}{}, "tool": struct{}{}}},
 		{name: "gemini", enabled: scopeSet{"system": struct{}{}, "user": struct{}{}, "assistant": struct{}{}}},
-		{name: "interactions", enabled: scopeSet{"system": struct{}{}, "user": struct{}{}, "assistant": struct{}{}}},
+		{name: "interactions", enabled: scopeSet{"system": struct{}{}, "developer": struct{}{}, "user": struct{}{}, "assistant": struct{}{}, "tool": struct{}{}}},
 		{name: "unknown", enabled: scopeSet{}},
 	}
 
