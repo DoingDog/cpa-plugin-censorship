@@ -258,9 +258,27 @@ func TestInteractionsSelectorCanonicalRoles(t *testing.T) {
 }
 
 func TestInteractionsCallerAnnotationsRemainRewritable(t *testing.T) {
-	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
-	body := []byte(`{"input":{"type":"text","text":"SECRET user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}}`)
-	want := `{"input":{"type":"text","text":" user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}}`
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, user, assistant, tool]\n")
+	body := []byte(`{
+		"system_instruction":{"type":"text","text":"SECRET system","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/system"}]},
+		"input":[
+			{"type":"user_input","content":{"type":"text","text":"SECRET user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/user"}]}},
+			{"role":"assistant","content":{"type":"text","text":"SECRET assistant","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/assistant"}]}},
+			{"type":"model_output","parts":[{"type":"text","text":"SECRET model part","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/model-part"}]}]},
+			{"role":"assistant","steps":[{"content":{"type":"text","text":"SECRET nested","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/nested"}]}}]},
+			{"type":"function_result","result":[{"type":"text","text":"SECRET tool","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/tool"}]}]}
+		]
+	}`)
+	want := `{
+		"system_instruction":{"type":"text","text":" system","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/system"}]},
+		"input":[
+			{"type":"user_input","content":{"type":"text","text":" user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/user"}]}},
+			{"role":"assistant","content":{"type":"text","text":" assistant","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/assistant"}]}},
+			{"type":"model_output","parts":[{"type":"text","text":" model part","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/model-part"}]}]},
+			{"role":"assistant","steps":[{"content":{"type":"text","text":" nested","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/nested"}]}}]},
+			{"type":"function_result","result":[{"type":"text","text":" tool","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com/tool"}]}]}
+		]
+	}`
 	resp := interceptRPC(t, "interactions", body)
 	if resp.Terminate || string(resp.Body) != want {
 		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
@@ -272,6 +290,7 @@ func TestInteractionsDocumentedToolResults(t *testing.T) {
 	body := []byte(`{"input":[
 	  {"type":"function_result","call_id":"SECRET id","name":"SECRET name","result":"SECRET function"},
 	  {"type":"function_result","result":[{"type":"text","text":"SECRET typed"},{"type":"image","data":"SECRET image"},{"type":"unknown","text":"SECRET unknown"}]},
+		  {"type":"function_result","result":[{"text":"SECRET missing type"}]},
 	  {"type":"function_result","content":"SECRET obsolete","result":{"text":"SECRET object"}},
 	  {"type":"mcp_server_tool_result","call_id":"SECRET id","server_name":"SECRET server","name":"SECRET name","result":"SECRET mcp"},
 	  {"type":"mcp_server_tool_result","result":[{"type":"text","text":"SECRET mcp typed"},{"type":"image","data":"SECRET image"}]},
@@ -280,6 +299,7 @@ func TestInteractionsDocumentedToolResults(t *testing.T) {
 	want := `{"input":[
 	  {"type":"function_result","call_id":"SECRET id","name":"SECRET name","result":" function"},
 	  {"type":"function_result","result":[{"type":"text","text":" typed"},{"type":"image","data":"SECRET image"},{"type":"unknown","text":"SECRET unknown"}]},
+		  {"type":"function_result","result":[{"text":"SECRET missing type"}]},
 	  {"type":"function_result","content":"SECRET obsolete","result":{"text":"SECRET object"}},
 	  {"type":"mcp_server_tool_result","call_id":"SECRET id","server_name":"SECRET server","name":"SECRET name","result":" mcp"},
 	  {"type":"mcp_server_tool_result","result":[{"type":"text","text":" mcp typed"},{"type":"image","data":"SECRET image"}]},
