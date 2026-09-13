@@ -248,10 +248,161 @@ func TestInteractionsSelectorCanonicalRoles(t *testing.T) {
 		{name: "content object model output", body: `{"input":[{"type":"model_output","content":{"type":"text","text":"SECRET"}}]}`, role: "assistant"},
 		{name: "parts", body: `{"input":[{"role":"user","parts":[{"text":"SECRET"}]}]}`, role: "user"},
 		{name: "nested steps", body: `{"input":[{"role":"assistant","steps":[{"content":"SECRET"}]}]}`, role: "assistant"},
+		{name: "function result", body: `{"input":[{"type":"function_result","result":"SECRET"}]}`, role: "tool"},
+		{name: "mcp server tool result", body: `{"input":[{"type":"mcp_server_tool_result","result":"SECRET"}]}`, role: "tool"},
+		{name: "code execution result", body: `{"input":[{"type":"code_execution_result","result":"SECRET"}]}`, role: "tool"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { assertBlockedRole(t, "interactions", tc.body, tc.role) })
 	}
+}
+
+func TestInteractionsCallerAnnotationsRemainRewritable(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"input":{"type":"text","text":"SECRET user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}}`)
+	want := `{"input":{"type":"text","text":" user","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}}`
+	resp := interceptRPC(t, "interactions", body)
+	if resp.Terminate || string(resp.Body) != want {
+		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+	}
+}
+
+func TestInteractionsDocumentedToolResults(t *testing.T) {
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [tool]\n")
+	body := []byte(`{"input":[
+	  {"type":"function_result","call_id":"SECRET id","name":"SECRET name","result":"SECRET function"},
+	  {"type":"function_result","result":[{"type":"text","text":"SECRET typed"},{"type":"image","data":"SECRET image"},{"type":"unknown","text":"SECRET unknown"}]},
+	  {"type":"function_result","content":"SECRET obsolete","result":{"text":"SECRET object"}},
+	  {"type":"mcp_server_tool_result","call_id":"SECRET id","server_name":"SECRET server","name":"SECRET name","result":"SECRET mcp"},
+	  {"type":"mcp_server_tool_result","result":[{"type":"text","text":"SECRET mcp typed"},{"type":"image","data":"SECRET image"}]},
+	  {"type":"code_execution_result","call_id":"SECRET id","result":"SECRET code","is_error":false}
+	]}`)
+	want := `{"input":[
+	  {"type":"function_result","call_id":"SECRET id","name":"SECRET name","result":" function"},
+	  {"type":"function_result","result":[{"type":"text","text":" typed"},{"type":"image","data":"SECRET image"},{"type":"unknown","text":"SECRET unknown"}]},
+	  {"type":"function_result","content":"SECRET obsolete","result":{"text":"SECRET object"}},
+	  {"type":"mcp_server_tool_result","call_id":"SECRET id","server_name":"SECRET server","name":"SECRET name","result":" mcp"},
+	  {"type":"mcp_server_tool_result","result":[{"type":"text","text":" mcp typed"},{"type":"image","data":"SECRET image"}]},
+	  {"type":"code_execution_result","call_id":"SECRET id","result":" code","is_error":false}
+	]}`
+	resp := interceptRPC(t, "interactions", body)
+	if resp.Terminate || string(resp.Body) != want {
+		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+	}
+}
+
+func TestInteractionsSignedCodeExecutionResultRejectsRewrite(t *testing.T) {
+	registerConfig(t, "words:\n  obfs: [SECRET]\nscope:\n  roles: [tool]\n")
+	body := []byte(`{"input":[{"type":"code_execution_result","call_id":"call","result":"SECRET","signature":"signed"}]}`)
+	resp := interceptRPC(t, "interactions", body)
+	if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.message").String() != "censorship cannot rewrite signature-bound text" {
+		t.Fatalf("response = %#v", resp)
+	}
+
+	t.Run("block reports tool", func(t *testing.T) {
+		assertBlockedRole(t, "interactions", string(body), "tool")
+	})
+	t.Run("null signature permits rewrite", func(t *testing.T) {
+		registerConfig(t, "words:\n  obfs: [SECRET]\nscope:\n  roles: [tool]\n")
+		nullBody := []byte(`{"input":[{"type":"code_execution_result","call_id":"call","result":"SECRET","signature":null}]}`)
+		resp := interceptRPC(t, "interactions", nullBody)
+		if resp.Terminate || gjson.GetBytes(resp.Body, "input.0.result").String() != "S​ECRET" {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+}
+
+func TestInteractionsFunctionToolsAndResponseSchemas(t *testing.T) {
+	body := []byte(`{
+	  "tools": [
+	    {
+	      "type": "function",
+	      "name": "SECRET function name",
+	      "description": "SECRET function description",
+	      "parameters": {
+	        "type": "object",
+	        "description": "SECRET root schema",
+	        "properties": {
+	          "SECRET key": {
+	            "type": "string",
+	            "description": "SECRET property",
+	            "enum": ["SECRET enum"],
+	            "default": "SECRET default"
+	          }
+	        },
+	        "required": ["SECRET key"]
+	      }
+	    },
+	    {"type": "google_search", "description": "SECRET excluded"},
+	    {"description": "SECRET missing type"}
+	  ],
+	  "response_format": [
+	    {"type": "text", "mime_type": "application/json", "schema": {"type": "object", "description": "SECRET response", "properties": {"value": {"description": "SECRET nested response"}}}},
+	    {"type": "image", "schema": {"description": "SECRET image schema"}},
+	    {"schema": {"description": "SECRET missing type schema"}}
+	  ]
+	}`)
+	want := `{
+	  "tools": [
+	    {
+	      "type": "function",
+	      "name": "SECRET function name",
+	      "description": " function description",
+	      "parameters": {
+	        "type": "object",
+	        "description": " root schema",
+	        "properties": {
+	          "SECRET key": {
+	            "type": "string",
+	            "description": " property",
+	            "enum": ["SECRET enum"],
+	            "default": "SECRET default"
+	          }
+	        },
+	        "required": ["SECRET key"]
+	      }
+	    },
+	    {"type": "google_search", "description": "SECRET excluded"},
+	    {"description": "SECRET missing type"}
+	  ],
+	  "response_format": [
+	    {"type": "text", "mime_type": "application/json", "schema": {"type": "object", "description": " response", "properties": {"value": {"description": " nested response"}}}},
+	    {"type": "image", "schema": {"description": "SECRET image schema"}},
+	    {"schema": {"description": "SECRET missing type schema"}}
+	  ]
+	}`
+	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
+	resp := interceptRPC(t, "interactions", body)
+	if resp.Terminate || string(resp.Body) != want {
+		t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+	}
+
+	t.Run("single object response format", func(t *testing.T) {
+		registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [developer]\n")
+		body := []byte(`{"response_format":{"type":"text","schema":{"description":"SECRET response"}}}`)
+		want := `{"response_format":{"type":"text","schema":{"description":" response"}}}`
+		resp := interceptRPC(t, "interactions", body)
+		if resp.Terminate || string(resp.Body) != want {
+			t.Fatalf("response = %#v, body = %s, want %s", resp, resp.Body, want)
+		}
+	})
+	t.Run("function tool block reports developer", func(t *testing.T) {
+		assertBlockedRole(t, "interactions", `{"tools":[{"type":"function","description":"SECRET"}]}`, "developer")
+	})
+	t.Run("response schema block reports developer", func(t *testing.T) {
+		assertBlockedRole(t, "interactions", `{"response_format":{"type":"text","schema":{"description":"SECRET"}}}`, "developer")
+	})
+	t.Run("user scope leaves definitions unchanged", func(t *testing.T) {
+		registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [user]\n")
+		resp := interceptRPC(t, "interactions", body)
+		got := resp.Body
+		if len(got) == 0 {
+			got = body
+		}
+		if resp.Terminate || !bytes.Equal(got, body) {
+			t.Fatalf("response = %#v, body = %s, want unchanged %s", resp, got, body)
+		}
+	})
 }
 
 func TestScanTextPartPreservesProtocolRules(t *testing.T) {
