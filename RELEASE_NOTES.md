@@ -2,10 +2,11 @@
 
 ## v0.2.6 fixes
 
-- Selects explicit Interactions function/MCP result strings, exact typed-text array items, and code execution result strings as `tool`. A non-null sibling signature permits `block` but rejects a final rewrite.
+- Selects explicit Interactions function/MCP result strings and exact typed-text array items as `tool`.
+- Selects Interactions code execution result strings as `tool`. A non-null sibling signature for those strings permits `block` but rejects a final rewrite.
 - Selects explicit Interactions function declaration descriptions, parameter JSON Schema description leaves, and exact text response schema description leaves as `developer`.
 - Only non-empty annotations on exact Interactions `model_output.content` text protect rewrites; caller-authored annotated text remains rewritable.
-- Selects OpenAI `mcp_approval_response.reason` and top-level local skills as `user`; `additional_tools` local skills inherit the validated item role.
+- Selects OpenAI `mcp_approval_response.reason` as `user` and fixes `additional_tools` local skills to inherit the validated item role. Top-level local skills remain `user`.
 - Selects Anthropic exact compaction instructions as `system`; Beta MCP string and exact typed-text results as `tool`.
 
 v0.2.6 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
