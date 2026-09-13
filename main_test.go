@@ -572,7 +572,6 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"straße/STRASSE does not match",
 		"no Unicode normalization",
 		"assistant is inspected only when explicitly listed in scope.roles",
-		"tool is inspected only for documented OpenAI and Claude result-text paths",
 		"valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel",
 		"invalid reconfiguration keeps the last-known-good snapshot",
 		"Machine exclusions: tool calls, machine schema values, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
@@ -633,6 +632,9 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 				t.Errorf("%s contains superseded %q", name, token)
 			}
 		}
+		if name == "README.md" && !bytes.Contains(raw, []byte("tool is inspected only for documented OpenAI, Claude, and Interactions result-text paths")) {
+			t.Errorf("%s missing current tool result-text scope", name)
+		}
 	}
 }
 
@@ -641,7 +643,7 @@ func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.2.6 targets CLIProxyAPI v7.2.152")) {
-		t.Fatal("RELEASE_NOTES.md does not target CLIProxyAPI v7.2.152 for v0.2.6")
+	if !bytes.Contains(raw, []byte("v0.2.6 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.")) {
+		t.Fatal("RELEASE_NOTES.md does not contain the complete v0.2.6 compatibility sentence")
 	}
 }

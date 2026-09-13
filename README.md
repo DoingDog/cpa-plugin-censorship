@@ -114,7 +114,7 @@ Selectors enter only the explicit text leaves listed here. There is no recursive
 
 OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role. Missing Gemini roles follow CPA's user/model alternation. Invalid Gemini roles advance CPA's user/model alternation but remain unselected. Gemini `model` maps to `assistant`.
 
-assistant is inspected only when explicitly listed in scope.roles. This applies only to assistant history carried in a later request and never to live output. tool is inspected only for documented OpenAI and Claude result-text paths, including OpenAI string tool content and Claude selected tool_result text.
+assistant is inspected only when explicitly listed in scope.roles. This applies only to assistant history carried in a later request and never to live output. tool is inspected only for documented OpenAI, Claude, and Interactions result-text paths, including OpenAI string tool content, Claude selected tool_result text, and Interactions selected function/MCP/code execution result text.
 
 ## Machine exclusions
 
