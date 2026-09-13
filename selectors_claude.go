@@ -19,6 +19,19 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		}
 	}
 
+	if roles.has("system") {
+		edits := root.Get("context_management.edits")
+		if edits.IsArray() {
+			edits.ForEach(func(_, edit gjson.Result) bool {
+				editType := edit.Get("type")
+				if edit.IsObject() && editType.Type == gjson.String && editType.Str == "compact_20260112" {
+					appendStringSpan(spans, edit.Get("instructions"), "system", roles)
+				}
+				return true
+			})
+		}
+	}
+
 	messages := root.Get("messages")
 	if !messages.IsArray() {
 		return
@@ -86,6 +99,22 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 						if innerType.Type == gjson.String && innerType.Str == "text" {
 							appendNonEmptyStringSpan(spans, inner.Get("text"), "tool", roles)
 						}
+					}
+					return true
+				})
+			case "mcp_tool_result":
+				if role.Str != "user" || !roles.has("tool") {
+					return true
+				}
+				toolContent := block.Get("content")
+				appendStringSpan(spans, toolContent, "tool", roles)
+				if !toolContent.IsArray() {
+					return true
+				}
+				toolContent.ForEach(func(_, inner gjson.Result) bool {
+					innerType := inner.Get("type")
+					if inner.IsObject() && innerType.Type == gjson.String && innerType.Str == "text" {
+						appendStringSpan(spans, inner.Get("text"), "tool", roles)
 					}
 					return true
 				})
