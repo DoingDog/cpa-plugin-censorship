@@ -65,7 +65,7 @@ type pluginCallChar = C.char
 type pluginCallSize = C.size_t
 
 func shouldCopyPluginRequest(method string) bool {
-	return method != pluginabi.MethodRequestInterceptAfter
+	return true
 }
 
 func checkedCIntLength(length uint64) (int, bool) {

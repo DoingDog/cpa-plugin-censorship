@@ -60,7 +60,8 @@ func BenchmarkRequestFilter(b *testing.B) {
 			name: "model-exact",
 			yaml: "filter_mode: include\nfilter:\n  models: [target-model]\n",
 			request: pluginapi.RequestInterceptRequest{
-				RequestedModel: "target-model",
+				Model:          "target-model",
+				RequestedModel: "other-model",
 			},
 			want: true,
 		},
@@ -87,7 +88,8 @@ func BenchmarkRequestFilter(b *testing.B) {
 			request: pluginapi.RequestInterceptRequest{
 				Headers:        http.Header{"Authorization": {"Bearer test-key"}},
 				Metadata:       map[string]any{callerScopeMetadataKey: testKeyCallerScope},
-				RequestedModel: "target-model",
+				Model:          "target-model",
+				RequestedModel: "other-model",
 			},
 			want: true,
 		},
@@ -95,7 +97,8 @@ func BenchmarkRequestFilter(b *testing.B) {
 			name: "or-model-decisive",
 			yaml: "filter_mode: include\nfilter_logic: or\nfilter:\n  api-keys: [test-*]\n  models: [target-model]\n",
 			request: pluginapi.RequestInterceptRequest{
-				RequestedModel: "target-model",
+				Model:          "target-model",
+				RequestedModel: "other-model",
 			},
 			want: true,
 		},
@@ -103,7 +106,8 @@ func BenchmarkRequestFilter(b *testing.B) {
 			name: "and-model-decisive",
 			yaml: "filter_mode: include\nfilter_logic: and\nfilter:\n  api-keys: [test-*]\n  models: [target-model]\n",
 			request: pluginapi.RequestInterceptRequest{
-				RequestedModel: "other-model",
+				Model:          "other-model",
+				RequestedModel: "target-model",
 			},
 			want: false,
 		},
@@ -131,7 +135,10 @@ func BenchmarkRequestFilter(b *testing.B) {
 func BenchmarkRequestFilterGlobAdversarial(b *testing.B) {
 	const suffixRunes = 2000
 	filter := mustBenchmarkConfig(b, "filter_mode: include\nfilter:\n  models: ['*"+strings.Repeat("a", suffixRunes)+"b']\n").Filter
-	request := pluginapi.RequestInterceptRequest{RequestedModel: strings.Repeat("a", suffixRunes*2) + "c"}
+	request := pluginapi.RequestInterceptRequest{
+		Model:          strings.Repeat("a", suffixRunes*2) + "c",
+		RequestedModel: "target-model",
+	}
 	if filter.shouldProcess(&request) {
 		b.Fatal("adversarial request matched")
 	}

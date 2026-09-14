@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -86,15 +88,26 @@ func handlePluginRegister(raw []byte) ([]byte, error) {
 func handlePluginReconfigure(raw []byte) ([]byte, error) {
 	candidate, err := parseLifecycleSnapshot(raw)
 	if err != nil {
-		_, _ = callHost(pluginabi.MethodHostLog, hostLogRequest{
-			Level:   "error",
-			Message: "censorship plugin reconfigure rejected",
-			Fields:  map[string]any{"error": err.Error()},
-		})
+		logReconfigureRejected(err.Error())
+		return okEnvelope(pluginRegistration())
+	}
+	current := loadedSnapshot()
+	oldHasModels := current != nil && len(current.Filter.Models) != 0
+	newHasModels := len(candidate.Filter.Models) != 0
+	if oldHasModels != newHasModels {
+		logReconfigureRejected("filter.models phase change requires restart")
 		return okEnvelope(pluginRegistration())
 	}
 	installSnapshot(candidate)
 	return okEnvelope(pluginRegistration())
+}
+
+func logReconfigureRejected(errorText string) {
+	_, _ = callHost(pluginabi.MethodHostLog, hostLogRequest{
+		Level:   "error",
+		Message: "censorship plugin reconfigure rejected",
+		Fields:  map[string]any{"error": errorText},
+	})
 }
 
 func parseLifecycleSnapshot(raw []byte) (*configSnapshot, error) {
@@ -109,6 +122,34 @@ func parseLifecycleSnapshot(raw []byte) (*configSnapshot, error) {
 }
 
 func interceptBeforeAuth(raw []byte) ([]byte, error) {
+	cfg := loadedSnapshot()
+	if cfg == nil || len(cfg.Rules) == 0 || len(cfg.Filter.Models) != 0 {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	return interceptRequest(raw, cfg, false)
+}
+
+func interceptAfterAuth(raw []byte) ([]byte, error) {
+	cfg := loadedSnapshot()
+	if cfg == nil || len(cfg.Rules) == 0 || len(cfg.Filter.Models) == 0 {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	return interceptRequest(raw, cfg, true)
+}
+
+func hasSelectedAuth(metadata map[string]any) bool {
+	for _, key := range []string{
+		cliproxyexecutor.SelectedAuthMetadataKey,
+		cliproxyexecutor.SelectedAuthIndexMetadataKey,
+	} {
+		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func interceptRequest(raw []byte, cfg *configSnapshot, requireSelectedAuth bool) ([]byte, error) {
 	var request pluginapi.RequestInterceptRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, err
@@ -116,8 +157,10 @@ func interceptBeforeAuth(raw []byte) ([]byte, error) {
 	if !knownSourceFormat(request.SourceFormat) {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
-	cfg := loadedSnapshot()
-	if cfg == nil || len(cfg.Rules) == 0 || !cfg.Filter.shouldProcess(&request) {
+	if requireSelectedAuth && !hasSelectedAuth(request.Metadata) {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	if !cfg.Filter.shouldProcess(&request) {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
 	result, err := transformRequest(request.Body, request.SourceFormat, cfg)
@@ -151,10 +194,6 @@ func interceptBeforeAuth(raw []byte) ([]byte, error) {
 	default:
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
-}
-
-func interceptAfterAuth([]byte) ([]byte, error) {
-	return okEnvelope(pluginapi.RequestInterceptResponse{})
 }
 
 type censorshipErrorBody struct {

@@ -23,18 +23,6 @@ const (
 	filterLogicAnd filterLogic = "and"
 )
 
-const (
-	modelExecutionSourceKey      = "source"
-	modelExecutionCallbackSource = "plugin_host_model_callback"
-)
-
-func (f requestFilter) modelSubject(request *pluginapi.RequestInterceptRequest) string {
-	if source, _ := request.Metadata[modelExecutionSourceKey].(string); source == modelExecutionCallbackSource {
-		return request.Model
-	}
-	return request.RequestedModel
-}
-
 type compiledFilterPattern struct {
 	Text        string
 	Glob        *compiledFilterGlob
@@ -297,7 +285,7 @@ func (f requestFilter) shouldProcess(request *pluginapi.RequestInterceptRequest)
 	modelConfigured := len(f.Models) != 0
 	var model string
 	if modelConfigured {
-		model = f.modelSubject(request)
+		model = request.Model
 	}
 	var matched bool
 	switch {
