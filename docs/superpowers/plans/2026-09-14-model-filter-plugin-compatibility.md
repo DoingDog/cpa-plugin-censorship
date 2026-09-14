@@ -75,8 +75,12 @@ func TestRequestFilterShouldProcessUsesInvocationModelSubject(t *testing.T) {
 		t.Fatal("nested callback invocation did not match Model")
 	}
 
-	request.Model = "client-a"
-	if filter.shouldProcess(request) {
+	requestedModelFilter := requestFilter{
+		Mode:   filterModeInclude,
+		Logic:  filterLogicOr,
+		Models: []compiledFilterPattern{{Text: "client-a"}},
+	}
+	if requestedModelFilter.shouldProcess(request) {
 		t.Fatal("nested callback invocation matched RequestedModel instead of Model")
 	}
 }
@@ -93,12 +97,19 @@ func TestRequestFilterShouldProcessRejectsUntrustedNestedModelFallback(t *testin
 	filter := requestFilter{Mode: filterModeInclude, Logic: filterLogicOr, Models: []compiledFilterPattern{{Text: "anything"}}}
 	compileRequestFilter(&filter)
 	request := &pluginapi.RequestInterceptRequest{
-		Model: "", RequestedModel: "other", Body: []byte(`{"model":"anything"}`),
-		Metadata: map[string]any{"source": "unknown"},
+		Model: "anything", Body: []byte(`{"model":"anything"}`),
 	}
+	if filter.shouldProcess(request) {
+		t.Fatal("outer invocation fell back from an empty RequestedModel")
+	}
+
+	request.RequestedModel = "other"
+	request.Metadata = map[string]any{"source": "unknown"}
 	if filter.shouldProcess(request) {
 		t.Fatal("shouldProcess trusted an unknown source or body model")
 	}
+
+	request.Model = ""
 	request.Metadata["source"] = pluginHostModelCallbackSource
 	if filter.shouldProcess(request) {
 		t.Fatal("shouldProcess matched an empty nested Model")
@@ -122,7 +133,7 @@ Run:
 go test ./... -run 'TestRequestFilter(ShouldProcess|GatesAllSupportedFormats)'
 ```
 
-Expected: FAIL in the new distinct-alias case and in table rows whose `Model` is `target`; no production code has been changed yet. If a failure is unrelated to this fixture, record the exact output and isolate the test name before continuing.
+Expected: FAIL at the exact callback-source assertion because production still reads `RequestedModel`; ordinary table rows and five-format outer fixtures remain green. The first `t.Fatal` ends that test, so the callback assertion that excludes an OR with `RequestedModel` becomes observable after the positive callback case is implemented. If a failure is unrelated to these fixtures, record the exact output and isolate the test name before continuing.
 
 - [ ] **Step 6: Commit the red test change**
 
