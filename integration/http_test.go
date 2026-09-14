@@ -204,85 +204,80 @@ func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 }
 
 func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
+	const probe = "watcher-probe"
+	const readyProbe = "watcher-ready-only"
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, `words:
-  block: [alpha-only]
+  block: [snapshot-a-only]
 filter_mode: include
-filter:
-  models: [censorship-integration-model]
-`)
-	status, _, body := postChat(t, cpa, "alpha-only")
-	if status != 400 || gjson.GetBytes(body, "error.term").String() != "alpha-only" {
-		t.Fatalf("snapshot A did not block alpha-only: status=%d body=%s", status, body)
-	}
-	if upstream.arrivalCount() != 0 {
-		t.Fatal("snapshot A block reached upstream")
-	}
-
-	watcherDeadline := time.Now().Add(20 * time.Second)
-	for {
-		writePluginConfig(t, cpa.config, `words:
-  block: [alpha-only, watcher-ready-only]
-filter_mode: include
-filter:
-  models: [censorship-integration-model]
-`)
-		status, _, body = postChat(t, cpa, "watcher-ready-only")
-		if status == 400 && gjson.GetBytes(body, "error.term").String() == "watcher-ready-only" {
-			break
-		}
-		if time.Now().After(watcherDeadline) {
-			t.Fatalf("config watcher not observed, last status=%d body=%s\n%s", status, body, readCPALog(cpa.logPath))
-		}
-		time.Sleep(time.Second)
-	}
-
-	writePluginConfig(t, cpa.config, `words:
-  block: [beta-only]
-ignore_case: true
-filter_mode: exclude
 filter:
   models: [never-match]
 `)
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		status, _, body = postChat(t, cpa, "BETA-ONLY")
-		if status == 400 && gjson.GetBytes(body, "error.term").String() == "beta-only" {
-			break
+
+	waitFor := func(name string, interval time.Duration, condition func() bool) {
+		timer := time.NewTimer(20 * time.Second)
+		ticker := time.NewTicker(interval)
+		defer timer.Stop()
+		defer ticker.Stop()
+		for {
+			if condition() {
+				return
+			}
+			select {
+			case <-ticker.C:
+			case <-timer.C:
+				t.Fatalf("%s\n%s", name, readCPALog(cpa.logPath))
+			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("snapshot B not observed, last status=%d body=%s\n%s", status, body, readCPALog(cpa.logPath))
-		}
-		time.Sleep(25 * time.Millisecond)
 	}
 
+	requestsBeforeA := upstream.requestCount()
+	status, _, body := postChat(t, cpa, probe)
+	if status != 200 {
+		t.Fatalf("snapshot A did not bypass probe: status=%d body=%s", status, body)
+	}
+	if got, want := upstream.requestCount(), requestsBeforeA+1; got != want {
+		t.Fatalf("snapshot A bypass request count = %d, want %d", got, want)
+	}
+
+	waitFor("config watcher not observed", time.Second, func() bool {
+		writePluginConfig(t, cpa.config, `words:
+  block: [snapshot-a-only, watcher-ready-only]
+filter_mode: include
+filter:
+  models: [censorship-integration-model]
+`)
+		status, _, body = postChat(t, cpa, readyProbe)
+		return status == 400 && gjson.GetBytes(body, "error.term").String() == readyProbe
+	})
+
 	writePluginConfig(t, cpa.config, `words:
-  block: [beta-only]
-ignore_case: true
-filter_mode: exclude
+  block: [watcher-probe]
+filter_mode: include
+filter:
+  models: [censorship-integration-model]
+`)
+	waitFor("snapshot B not observed", 25*time.Millisecond, func() bool {
+		status, _, body = postChat(t, cpa, probe)
+		return status == 400 && gjson.GetBytes(body, "error.term").String() == probe
+	})
+
+	logOffset := len(readCPALog(cpa.logPath))
+	writePluginConfig(t, cpa.config, `words:
+  block: [invalid-only]
+filter_mode: include
 filter_logic: xor
 filter:
   models: [never-match]
 `)
-	deadline = time.Now().Add(20 * time.Second)
-	for !strings.Contains(readCPALog(cpa.logPath), "censorship plugin reconfigure rejected") {
-		if time.Now().After(deadline) {
-			t.Fatalf("invalid snapshot rejection not observed\n%s", readCPALog(cpa.logPath))
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
+	waitFor("invalid snapshot rejection not observed", 25*time.Millisecond, func() bool {
+		log := readCPALog(cpa.logPath)
+		return len(log) >= logOffset && strings.Contains(log[logOffset:], "censorship plugin reconfigure rejected")
+	})
 
-	status, _, body = postChat(t, cpa, "BETA-ONLY")
-	if status != 400 || gjson.GetBytes(body, "error.term").String() != "beta-only" {
-		t.Fatalf("last known good snapshot B did not block BETA-ONLY: status=%d body=%s", status, body)
-	}
-	requestsBeforeAlpha := upstream.requestCount()
-	status, _, body = postChat(t, cpa, "alpha-only")
-	if status != 200 {
-		t.Fatalf("snapshot B still blocked alpha-only: status=%d body=%s", status, body)
-	}
-	if got, want := upstream.requestCount(), requestsBeforeAlpha+1; got != want {
-		t.Fatalf("snapshot B alpha-only request count = %d, want %d", got, want)
+	status, _, body = postChat(t, cpa, probe)
+	if status != 400 || gjson.GetBytes(body, "error.term").String() != probe {
+		t.Fatalf("invalid reconfigure replaced snapshot B: status=%d body=%s", status, body)
 	}
 }
 

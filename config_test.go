@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -12,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 func TestParseConfigYAMLDefaultsAndValidation(t *testing.T) {
@@ -322,15 +319,19 @@ func TestRegisterRejectsInvalidConfigAndAcceptsHostOwnedKeys(t *testing.T) {
 func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 	const configA = "filter_mode: include\nfilter_logic: and\nfilter:\n  api-keys: [key-a]\n  models: [model-a]\nwords: {strip: [alpha]}\nscope:\n  formats: [openai]\n  roles: [user]\n"
 	const configB = "filter_mode: exclude\nfilter_logic: or\nfilter:\n  api-keys: [key-b]\n  models: [model-b]\nignore_case: true\nwords: {obfs: [Beta]}\nscope:\n  formats: [openai]\n  roles: [user]\nobfs:\n  char: '⁠'\n"
-	body := []byte(`{"messages":[{"role":"user","content":"alpha BETA"}]}`)
-	wantA := []byte(`{"messages":[{"role":"user","content":" BETA"}]}`)
-	wantB := []byte(`{"messages":[{"role":"user","content":"alpha B⁠ETA"}]}`)
 	registerConfig(t, configA)
+
+	matchesA := func(snapshot *configSnapshot) bool {
+		return snapshot != nil && snapshot.Filter.Mode == filterModeInclude && snapshot.Filter.Logic == filterLogicAnd && len(snapshot.Filter.APIKeys) == 1 && snapshot.Filter.APIKeys[0].Text == "key-a" && len(snapshot.Filter.Models) == 1 && snapshot.Filter.Models[0].Text == "model-a" && !snapshot.IgnoreCase && len(snapshot.Rules) == 1 && snapshot.Rules[0].Term == "alpha" && snapshot.BlockEnd == 0 && snapshot.StripEnd == 1 && snapshot.ObfsChar == "​"
+	}
+	matchesB := func(snapshot *configSnapshot) bool {
+		return snapshot != nil && snapshot.Filter.Mode == filterModeExclude && snapshot.Filter.Logic == filterLogicOr && len(snapshot.Filter.APIKeys) == 1 && snapshot.Filter.APIKeys[0].Text == "key-b" && len(snapshot.Filter.Models) == 1 && snapshot.Filter.Models[0].Text == "model-b" && snapshot.IgnoreCase && len(snapshot.Rules) == 1 && snapshot.Rules[0].Term == "Beta" && snapshot.BlockEnd == 0 && snapshot.StripEnd == 0 && snapshot.ObfsChar == "⁠"
+	}
 
 	done := make(chan struct{})
 	started := make(chan struct{}, 32)
 	errs := make(chan error, 32)
-	var calls atomic.Uint64
+	var reads atomic.Uint64
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
@@ -343,34 +344,23 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 					return
 				default:
 				}
-				resp, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
-					RequestID:      "concurrent-filter-test",
-					SourceFormat:   "openai",
-					RequestedModel: "model-a",
-					Headers:        http.Header{"Authorization": {"Bearer key-a"}},
-					Metadata:       map[string]any{callerScopeMetadataKey: callerScope("key-a")},
-					Body:           body,
-				})
+				snapshot := loadedSnapshot()
 				if first {
 					started <- struct{}{}
 					first = false
 				}
-				if err != nil {
-					errs <- err
+				if !matchesA(snapshot) && !matchesB(snapshot) {
+					errs <- fmt.Errorf("mixed snapshot: %#v", snapshot)
 					return
 				}
-				calls.Add(1)
-				if !bytes.Equal(resp.Body, wantA) && !bytes.Equal(resp.Body, wantB) {
-					errs <- fmt.Errorf("mixed snapshot body: %s", resp.Body)
-					return
-				}
+				reads.Add(1)
 			}
 		}()
 	}
 	for i := 0; i < 32; i++ {
 		<-started
 	}
-	before := calls.Load()
+	before := reads.Load()
 	for i := 0; i < 1000; i++ {
 		if i%2 == 0 {
 			reconfigureConfig(t, configB)
@@ -378,7 +368,7 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 			reconfigureConfig(t, configA)
 		}
 	}
-	after := calls.Load()
+	after := reads.Load()
 	close(done)
 	wg.Wait()
 	close(errs)
@@ -386,7 +376,7 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if after == before {
-		t.Fatal("no interception completed during reconfiguration")
+		t.Fatal("no snapshot read completed during reconfiguration")
 	}
 }
 

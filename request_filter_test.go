@@ -47,6 +47,87 @@ func TestMatchFilterGlob(t *testing.T) {
 	}
 }
 
+func TestCompiledFilterGlobCrossesWordBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		pattern string
+		value   string
+		want    bool
+	}{
+		{pattern: strings.Repeat("a", 63) + "*b", value: strings.Repeat("a", 63) + "b", want: true},
+		{pattern: strings.Repeat("a", 63) + "?", value: strings.Repeat("a", 63) + "甲", want: true},
+		{pattern: "*" + strings.Repeat("a", 70) + "b", value: strings.Repeat("a", 140) + "c", want: false},
+	} {
+		matcher := compileFilterGlob([]rune(test.pattern))
+		if got := matcher.matches([]rune(test.value)); got != test.want {
+			t.Fatalf("matches(%q, %q) = %t, want %t", test.pattern, test.value, got, test.want)
+		}
+	}
+
+	dense := compileFilterGlob([]rune("*" + strings.Repeat("a", 70)))
+	if dense.literals['a'].dense == nil || dense.literals['a'].sparse != nil {
+		t.Fatalf("dense literal positions = %#v", dense.literals['a'])
+	}
+	sparse := compileFilterGlob([]rune(strings.Repeat("?", 128) + "a*"))
+	if sparse.literals['a'].dense != nil || len(sparse.literals['a'].sparse) != 1 {
+		t.Fatalf("sparse literal positions = %#v", sparse.literals['a'])
+	}
+}
+
+func TestMatchFilterGlobMatchesDPOracle(t *testing.T) {
+	patterns := filterGlobTestStrings([]rune{'a', 'b', '甲', '*', '?', '[', '\\'}, 4)
+	values := filterGlobTestStrings([]rune{'a', 'b', '甲', '[', '\\'}, 3)
+	for _, pattern := range patterns {
+		for _, value := range values {
+			got := matchFilterGlob([]rune(pattern), []rune(value))
+			want := matchFilterGlobDPOracle([]rune(pattern), []rune(value))
+			if got != want {
+				t.Fatalf("matchFilterGlob(%q, %q) = %t, want %t", pattern, value, got, want)
+			}
+		}
+	}
+}
+
+func filterGlobTestStrings(alphabet []rune, maxLength int) []string {
+	values := []string{""}
+	current := []string{""}
+	for range maxLength {
+		next := make([]string, 0, len(current)*len(alphabet))
+		for _, prefix := range current {
+			for _, r := range alphabet {
+				next = append(next, prefix+string(r))
+			}
+		}
+		values = append(values, next...)
+		current = next
+	}
+	return values
+}
+
+func matchFilterGlobDPOracle(pattern, value []rune) bool {
+	previous := make([]bool, len(value)+1)
+	previous[0] = true
+	for _, token := range pattern {
+		current := make([]bool, len(value)+1)
+		switch token {
+		case '*':
+			current[0] = previous[0]
+			for index := 1; index < len(current); index++ {
+				current[index] = previous[index] || current[index-1]
+			}
+		case '?':
+			for index := 1; index < len(current); index++ {
+				current[index] = previous[index-1]
+			}
+		default:
+			for index := 1; index < len(current); index++ {
+				current[index] = previous[index-1] && token == value[index-1]
+			}
+		}
+		previous = current
+	}
+	return previous[len(value)]
+}
+
 func TestCallerScope(t *testing.T) {
 	if got, want := callerScope("test-key"), testKeyCallerScope; got != want {
 		t.Fatalf("callerScope() = %q, want %q", got, want)
@@ -289,8 +370,9 @@ func TestRequestFilterShouldProcessRejectsMissingRequestedModel(t *testing.T) {
 	filter := requestFilter{
 		Mode:   filterModeInclude,
 		Logic:  filterLogicOr,
-		Models: []compiledFilterPattern{{Text: "*", Runes: []rune("*")}},
+		Models: []compiledFilterPattern{{Text: "*"}},
 	}
+	compileRequestFilter(&filter)
 	request := &pluginapi.RequestInterceptRequest{
 		Model: "anything",
 		Body:  []byte(`{"model":"anything"}`),

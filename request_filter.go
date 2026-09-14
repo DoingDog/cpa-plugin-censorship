@@ -25,8 +25,20 @@ const (
 
 type compiledFilterPattern struct {
 	Text        string
-	Runes       []rune
+	Glob        *compiledFilterGlob
 	CallerScope string
+}
+
+type compiledFilterGlob struct {
+	finalState int
+	stars      []uint64
+	questions  []uint64
+	literals   map[rune]globLiteralPositions
+}
+
+type globLiteralPositions struct {
+	sparse []int
+	dense  []uint64
 }
 
 type requestFilter struct {
@@ -43,22 +55,66 @@ func (f requestFilter) enabled() bool {
 func compileRequestFilter(filter *requestFilter) {
 	for i := range filter.APIKeys {
 		pattern := &filter.APIKeys[i]
-		pattern.Runes = nil
+		pattern.Glob = nil
 		pattern.CallerScope = ""
 		if strings.ContainsAny(pattern.Text, "*?") {
-			pattern.Runes = []rune(pattern.Text)
+			pattern.Glob = compileFilterGlob([]rune(pattern.Text))
 		} else if pattern.Text == strings.TrimSpace(pattern.Text) {
 			pattern.CallerScope = callerScope(pattern.Text)
 		}
 	}
 	for i := range filter.Models {
 		pattern := &filter.Models[i]
-		pattern.Runes = nil
+		pattern.Glob = nil
 		pattern.CallerScope = ""
 		if strings.ContainsAny(pattern.Text, "*?") {
-			pattern.Runes = []rune(pattern.Text)
+			pattern.Glob = compileFilterGlob([]rune(pattern.Text))
 		}
 	}
+}
+
+func compileFilterGlob(pattern []rune) *compiledFilterGlob {
+	tokens := make([]rune, 0, len(pattern))
+	for _, token := range pattern {
+		if token == '*' && len(tokens) != 0 && tokens[len(tokens)-1] == '*' {
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+
+	words := (len(tokens) + 64) / 64
+	matcher := &compiledFilterGlob{
+		finalState: len(tokens),
+		stars:      make([]uint64, words),
+		questions:  make([]uint64, words),
+	}
+	for state, token := range tokens {
+		switch token {
+		case '*':
+			matcher.stars[state/64] |= uint64(1) << (state % 64)
+		case '?':
+			matcher.questions[state/64] |= uint64(1) << (state % 64)
+		default:
+			literal := matcher.literals[token]
+			literal.sparse = append(literal.sparse, state)
+			if matcher.literals == nil {
+				matcher.literals = make(map[rune]globLiteralPositions)
+			}
+			matcher.literals[token] = literal
+		}
+	}
+	for token, literal := range matcher.literals {
+		if len(literal.sparse) < words {
+			continue
+		}
+		literal.dense = make([]uint64, words)
+		for _, state := range literal.sparse {
+			literal.dense[state/64] |= uint64(1) << (state % 64)
+		}
+		literal.sparse = nil
+		matcher.literals[token] = literal
+	}
+	return matcher
 }
 
 const (
@@ -88,30 +144,47 @@ func callerScopeFromMetadata(metadata map[string]any) string {
 	return scope
 }
 
-func matchFilterGlob(pattern, value []rune) bool {
-	patternIndex, valueIndex := 0, 0
-	starIndex, retryValueIndex := -1, 0
-	for valueIndex < len(value) {
-		switch {
-		case patternIndex < len(pattern) && (pattern[patternIndex] == '?' || pattern[patternIndex] == value[valueIndex]):
-			patternIndex++
-			valueIndex++
-		case patternIndex < len(pattern) && pattern[patternIndex] == '*':
-			starIndex = patternIndex
-			patternIndex++
-			retryValueIndex = valueIndex
-		case starIndex >= 0:
-			patternIndex = starIndex + 1
-			retryValueIndex++
-			valueIndex = retryValueIndex
-		default:
-			return false
+func (matcher *compiledFilterGlob) matches(value []rune) bool {
+	active := make([]uint64, len(matcher.stars))
+	next := make([]uint64, len(matcher.stars))
+	active[0] = 1
+	matcher.expandStars(active)
+
+	for _, token := range value {
+		literal, hasLiteral := matcher.literals[token]
+		carry := uint64(0)
+		for word := range active {
+			stepped := active[word] & matcher.questions[word]
+			if hasLiteral && literal.dense != nil {
+				stepped |= active[word] & literal.dense[word]
+			}
+			next[word] = (active[word] & matcher.stars[word]) | (stepped << 1) | carry
+			carry = stepped >> 63
 		}
+		if hasLiteral {
+			for _, state := range literal.sparse {
+				if active[state/64]&(uint64(1)<<(state%64)) != 0 {
+					next[(state+1)/64] |= uint64(1) << ((state + 1) % 64)
+				}
+			}
+		}
+		matcher.expandStars(next)
+		active, next = next, active
 	}
-	for patternIndex < len(pattern) && pattern[patternIndex] == '*' {
-		patternIndex++
+	return active[matcher.finalState/64]&(uint64(1)<<(matcher.finalState%64)) != 0
+}
+
+func (matcher *compiledFilterGlob) expandStars(states []uint64) {
+	carry := uint64(0)
+	for word := range states {
+		starred := states[word] & matcher.stars[word]
+		states[word] |= (starred << 1) | carry
+		carry = starred >> 63
 	}
-	return patternIndex == len(pattern)
+}
+
+func matchFilterGlob(pattern, value []rune) bool {
+	return compileFilterGlob(pattern).matches(value)
 }
 
 func scopeBoundHeaderValue(headers http.Header, name, scope string, bearer bool) string {
@@ -156,7 +229,7 @@ func (f requestFilter) matchesAPIKey(headers http.Header, metadata map[string]an
 	hasWildcard := false
 	for i := range f.APIKeys {
 		pattern := &f.APIKeys[i]
-		if pattern.Runes != nil {
+		if pattern.Glob != nil {
 			hasWildcard = true
 			continue
 		}
@@ -174,7 +247,7 @@ func (f requestFilter) matchesAPIKey(headers http.Header, metadata map[string]an
 	valueRunes := []rune(candidate)
 	for i := range f.APIKeys {
 		pattern := &f.APIKeys[i]
-		if pattern.Runes != nil && matchFilterGlob(pattern.Runes, valueRunes) {
+		if pattern.Glob != nil && pattern.Glob.matches(valueRunes) {
 			return true
 		}
 	}
@@ -188,7 +261,7 @@ func (f requestFilter) matchesModel(value string) bool {
 	var valueRunes []rune
 	for i := range f.Models {
 		pattern := &f.Models[i]
-		if pattern.Runes == nil {
+		if pattern.Glob == nil {
 			if pattern.Text == value {
 				return true
 			}
@@ -197,7 +270,7 @@ func (f requestFilter) matchesModel(value string) bool {
 		if valueRunes == nil {
 			valueRunes = []rune(value)
 		}
-		if matchFilterGlob(pattern.Runes, valueRunes) {
+		if pattern.Glob.matches(valueRunes) {
 			return true
 		}
 	}

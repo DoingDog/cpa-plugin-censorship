@@ -81,6 +81,8 @@ An empty `filter: {}` or a filter with both lists empty disables request filteri
 
 Full-string, case-sensitive glob matching uses `*` for zero or more Unicode scalars and `?` for exactly one Unicode scalar. `models` matches `RequestedModel`, never `Model` or a body model. `api-keys` matches authenticated `caller_scope`. `Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.
 
+All five supported `SourceFormat` values use the same request-filter sources: `Metadata["caller_scope"]`, `RequestedModel`, and wildcard credential carriers. Wildcard credential carriers are scanned in this exact order: `Authorization`, `X-Goog-Api-Key`, then `X-Api-Key`. `Authorization` accepts case-insensitive `Bearer <credential>` or a raw credential. Every wildcard candidate is trimmed and scope-bound before glob matching. Other headers and query-only credentials are unsupported wildcard carriers.
+
 Query-only conditions support exact values only; wildcard query conditions are not supported. Management configuration readback returns filter values unchanged and does not mask secrets. Do not store secrets in these values.
 
 A filter bypass returns no replacement body or header changes before JSON validation.

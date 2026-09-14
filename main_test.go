@@ -508,6 +508,71 @@ func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T
 	}
 }
 
+func TestRegisterYAMLDecodeErrorDoesNotDiscloseFilterSourceToken(t *testing.T) {
+	const sourceToken = "secret-sentinel"
+	raw := mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, "filter: {api-keys: [*"+sourceToken+"]}\n"))
+	var env pluginabi.Envelope
+	decodeEnvelope(t, raw, &env)
+	if env.OK || env.Error == nil || env.Error.Code != "plugin_error" {
+		t.Fatalf("register envelope = %#v", env)
+	}
+	if bytes.Contains(raw, []byte(sourceToken)) {
+		t.Fatalf("register envelope contains source token: %s", raw)
+	}
+	if env.Error.Message != "config YAML decode failed" {
+		t.Fatalf("register error = %q", env.Error.Message)
+	}
+}
+
+func TestFilterMappingErrorsDoNotDiscloseSourceToken(t *testing.T) {
+	const sourceToken = "secret-sentinel"
+	t.Run("unknown filter key in register response", func(t *testing.T) {
+		raw := mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, "filter: {"+sourceToken+": []}\n"))
+		var env pluginabi.Envelope
+		decodeEnvelope(t, raw, &env)
+		if env.OK || env.Error == nil || env.Error.Code != "plugin_error" {
+			t.Fatalf("register envelope = %#v", env)
+		}
+		if bytes.Contains(raw, []byte(sourceToken)) {
+			t.Fatalf("register envelope contains source token: %s", raw)
+		}
+		if env.Error.Message != "filter: unknown key" {
+			t.Fatalf("register error = %q", env.Error.Message)
+		}
+	})
+
+	t.Run("duplicate filter key in reconfigure log retains snapshot", func(t *testing.T) {
+		registerConfig(t, "mode: block\nwords: [retained]\n")
+		var logs []hostLogRequest
+		setHostCallbackForTest(func(method string, request []byte) ([]byte, error) {
+			if method == pluginabi.MethodHostLog {
+				var req hostLogRequest
+				if err := json.Unmarshal(request, &req); err != nil {
+					return nil, err
+				}
+				logs = append(logs, req)
+			}
+			return okEnvelope(struct{}{})
+		})
+		t.Cleanup(func() { setHostCallbackForTest(nil) })
+
+		reconfigureConfig(t, "filter:\n  "+sourceToken+": []\n  "+sourceToken+": []\n")
+		if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" {
+			t.Fatalf("host logs = %#v", logs)
+		}
+		logError := fmt.Sprint(logs[0].Fields["error"])
+		if strings.Contains(logError, sourceToken) {
+			t.Fatalf("reconfigure log contains source token: %q", logError)
+		}
+		if logError != "filter: duplicate key" {
+			t.Fatalf("reconfigure log error = %q", logError)
+		}
+		if got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"retained"}]}`)); !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"retained"`)) {
+			t.Fatalf("invalid reconfigure replaced last-known-good snapshot: %#v", got)
+		}
+	})
+}
+
 func TestReconfigureRejectsMissingConfigYAMLAndKeepsLastKnownGood(t *testing.T) {
 	cases := []struct {
 		name string
@@ -693,6 +758,13 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"aggregate packaging run covers all seven supported platform",
 		"and every model response",
 	}
+	readmeRequired := []string{
+		"All five supported `SourceFormat` values use the same request-filter sources: `Metadata[\"caller_scope\"]`, `RequestedModel`, and wildcard credential carriers.",
+		"Wildcard credential carriers are scanned in this exact order: `Authorization`, `X-Goog-Api-Key`, then `X-Api-Key`.",
+		"`Authorization` accepts case-insensitive `Bearer <credential>` or a raw credential.",
+		"Every wildcard candidate is trimmed and scope-bound before glob matching.",
+		"Other headers and query-only credentials are unsupported wildcard carriers.",
+	}
 	for _, name := range []string{"README.md", "RELEASE_NOTES.md"} {
 		raw, err := os.ReadFile(name)
 		if err != nil {
@@ -711,6 +783,15 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		}
 		if name == "README.md" && !bytes.Contains(raw, []byte("tool is inspected only for documented OpenAI, Claude, and Interactions result-text paths")) {
 			t.Errorf("%s missing current tool result-text scope", name)
+		}
+	}
+	readme, err := os.ReadFile("README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range readmeRequired {
+		if !bytes.Contains(readme, []byte(token)) {
+			t.Errorf("README.md missing %q", token)
 		}
 	}
 }

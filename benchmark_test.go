@@ -128,6 +128,20 @@ func BenchmarkRequestFilter(b *testing.B) {
 	}
 }
 
+func BenchmarkRequestFilterGlobAdversarial(b *testing.B) {
+	const suffixRunes = 2000
+	filter := mustBenchmarkConfig(b, "filter_mode: include\nfilter:\n  models: ['*"+strings.Repeat("a", suffixRunes)+"b']\n").Filter
+	request := pluginapi.RequestInterceptRequest{RequestedModel: strings.Repeat("a", suffixRunes*2) + "c"}
+	if filter.shouldProcess(&request) {
+		b.Fatal("adversarial request matched")
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchmarkBoolSink = filter.shouldProcess(&request)
+	}
+}
+
 func BenchmarkTransformMatrix(b *testing.B) {
 	bodySizes := []int{1 << 10, 1 << 20, 20 << 20}
 	wordCounts := []int{0, 1, 32, 256, 1024}

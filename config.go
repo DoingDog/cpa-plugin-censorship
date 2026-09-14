@@ -102,14 +102,14 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 		if err == io.EOF {
 			return defaultSnapshot(), nil
 		}
-		return nil, fmt.Errorf("decode config: %w", err)
+		return nil, fmt.Errorf("config YAML decode failed")
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
 			return nil, fmt.Errorf("config must contain at most one document")
 		}
-		return nil, fmt.Errorf("decode config: %w", err)
+		return nil, fmt.Errorf("config YAML decode failed")
 	}
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
 		return nil, fmt.Errorf("config must contain one document")
@@ -324,7 +324,7 @@ func parseWordSequence(node *yaml.Node, name string) ([]string, error) {
 }
 
 func parseRequestFilter(node *yaml.Node, filter *requestFilter) error {
-	if err := validateMapping(node, "filter"); err != nil {
+	if err := validateFilterMapping(node); err != nil {
 		return err
 	}
 	for i := 0; i < len(node.Content); i += 2 {
@@ -343,8 +343,26 @@ func parseRequestFilter(node *yaml.Node, filter *requestFilter) error {
 			}
 			filter.Models = patterns
 		default:
-			return fmt.Errorf("unknown filter key %q", key)
+			return fmt.Errorf("filter: unknown key")
 		}
+	}
+	return nil
+}
+
+func validateFilterMapping(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("filter must be a mapping")
+	}
+	seen := make(map[string]struct{}, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return fmt.Errorf("filter keys must be strings")
+		}
+		if _, exists := seen[key.Value]; exists {
+			return fmt.Errorf("filter: duplicate key")
+		}
+		seen[key.Value] = struct{}{}
 	}
 	return nil
 }
