@@ -764,7 +764,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"and every model response",
 	}
 	readmeRequired := []string{
-		"same stage-aware request-filter sources",
+		"All five supported `SourceFormat` values use the same stage-aware request-filter sources",
 		"`RequestedModel` for ordinary model checks",
 		"`Model` only when `Metadata[\"source\"]` equals `plugin_host_model_callback`",
 		"documented wildcard credential carriers",
