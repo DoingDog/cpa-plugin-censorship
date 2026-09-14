@@ -690,9 +690,12 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"| no | no | no match | no match |",
 		"| `exclude` | bypass | process |",
 		"| `include` | process | bypass |",
-		"Outer request-interceptor calls match `RequestedModel`. When CPA invokes a nested execution through the host model callback, the request carries the host-owned `Metadata[\"source\"]` value `plugin_host_model_callback`; only that nested call matches `Model`. The plugin does not parse request-body model fields or implement CPA alias routing.",
-		"plugin_host_model_callback",
-		"The filter gate is evaluated independently for each host invocation; the nested call's result does not undo an outer transform that has already completed.",
+		"Outer request-interceptor calls match `RequestedModel`.",
+		"host-owned `Metadata[\"source\"]` value `plugin_host_model_callback`",
+		"only that nested call matches `Model`.",
+		"does not parse request-body model fields or implement CPA alias routing.",
+		"The filter gate is evaluated independently for each host invocation;",
+		"the nested call's result does not undo an outer transform that has already completed.",
 		"`api-keys` matches authenticated `caller_scope`.",
 		"`Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.",
 		"Query-only conditions support exact values only; wildcard query conditions are not supported.",
@@ -761,7 +764,10 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"and every model response",
 	}
 	readmeRequired := []string{
-		"All five supported `SourceFormat` values use the same request-filter sources: `Metadata[\"caller_scope\"]`, `RequestedModel`, and wildcard credential carriers.",
+		"same stage-aware request-filter sources",
+		"`RequestedModel` for ordinary model checks",
+		"`Model` only when `Metadata[\"source\"]` equals `plugin_host_model_callback`",
+		"documented wildcard credential carriers",
 		"Wildcard credential carriers are scanned in this exact order: `Authorization`, `X-Goog-Api-Key`, then `X-Api-Key`.",
 		"`Authorization` accepts case-insensitive `Bearer <credential>` or a raw credential.",
 		"Every wildcard candidate is trimmed and scope-bound before glob matching.",
@@ -798,12 +804,17 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 	}
 }
 
-func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
+func TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions(t *testing.T) {
 	raw, err := os.ReadFile("RELEASE_NOTES.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.")) {
-		t.Fatal("RELEASE_NOTES.md does not contain the complete v0.3.0 compatibility sentence")
+	for _, sentence := range []string{
+		"v0.3.1 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
+		"v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
+	} {
+		if !bytes.Contains(raw, []byte(sentence)) {
+			t.Fatalf("RELEASE_NOTES.md does not contain compatibility sentence %q", sentence)
+		}
 	}
 }
