@@ -41,6 +41,7 @@ type configSnapshot struct {
 	BlockMatcher      *foldMatcher
 	RewriteMatcher    *foldMatcher
 	ExactBlockMatcher *byteMatcher
+	Filter            requestFilter
 	rangesSet         bool
 }
 
@@ -61,6 +62,10 @@ func init() {
 func defaultSnapshot() *configSnapshot {
 	return &configSnapshot{
 		Mode: modeBlock,
+		Filter: requestFilter{
+			Mode:  filterModeExclude,
+			Logic: filterLogicOr,
+		},
 		Formats: scopeSet{
 			"openai":          {},
 			"openai-response": {},
@@ -136,6 +141,32 @@ func parseConfigYAML(raw []byte) (*configSnapshot, error) {
 			}
 			if err := value.Decode(&cfg.IgnoreCase); err != nil {
 				return nil, fmt.Errorf("decode ignore_case: %w", err)
+			}
+		case "filter_mode":
+			text, err := stringScalar(value, "filter_mode")
+			if err != nil {
+				return nil, err
+			}
+			switch filterMode(text) {
+			case filterModeExclude, filterModeInclude:
+				cfg.Filter.Mode = filterMode(text)
+			default:
+				return nil, fmt.Errorf("invalid filter_mode")
+			}
+		case "filter_logic":
+			text, err := stringScalar(value, "filter_logic")
+			if err != nil {
+				return nil, err
+			}
+			switch filterLogic(text) {
+			case filterLogicOr, filterLogicAnd:
+				cfg.Filter.Logic = filterLogic(text)
+			default:
+				return nil, fmt.Errorf("invalid filter_logic")
+			}
+		case "filter":
+			if err := parseRequestFilter(value, &cfg.Filter); err != nil {
+				return nil, err
 			}
 		case "words":
 			parsed, err := parseWords(value)
@@ -292,7 +323,55 @@ func parseWordSequence(node *yaml.Node, name string) ([]string, error) {
 	return terms, nil
 }
 
+func parseRequestFilter(node *yaml.Node, filter *requestFilter) error {
+	if err := validateMapping(node, "filter"); err != nil {
+		return err
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i].Value, node.Content[i+1]
+		switch key {
+		case "api-keys":
+			patterns, err := parseFilterPatterns(value, "filter.api-keys")
+			if err != nil {
+				return err
+			}
+			filter.APIKeys = patterns
+		case "models":
+			patterns, err := parseFilterPatterns(value, "filter.models")
+			if err != nil {
+				return err
+			}
+			filter.Models = patterns
+		default:
+			return fmt.Errorf("unknown filter key %q", key)
+		}
+	}
+	return nil
+}
+
+func parseFilterPatterns(node *yaml.Node, name string) ([]compiledFilterPattern, error) {
+	if node.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("%s must be a sequence", name)
+	}
+	if len(node.Content) == 0 {
+		return nil, nil
+	}
+	patterns := make([]compiledFilterPattern, 0, len(node.Content))
+	for _, item := range node.Content {
+		text, err := stringScalar(item, name+" value")
+		if err != nil {
+			return nil, err
+		}
+		if text == "" {
+			return nil, fmt.Errorf("%s value must not be empty", name)
+		}
+		patterns = append(patterns, compiledFilterPattern{Text: text})
+	}
+	return patterns, nil
+}
+
 func compileSnapshot(cfg *configSnapshot) error {
+	compileRequestFilter(&cfg.Filter)
 	cfg.BlockMatcher = nil
 	cfg.RewriteMatcher = nil
 	cfg.ExactBlockMatcher = nil

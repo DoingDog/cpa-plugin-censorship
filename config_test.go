@@ -64,6 +64,79 @@ func TestParseConfigYAMLDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestParseConfigYAMLRequestFilter(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		wantMode   filterMode
+		wantLogic  filterLogic
+		wantAPI    []string
+		wantModels []string
+		wantActive bool
+	}{
+		{name: "missing", raw: "words: [x]\n", wantMode: filterModeExclude, wantLogic: filterLogicOr},
+		{name: "empty object", raw: "filter: {}\n", wantMode: filterModeExclude, wantLogic: filterLogicOr},
+		{name: "empty API array", raw: "filter: {api-keys: []}\n", wantMode: filterModeExclude, wantLogic: filterLogicOr},
+		{name: "empty model array", raw: "filter: {models: []}\n", wantMode: filterModeExclude, wantLogic: filterLogicOr},
+		{name: "empty arrays", raw: "filter: {api-keys: [], models: []}\n", wantMode: filterModeExclude, wantLogic: filterLogicOr},
+		{name: "API only", raw: "mode: strip\nwords: [x]\nfilter: {api-keys: [sk-a, ' sk-b ', sk-a]}\n", wantMode: filterModeExclude, wantLogic: filterLogicOr, wantAPI: []string{"sk-a", " sk-b ", "sk-a"}, wantActive: true},
+		{name: "Object words coexist", raw: "words: {block: [x]}\nfilter: {models: [model-a]}\n", wantMode: filterModeExclude, wantLogic: filterLogicOr, wantModels: []string{"model-a"}, wantActive: true},
+		{name: "models only", raw: "filter_mode: include\nfilter: {models: ['gpt-*', '模型-?']}\n", wantMode: filterModeInclude, wantLogic: filterLogicOr, wantModels: []string{"gpt-*", "模型-?"}, wantActive: true},
+		{name: "both and", raw: "filter_mode: include\nfilter_logic: and\nfilter: {api-keys: ['key-*'], models: ['model-?']}\n", wantMode: filterModeInclude, wantLogic: filterLogicAnd, wantAPI: []string{"key-*"}, wantModels: []string{"model-?"}, wantActive: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := mustConfig(t, test.raw)
+			if cfg.Filter.Mode != test.wantMode || cfg.Filter.Logic != test.wantLogic || cfg.Filter.enabled() != test.wantActive {
+				t.Fatalf("filter = %#v", cfg.Filter)
+			}
+			if got := filterPatternTexts(cfg.Filter.APIKeys); !reflect.DeepEqual(got, test.wantAPI) {
+				t.Fatalf("api-keys = %#v, want %#v", got, test.wantAPI)
+			}
+			if got := filterPatternTexts(cfg.Filter.Models); !reflect.DeepEqual(got, test.wantModels) {
+				t.Fatalf("models = %#v, want %#v", got, test.wantModels)
+			}
+		})
+	}
+}
+
+func TestParseConfigYAMLRejectsInvalidRequestFilter(t *testing.T) {
+	invalid := []string{
+		"filter_mode: null\n",
+		"filter_mode: [include]\n",
+		"filter_mode: INCLUDE\n",
+		"filter_mode: include\nfilter_mode: exclude\n",
+		"filter_logic: null\n",
+		"filter_logic: [or]\n",
+		"filter_logic: xor\n",
+		"filter_logic: or\nfilter_logic: and\n",
+		"filter: null\n",
+		"filter: scalar\n",
+		"filter: []\n",
+		"filter: {unknown: []}\n",
+		"filter:\n  api-keys: [a]\n  api-keys: [b]\n",
+		"filter: {api-keys: null}\n",
+		"filter: {api-keys: key}\n",
+		"filter: {api-keys: {key: true}}\n",
+		"filter: {api-keys: ['']}\n",
+		"filter: {api-keys: [1]}\n",
+		"filter: {models: null}\n",
+		"filter: {models: model}\n",
+		"filter: {models: ['']}\n",
+		"filter: {models: [false]}\n",
+	}
+	for _, raw := range invalid {
+		if _, err := parseConfigYAML([]byte(raw)); err == nil {
+			t.Errorf("parseConfigYAML(%q) error = nil", raw)
+		}
+	}
+
+	_, err := parseConfigYAML([]byte("filter: {api-keys: [secret-sentinel, '']}\n"))
+	if err == nil || !strings.Contains(err.Error(), "filter.api-keys") || strings.Contains(err.Error(), "secret-sentinel") {
+		t.Fatalf("secret filter error = %v", err)
+	}
+}
+
 func TestParseConfigYAMLWordsObject(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -208,6 +281,17 @@ func ruleTerms(rules []compiledRule) []string {
 		terms[i] = rule.Term
 	}
 	return terms
+}
+
+func filterPatternTexts(patterns []compiledFilterPattern) []string {
+	if patterns == nil {
+		return nil
+	}
+	out := make([]string, len(patterns))
+	for i := range patterns {
+		out[i] = patterns[i].Text
+	}
+	return out
 }
 
 func mustConfig(t *testing.T, raw string) *configSnapshot {
