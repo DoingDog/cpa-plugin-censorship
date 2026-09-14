@@ -1098,6 +1098,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"RequestAfterAuthInterceptor",
 		"selected_auth_id",
 		"selected_auth_index",
+		"`selected_auth_id` and `selected_auth_index` are CLIProxyAPI v7.2.152 implementation-level phase signals, not a cross-version stable `FinalModelResolved` API. A pinned host change requires re-verification of their semantics.",
 		"request.Model",
 		"does not parse request-body model fields or implement CPA alias routing.",
 		"non-stream host.model.execute",
