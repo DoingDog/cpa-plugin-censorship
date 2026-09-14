@@ -227,11 +227,41 @@ Replace the old statement that models always match `RequestedModel` with text st
 Outer request-interceptor calls match `RequestedModel`. When CPA invokes a nested execution through the host model callback, the request carries the host-owned `Metadata["source"]` value `plugin_host_model_callback`; only that nested call matches `Model`. The plugin does not parse request-body model fields or implement CPA alias routing.
 ```
 
-Keep the existing API-key, glob, five-format, no-body-mutation, and filter-mode statements unchanged.
+Keep the existing API-key, glob, no-body-mutation, and filter-mode statements. Update the five-format source summary so it does not contradict the nested contract:
+
+```text
+All five supported `SourceFormat` values use the same stage-aware request-filter sources: `Metadata["caller_scope"]` for API keys, `RequestedModel` for ordinary model checks, `Model` only when `Metadata["source"]` equals `plugin_host_model_callback`, and the documented wildcard credential carriers.
+```
 
 - [ ] **Step 2: Update `main_test.go` documentation assertions**
 
-Replace the old required token `models matches RequestedModel, never Model or a body model.` with the exact stage-aware sentence from the README. Add a required token for `plugin_host_model_callback`, and retain the existing machine-field and ABI assertions.
+Replace the old monolithic sentence token with stable contract fragments and do not add a duplicate standalone callback token:
+
+```go
+"Outer request-interceptor calls match `RequestedModel`.",
+"host-owned `Metadata[\"source\"]` value `plugin_host_model_callback`",
+"only that nested call matches `Model`.",
+"does not parse request-body model fields or implement CPA alias routing.",
+"The filter gate is evaluated independently for each host invocation;",
+"the nested call's result does not undo an outer transform that has already completed.",
+```
+
+Update the five-format required tokens to require `same stage-aware request-filter sources`, ordinary `RequestedModel`, and callback-only `Model`, while retaining the existing wildcard carrier assertions.
+
+Rename the release compatibility test to `TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions` and require both exact compatibility statements:
+
+```go
+for _, sentence := range []string{
+	"v0.3.1 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
+	"v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
+} {
+	if !bytes.Contains(raw, []byte(sentence)) {
+		t.Fatalf("RELEASE_NOTES.md does not contain compatibility sentence %q", sentence)
+	}
+}
+```
+
+Retain the existing machine-field and ABI assertions.
 
 - [ ] **Step 3: Check integration provenance**
 
