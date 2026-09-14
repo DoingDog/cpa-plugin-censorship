@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -319,5 +320,218 @@ func TestRequestFilterShouldProcessRejectsWhitespaceExactAPIKey(t *testing.T) {
 		if got := filter.shouldProcess(request); got != test.want {
 			t.Fatalf("shouldProcess() with %q = %t, want %t", test.mode, got, test.want)
 		}
+	}
+}
+
+func TestRequestFilterGatesBeforeBodyValidation(t *testing.T) {
+	cases := []struct {
+		name       string
+		configYAML string
+		request    pluginapi.RequestInterceptRequest
+		bypass     bool
+	}{
+		{
+			name:       "include skips nonmatching model malformed body",
+			configYAML: "filter_mode: include\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "include-other",
+				SourceFormat:   "openai",
+				RequestedModel: "other",
+				Body:           []byte(`not-json`),
+			},
+			bypass: true,
+		},
+		{
+			name:       "include processes matching model malformed body",
+			configYAML: "filter_mode: include\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "include-target",
+				SourceFormat:   "openai",
+				RequestedModel: "target-model",
+				Body:           []byte(`not-json`),
+			},
+		},
+		{
+			name:       "exclude skips matching model duplicate members",
+			configYAML: "filter_mode: exclude\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "exclude-target",
+				SourceFormat:   "openai",
+				RequestedModel: "target-model",
+				Body:           []byte(`{"messages":[],"messages":[]}`),
+			},
+			bypass: true,
+		},
+		{
+			name:       "exclude processes nonmatching model duplicate members",
+			configYAML: "filter_mode: exclude\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "exclude-other",
+				SourceFormat:   "openai",
+				RequestedModel: "other",
+				Body:           []byte(`{"messages":[],"messages":[]}`),
+			},
+		},
+		{
+			name:       "no rules skip malformed identity and body",
+			configYAML: "filter_mode: include\nfilter:\n  api-keys: [test-*]\nwords: {}\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:    "no-rules",
+				SourceFormat: "openai",
+				Headers:      http.Header{"Authorization": {"Bearer test-key"}},
+				Metadata:     map[string]any{callerScopeMetadataKey: 42},
+				Body:         []byte(`not-json`),
+			},
+			bypass: true,
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			registerConfig(t, test.configYAML)
+			response, err := callInterceptRequest(test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.bypass {
+				if !reflect.DeepEqual(response, pluginapi.RequestInterceptResponse{}) {
+					t.Fatalf("response = %#v, want zero-value response", response)
+				}
+				return
+			}
+			if !response.Terminate || response.StatusCode != 400 || !strings.Contains(string(response.ResponseBody), "censorship_invalid_request") {
+				t.Fatalf("response = %#v, want terminated censorship_invalid_request", response)
+			}
+		})
+	}
+}
+
+func TestRequestFilterGatesAllSupportedFormats(t *testing.T) {
+	formats := []struct {
+		name   string
+		format string
+		body   []byte
+	}{
+		{name: "openai", format: "openai", body: []byte(`{"model":"body-decoy","messages":[{"role":"user","content":"SECRET"}]}`)},
+		{name: "openai-response", format: "openai-response", body: []byte(`{"model":"body-decoy","input":"SECRET"}`)},
+		{name: "claude", format: "claude", body: []byte(`{"model":"body-decoy","messages":[{"role":"user","content":"SECRET"}]}`)},
+		{name: "gemini", format: "gemini", body: []byte(`{"model":"body-decoy","contents":[{"role":"user","parts":[{"text":"SECRET"}]}]}`)},
+		{name: "interactions", format: "interactions", body: []byte(`{"model":"body-decoy","input":"SECRET"}`)},
+	}
+	registerConfig(t, "filter_mode: include\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n")
+
+	for _, format := range formats {
+		t.Run(format.name, func(t *testing.T) {
+			response, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
+				RequestID:      "matching-" + format.name,
+				SourceFormat:   format.format,
+				RequestedModel: "target-model",
+				Model:          "ignored-current-model",
+				Body:           format.body,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !response.Terminate || response.StatusCode != 400 || !strings.Contains(string(response.ResponseBody), "censorship_blocked") {
+				t.Fatalf("matching response = %#v, want terminated censorship_blocked", response)
+			}
+
+			response, err = callInterceptRequest(pluginapi.RequestInterceptRequest{
+				RequestID:      "nonmatching-" + format.name,
+				SourceFormat:   format.format,
+				RequestedModel: "other",
+				Model:          "target-model",
+				Body:           format.body,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(response, pluginapi.RequestInterceptResponse{}) {
+				t.Fatalf("nonmatching response = %#v, want zero-value response", response)
+			}
+		})
+	}
+}
+
+func TestRequestFilterAPIKeyGate(t *testing.T) {
+	cases := []struct {
+		name       string
+		configYAML string
+		request    pluginapi.RequestInterceptRequest
+		blocked    bool
+	}{
+		{
+			name:       "wildcard matching caller scope and authorization",
+			configYAML: "filter_mode: include\nfilter:\n  api-keys: ['test-?ey']\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:    "wildcard-match",
+				SourceFormat: "openai",
+				Headers:      http.Header{"Authorization": {"Bearer test-key"}},
+				Metadata:     map[string]any{callerScopeMetadataKey: testKeyCallerScope},
+				Body:         []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`),
+			},
+			blocked: true,
+		},
+		{
+			name:       "wildcard header without caller scope",
+			configYAML: "filter_mode: include\nfilter:\n  api-keys: ['test-?ey']\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:    "wildcard-no-scope",
+				SourceFormat: "openai",
+				Headers:      http.Header{"Authorization": {"Bearer test-key"}},
+				Body:         []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`),
+			},
+		},
+		{
+			name:       "wildcard header with forged account scope",
+			configYAML: "filter_mode: include\nfilter:\n  api-keys: ['test-?ey']\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:    "wildcard-forged-scope",
+				SourceFormat: "openai",
+				Headers:      http.Header{"Authorization": {"Bearer test-key"}},
+				Metadata:     map[string]any{callerScopeMetadataKey: accountCallerScope},
+				Body:         []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`),
+			},
+		},
+		{
+			name:       "exact pattern matching caller scope without authorization",
+			configYAML: "filter_mode: include\nfilter:\n  api-keys: [test-key]\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:    "exact-match",
+				SourceFormat: "openai",
+				Metadata:     map[string]any{callerScopeMetadataKey: testKeyCallerScope},
+				Body:         []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`),
+			},
+			blocked: true,
+		},
+		{
+			name:       "whitespace exact pattern does not match caller scope",
+			configYAML: "filter_mode: include\nfilter:\n  api-keys: [' test-key ']\nwords:\n  block: [SECRET]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:    "whitespace-exact",
+				SourceFormat: "openai",
+				Metadata:     map[string]any{callerScopeMetadataKey: testKeyCallerScope},
+				Body:         []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`),
+			},
+		},
+	}
+
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			registerConfig(t, test.configYAML)
+			response, err := callInterceptRequest(test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.blocked {
+				if !response.Terminate || response.StatusCode != 400 || !strings.Contains(string(response.ResponseBody), "censorship_blocked") {
+					t.Fatalf("response = %#v, want terminated censorship_blocked", response)
+				}
+				return
+			}
+			if !reflect.DeepEqual(response, pluginapi.RequestInterceptResponse{}) {
+				t.Fatalf("response = %#v, want zero-value response", response)
+			}
+		})
 	}
 }

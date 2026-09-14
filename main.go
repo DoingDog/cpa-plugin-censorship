@@ -110,8 +110,11 @@ func interceptBeforeAuth(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, err
 	}
-	cfg := loadedSnapshot()
 	if !knownSourceFormat(request.SourceFormat) {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	cfg := loadedSnapshot()
+	if cfg == nil || len(cfg.Rules) == 0 || !cfg.Filter.shouldProcess(&request) {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
 	result, err := transformRequest(request.Body, request.SourceFormat, cfg)

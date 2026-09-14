@@ -361,11 +361,15 @@ func registerConfig(t *testing.T, configYAML string) {
 }
 
 func callIntercept(sourceFormat string, body []byte) (pluginapi.RequestInterceptResponse, error) {
-	raw, err := json.Marshal(pluginapi.RequestInterceptRequest{
+	return callInterceptRequest(pluginapi.RequestInterceptRequest{
 		RequestID:    "censorship-test",
 		SourceFormat: sourceFormat,
 		Body:         body,
 	})
+}
+
+func callInterceptRequest(request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+	raw, err := json.Marshal(request)
 	if err != nil {
 		return pluginapi.RequestInterceptResponse{}, err
 	}
