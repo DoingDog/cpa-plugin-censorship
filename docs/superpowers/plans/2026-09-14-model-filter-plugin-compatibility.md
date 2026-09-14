@@ -173,13 +173,18 @@ The selector must read exactly one host-owned source key and must not inspect bo
 
 - [ ] **Step 2: Use the selector in all three model branches**
 
-In `shouldProcess`, calculate the subject once after the enabled fast path:
+In `shouldProcess`, calculate the subject once only when a model filter is configured, after the enabled fast path and configured-list checks:
 
 ```go
-model := f.modelSubject(request)
+apiConfigured := len(f.APIKeys) != 0
+modelConfigured := len(f.Models) != 0
+var model string
+if modelConfigured {
+	model = f.modelSubject(request)
+}
 ```
 
-Use `model` in the `and` branch, the `or` branch, and the model-only default branch. Leave API-key matching and boolean logic unchanged.
+Use `model` in the `and` branch, the `or` branch, and the model-only default branch. Leave API-key matching and boolean logic unchanged. API-only filters must not perform the callback-source lookup.
 
 - [ ] **Step 3: Run the focused tests and verify green**
 
