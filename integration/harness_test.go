@@ -497,7 +497,24 @@ func acceptedUpstreamPath(path string) bool {
 	return false
 }
 
+type cpaStartOptions struct {
+	upstreamURL     string
+	pluginsEnabled  bool
+	censorshipYAML  string
+	modelMapperYAML string
+	providerModels  []string
+}
+
 func startCPA(t *testing.T, upstreamURL string, pluginsEnabled bool, censorshipYAML string) *cpaInstance {
+	return startCPAWithOptions(t, cpaStartOptions{
+		upstreamURL:    upstreamURL,
+		pluginsEnabled: pluginsEnabled,
+		censorshipYAML: censorshipYAML,
+		providerModels: []string{modelName},
+	})
+}
+
+func startCPAWithOptions(t *testing.T, options cpaStartOptions) *cpaInstance {
 	t.Helper()
 
 	paths, err := resolveCPAPaths(os.Getenv("CPA_INTEGRATION_BIN"), os.Getenv("CENSORSHIP_PLUGIN_DIR"))
@@ -526,17 +543,27 @@ openai-compatibility:
     api-key-entries:
       - api-key: "censorship-upstream-key"
     models:
-      - name: %q
-        alias: %q
-plugins:
+`, port, downstreamKey, options.upstreamURL)
+	for _, model := range options.providerModels {
+		baseConfig += fmt.Sprintf("      - name: %q\n        alias: %q\n", model, model)
+	}
+	baseConfig += fmt.Sprintf(`plugins:
   enabled: %t
   dir: %q
   configs:
-`, port, downstreamKey, upstreamURL, modelName, modelName, pluginsEnabled, paths.pluginDir)
+`, options.pluginsEnabled, paths.pluginDir)
+	if options.modelMapperYAML != "" {
+		baseConfig += "    model-mapper:\n      enabled: true\n"
+		for _, line := range strings.Split(strings.TrimSuffix(options.modelMapperYAML, "\n"), "\n") {
+			if line != "" {
+				baseConfig += "      " + line + "\n"
+			}
+		}
+	}
 	if err := os.WriteFile(configPath, []byte(baseConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writePluginConfig(t, configPath, censorshipYAML)
+	writePluginConfig(t, configPath, options.censorshipYAML)
 
 	logPath := filepath.Join(runDir, "cpa.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)

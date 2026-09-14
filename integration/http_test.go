@@ -141,6 +141,45 @@ func TestHTTPBlockIncludesTermAndRole(t *testing.T) {
 	}
 }
 
+func TestHTTPCleanMappedCanaryUsesConfiguredProviderModels(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPAWithOptions(t, cpaStartOptions{
+		upstreamURL:    upstream.URL,
+		pluginsEnabled: true,
+		modelMapperYAML: `priority: 999
+openai_completions_rules: 'claude-opus=>kimi-k3;claude-control=>other-model'
+`,
+		censorshipYAML: `priority: 800
+words:
+  block: [blocked]
+filter_mode: exclude
+filter:
+  models: [kimi-k3]
+`,
+		providerModels: []string{"kimi-k3", "other-model"},
+	})
+	for _, tc := range []struct {
+		source string
+		want   string
+	}{
+		{source: "claude-opus", want: "kimi-k3"},
+		{source: "claude-control", want: "other-model"},
+	} {
+		before := upstream.arrivalCount()
+		body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"clean input"}]}`, tc.source))
+		status, _, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", body)
+		if status != 200 {
+			t.Fatalf("source model %q status=%d body=%s", tc.source, status, response)
+		}
+		if got, want := upstream.arrivalCount(), before+1; got != want {
+			t.Fatalf("source model %q upstream arrivals=%d, want %d", tc.source, got, want)
+		}
+		if got := gjson.GetBytes(upstream.lastRequest(), "model").String(); got != tc.want {
+			t.Fatalf("source model %q upstream model=%q, want %q", tc.source, got, tc.want)
+		}
+	}
+}
+
 func TestHTTPRequestFilterMatchesAllSupportedFormats(t *testing.T) {
 	const config = `words:
   block: [SECRET]

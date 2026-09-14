@@ -16,7 +16,7 @@ func TestRunnerPathsStayUnderIntegrationRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{paths.checkout, paths.bin, paths.run} {
+	for _, path := range []string{paths.checkout, paths.mapperCheckout, paths.bin, paths.run} {
 		rel, err := filepath.Rel(paths.integrationRoot, path)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			t.Fatalf("path %q escapes %q", path, paths.integrationRoot)
@@ -59,6 +59,13 @@ func TestPinnedCPARevision(t *testing.T) {
 	const want = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
 	if cpaSHA != want {
 		t.Fatalf("cpaSHA = %q, want %q", cpaSHA, want)
+	}
+}
+
+func TestPinnedModelMapperRevision(t *testing.T) {
+	const want = "8fe4839dd2c39a4b0537447c4ac35a9f1d699bbf"
+	if modelMapperSHA != want {
+		t.Fatalf("modelMapperSHA = %q, want %q", modelMapperSHA, want)
 	}
 }
 
@@ -126,6 +133,57 @@ func TestPrepareCheckoutReusesCheckoutAfterRemovingGeneratedTests(t *testing.T) 
 	}
 	if _, err := os.Stat(generated); !os.IsNotExist(err) {
 		t.Fatalf("generated integration tests remain after checkout preparation: %v", err)
+	}
+}
+
+func TestPrepareModelMapperCheckoutReusesCleanCheckout(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(paths.mapperCheckout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitTest(t, paths.mapperCheckout, "init")
+	runGitTest(t, paths.mapperCheckout, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
+	head := strings.TrimSpace(runGitOutput(t, paths.mapperCheckout, "rev-parse", "HEAD"))
+
+	if err := prepareModelMapperCheckout(paths, head); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(runGitOutput(t, paths.mapperCheckout, "rev-parse", "HEAD")); got != head {
+		t.Fatalf("mapper checkout HEAD = %q, want %q", got, head)
+	}
+}
+
+func TestPreparePluginPlatformDirRemovesStaleArtifacts(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platformDir := pluginPlatformDir(paths)
+	if err := os.MkdirAll(platformDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(platformDir, "stale.dll"), []byte("stale native library"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := preparePluginPlatformDir(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != platformDir {
+		t.Fatalf("plugin platform directory = %q, want %q", got, platformDir)
+	}
+	entries, err := os.ReadDir(platformDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("plugin platform directory contains %d stale artifacts", len(entries))
 	}
 }
 

@@ -11,14 +11,17 @@ import (
 )
 
 const (
-	cpaSHA    = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
-	cpaRemote = "https://github.com/router-for-me/CLIProxyAPI"
+	cpaSHA            = "c76dfd4e0edabab9000628b1560ab8ab379eadb8"
+	cpaRemote         = "https://github.com/router-for-me/CLIProxyAPI"
+	modelMapperSHA    = "8fe4839dd2c39a4b0537447c4ac35a9f1d699bbf"
+	modelMapperRemote = "https://github.com/DoingDog/cpa-plugin-model-mapper"
 )
 
 type runnerPaths struct {
 	repositoryRoot  string
 	integrationRoot string
 	checkout        string
+	mapperCheckout  string
 	bin             string
 	run             string
 }
@@ -53,11 +56,24 @@ func run() error {
 	if err := prepareCheckout(paths, cpaSHA); err != nil {
 		return err
 	}
+	if err := prepareModelMapperCheckout(paths, modelMapperSHA); err != nil {
+		return err
+	}
 	if err := buildCPA(paths); err != nil {
 		return err
 	}
-	pluginDir, err := buildPlugin(paths)
+	platformDir, err := preparePluginPlatformDir(paths)
 	if err != nil {
+		return err
+	}
+	pluginDir, err := buildPlugin(paths, platformDir)
+	if err != nil {
+		return err
+	}
+	if err := buildModelMapper(paths, platformDir); err != nil {
+		return err
+	}
+	if err := verifyCheckout(paths.mapperCheckout, modelMapperSHA); err != nil {
 		return err
 	}
 	if err := copyIntegrationFiles(paths); err != nil {
@@ -105,10 +121,11 @@ func resolveRunnerPaths(root string) (runnerPaths, error) {
 		repositoryRoot:  root,
 		integrationRoot: integrationRoot,
 		checkout:        filepath.Join(integrationRoot, "cpa"),
+		mapperCheckout:  filepath.Join(integrationRoot, "model-mapper"),
 		bin:             bin,
 		run:             filepath.Join(integrationRoot, "run"),
 	}
-	for _, path := range []string{paths.checkout, paths.bin, paths.run} {
+	for _, path := range []string{paths.checkout, paths.mapperCheckout, paths.bin, paths.run} {
 		if err := requireContained(integrationRoot, path); err != nil {
 			return runnerPaths{}, err
 		}
@@ -233,27 +250,38 @@ func prepareCheckout(paths runnerPaths, wantSHA string) error {
 	if err := removeContained(paths.integrationRoot, generatedTests); err != nil {
 		return err
 	}
-	if err := verifyCheckout(paths.checkout, wantSHA); err == nil {
-		return nil
-	}
-	if err := removeContained(paths.integrationRoot, paths.checkout); err != nil {
+	return preparePinnedCheckout(paths.integrationRoot, paths.checkout, cpaRemote, wantSHA)
+}
+
+func prepareModelMapperCheckout(paths runnerPaths, wantSHA string) error {
+	return preparePinnedCheckout(paths.integrationRoot, paths.mapperCheckout, modelMapperRemote, wantSHA)
+}
+
+func preparePinnedCheckout(integrationRoot, checkout, remote, revision string) error {
+	if err := requireContained(integrationRoot, checkout); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(paths.checkout, 0o755); err != nil {
+	if err := verifyCheckout(checkout, revision); err == nil {
+		return nil
+	}
+	if err := removeContained(integrationRoot, checkout); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
 		return fmt.Errorf("create checkout directory: %w", err)
 	}
 	commands := [][]string{
 		{"git", "init"},
-		{"git", "remote", "add", "origin", cpaRemote},
-		{"git", "fetch", "--depth=1", "origin", wantSHA},
+		{"git", "remote", "add", "origin", remote},
+		{"git", "fetch", "--depth=1", "origin", revision},
 		{"git", "checkout", "--detach", "FETCH_HEAD"},
 	}
 	for _, command := range commands {
-		if err := runCommand(paths.checkout, nil, command[0], command[1:]...); err != nil {
+		if err := runCommand(checkout, nil, command[0], command[1:]...); err != nil {
 			return err
 		}
 	}
-	return verifyCheckout(paths.checkout, wantSHA)
+	return verifyCheckout(checkout, revision)
 }
 
 func buildCPA(paths runnerPaths) error {
@@ -266,18 +294,28 @@ func buildCPA(paths runnerPaths) error {
 	return runCommand(paths.checkout, nil, goCommand(), "build", "-trimpath", "-o", paths.bin, "./cmd/server")
 }
 
-func buildPlugin(paths runnerPaths) (string, error) {
-	extension, err := pluginExtension(runtime.GOOS)
-	if err != nil {
+func pluginPlatformDir(paths runnerPaths) string {
+	return filepath.Join(paths.run, "plugins", runtime.GOOS, runtime.GOARCH)
+}
+
+func preparePluginPlatformDir(paths runnerPaths) (string, error) {
+	platformDir := pluginPlatformDir(paths)
+	if err := requireContained(paths.integrationRoot, platformDir); err != nil {
 		return "", err
 	}
-	pluginDir := filepath.Join(paths.run, "plugins")
-	platformDir := filepath.Join(pluginDir, runtime.GOOS, runtime.GOARCH)
-	if err := requireContained(paths.integrationRoot, platformDir); err != nil {
+	if err := removeContained(paths.integrationRoot, platformDir); err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(platformDir, 0o755); err != nil {
 		return "", fmt.Errorf("create plugin directory: %w", err)
+	}
+	return platformDir, nil
+}
+
+func buildPlugin(paths runnerPaths, platformDir string) (string, error) {
+	extension, err := pluginExtension(runtime.GOOS)
+	if err != nil {
+		return "", err
 	}
 	library := filepath.Join(platformDir, "censorship"+extension)
 	if err := runCommand(paths.repositoryRoot, []string{"CGO_ENABLED=1"}, goCommand(), "build", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
@@ -287,7 +325,20 @@ func buildPlugin(paths runnerPaths) (string, error) {
 	if err := removeContained(paths.integrationRoot, header); err != nil {
 		return "", err
 	}
-	return pluginDir, nil
+	return filepath.Join(paths.run, "plugins"), nil
+}
+
+func buildModelMapper(paths runnerPaths, platformDir string) error {
+	extension, err := pluginExtension(runtime.GOOS)
+	if err != nil {
+		return err
+	}
+	library := filepath.Join(platformDir, "model-mapper"+extension)
+	if err := runCommand(paths.mapperCheckout, []string{"CGO_ENABLED=1", "GOOS=" + runtime.GOOS, "GOARCH=" + runtime.GOARCH}, goCommand(), "build", "-mod=readonly", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
+		return err
+	}
+	header := strings.TrimSuffix(library, extension) + ".h"
+	return removeContained(paths.integrationRoot, header)
 }
 
 func copyIntegrationFiles(paths runnerPaths) error {
