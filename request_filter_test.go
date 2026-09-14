@@ -402,10 +402,16 @@ func TestRequestFilterShouldProcessRejectsUntrustedNestedModelFallback(t *testin
 		t.Fatal("shouldProcess trusted an unknown source or body model")
 	}
 
+	request.RequestedModel = "anything"
+	request.Model = "other"
+	if !filter.shouldProcess(request) {
+		t.Fatal("unknown source did not match RequestedModel")
+	}
+
 	request.Model = ""
 	request.Metadata["source"] = pluginHostModelCallbackSource
 	if filter.shouldProcess(request) {
-		t.Fatal("shouldProcess matched an empty nested Model")
+		t.Fatal("empty callback Model fell back to RequestedModel")
 	}
 	filter.Mode = filterModeExclude
 	if !filter.shouldProcess(request) {
