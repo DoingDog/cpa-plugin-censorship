@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -118,18 +119,28 @@ func TestRegistrationExposesEditableConfigFields(t *testing.T) {
 		name        string
 		typeName    pluginapi.ConfigFieldType
 		description string
+		enumValues  []string
 	}{
 		{name: "ignore_case", typeName: pluginapi.ConfigFieldTypeBoolean, description: "Match terms with Go unicode.SimpleFold equivalence (default false)."},
 		{name: "words", typeName: pluginapi.ConfigFieldTypeObject, description: "Optional block, strip, and obfs arrays; an empty object has no rules."},
 		{name: "scope", typeName: pluginapi.ConfigFieldTypeObject, description: "Optional object with formats and roles arrays; defaults to all supported formats and system, developer, and user roles."},
 		{name: "obfs", typeName: pluginapi.ConfigFieldTypeObject, description: "Obfuscation object whose char is U+200B or U+2060; used by obfs rules (default U+200B)."},
+		{name: "filter_mode", typeName: pluginapi.ConfigFieldTypeEnum, description: "Exclude matching requests from censorship, or include only matching requests (default exclude).", enumValues: []string{"exclude", "include"}},
+		{name: "filter_logic", typeName: pluginapi.ConfigFieldTypeEnum, description: "Combine non-empty filter api-keys and models with or or and (default or); one non-empty list is used alone.", enumValues: []string{"or", "and"}},
+		{name: "filter", typeName: pluginapi.ConfigFieldTypeObject, description: "Optional object with api-keys and models pattern arrays; * matches zero or more Unicode scalars and ? matches one. Empty arrays or an empty object disable request filtering. API-key patterns require authenticated caller_scope binding and are not masked by the standard panel."},
 	}
 	if len(fields) != len(want) {
 		t.Fatalf("config field count = %d, want %d: %#v", len(fields), len(want), fields)
 	}
 	for i, field := range fields {
-		if field.Name != want[i].name || field.Type != want[i].typeName || field.Description != want[i].description || field.EnumValues != nil {
-			t.Errorf("config field %d = %#v, want name=%q type=%q description=%q and no enum values", i, field, want[i].name, want[i].typeName, want[i].description)
+		if field.Name != want[i].name || field.Type != want[i].typeName || field.Description != want[i].description || !reflect.DeepEqual(field.EnumValues, want[i].enumValues) {
+			t.Errorf("config field %d = %#v, want name=%q type=%q description=%q enum values=%#v", i, field, want[i].name, want[i].typeName, want[i].description, want[i].enumValues)
+		}
+		if field.Name == "mode" {
+			t.Error("config fields must not expose global mode")
+		}
+		if field.Name == "words" && field.Type != pluginapi.ConfigFieldTypeObject {
+			t.Errorf("words type = %q, want object", field.Type)
 		}
 	}
 }
@@ -427,13 +438,48 @@ func TestBeforeAuthBlockIgnoreCaseReturnsYAMLTerm(t *testing.T) {
 }
 
 func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T) {
-	registerConfig(t, "mode: block\nwords: [alpha]\n")
-	if got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"alpha"}]}`)); !got.Terminate {
-		t.Fatal("config A did not block alpha")
+	const rawCredential = "secret-sentinel"
+	intercept := func(model, content string) pluginapi.RequestInterceptResponse {
+		t.Helper()
+		resp, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
+			RequestID:      "filter-lifecycle-test",
+			SourceFormat:   "openai",
+			RequestedModel: model,
+			Body:           []byte(`{"messages":[{"role":"user","content":"` + content + `"}]}`),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
 	}
 
-	reconfigureConfig(t, "mode: block\nignore_case: true\nwords: [Beta]\n")
-	if got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"bETA"}]}`)); !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"Beta"`)) {
+	registerConfig(t, "filter_mode: include\nfilter: {models: [model-a]}\nwords: {block: [alpha]}\n")
+	if got := intercept("model-a", "alpha"); !got.Terminate {
+		t.Fatal("config A did not block model-a alpha")
+	}
+	if got := intercept("model-b", "alpha"); got.Terminate {
+		t.Fatalf("config A did not bypass model-b: %#v", got)
+	}
+
+	invalidConfig := "filter: {api-keys: [" + rawCredential + ", '']}\n"
+	invalidRegister := mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, invalidConfig))
+	var registerEnv pluginabi.Envelope
+	decodeEnvelope(t, invalidRegister, &registerEnv)
+	if registerEnv.OK || registerEnv.Error == nil || registerEnv.Error.Code != "plugin_error" {
+		t.Fatalf("invalid register envelope = %#v", registerEnv)
+	}
+	if bytes.Contains(invalidRegister, []byte(rawCredential)) {
+		t.Fatalf("invalid register envelope contains credential: %s", invalidRegister)
+	}
+	if got := intercept("model-a", "alpha"); !got.Terminate {
+		t.Fatalf("invalid register replaced config A: %#v", got)
+	}
+
+	reconfigureConfig(t, "filter_mode: exclude\nfilter: {models: [model-a]}\nignore_case: true\nwords: {block: [Beta]}\n")
+	if got := intercept("model-a", "BETA"); got.Terminate {
+		t.Fatalf("config B did not bypass model-a: %#v", got)
+	}
+	if got := intercept("model-b", "BETA"); !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"Beta"`)) {
 		t.Fatalf("config B response = %#v", got)
 	}
 
@@ -449,12 +495,16 @@ func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T
 		return okEnvelope(struct{}{})
 	})
 	t.Cleanup(func() { setHostCallbackForTest(nil) })
-	reconfigureConfig(t, "ignore_case: yes\nwords: [gamma]\n")
-	if got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"BETA"}]}`)); !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"Beta"`)) {
-		t.Fatalf("invalid B replaced last-known-good: %#v", got)
+	reconfigureConfig(t, invalidConfig)
+	if got := intercept("model-b", "BETA"); !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"Beta"`)) {
+		t.Fatalf("invalid reconfigure replaced config B: %#v", got)
 	}
-	if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" || logs[0].Fields["error"] == "" {
+	if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" {
 		t.Fatalf("host logs = %#v", logs)
+	}
+	logError := fmt.Sprint(logs[0].Fields["error"])
+	if !strings.Contains(logError, "filter.api-keys") || strings.Contains(logError, rawCredential) || strings.Contains(logError, "caller_scope") {
+		t.Fatalf("host log error = %q", logError)
 	}
 }
 

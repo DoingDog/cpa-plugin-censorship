@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 func TestParseConfigYAMLDefaultsAndValidation(t *testing.T) {
@@ -318,8 +320,8 @@ func TestRegisterRejectsInvalidConfigAndAcceptsHostOwnedKeys(t *testing.T) {
 }
 
 func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
-	const configA = "mode: strip\nwords: [alpha]\nscope:\n  formats: [openai]\n  roles: [user]\n"
-	const configB = "mode: obfs\nignore_case: true\nwords: [Beta]\nscope:\n  formats: [openai]\n  roles: [user]\nobfs:\n  char: '⁠'\n"
+	const configA = "filter_mode: include\nfilter_logic: and\nfilter:\n  api-keys: [key-a]\n  models: [model-a]\nwords: {strip: [alpha]}\nscope:\n  formats: [openai]\n  roles: [user]\n"
+	const configB = "filter_mode: exclude\nfilter_logic: or\nfilter:\n  api-keys: [key-b]\n  models: [model-b]\nignore_case: true\nwords: {obfs: [Beta]}\nscope:\n  formats: [openai]\n  roles: [user]\nobfs:\n  char: '⁠'\n"
 	body := []byte(`{"messages":[{"role":"user","content":"alpha BETA"}]}`)
 	wantA := []byte(`{"messages":[{"role":"user","content":" BETA"}]}`)
 	wantB := []byte(`{"messages":[{"role":"user","content":"alpha B⁠ETA"}]}`)
@@ -341,7 +343,14 @@ func TestConcurrentReconfigureObservesOnlyWholeSnapshot(t *testing.T) {
 					return
 				default:
 				}
-				resp, err := callIntercept("openai", body)
+				resp, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
+					RequestID:      "concurrent-filter-test",
+					SourceFormat:   "openai",
+					RequestedModel: "model-a",
+					Headers:        http.Header{"Authorization": {"Bearer key-a"}},
+					Metadata:       map[string]any{callerScopeMetadataKey: callerScope("key-a")},
+					Body:           body,
+				})
 				if first {
 					started <- struct{}{}
 					first = false
