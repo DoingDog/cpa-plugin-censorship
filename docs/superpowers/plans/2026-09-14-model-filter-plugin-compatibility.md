@@ -246,7 +246,7 @@ Replace the old monolithic sentence token with stable contract fragments and do 
 "the nested call's result does not undo an outer transform that has already completed.",
 ```
 
-Update the five-format required tokens to require `same stage-aware request-filter sources`, ordinary `RequestedModel`, and callback-only `Model`, while retaining the existing wildcard carrier assertions.
+Update the five-format required tokens to require ``All five supported `SourceFormat` values use the same stage-aware request-filter sources``, ordinary `RequestedModel`, and callback-only `Model`, while retaining the existing wildcard carrier assertions.
 
 Rename the release compatibility test to `TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions` and require both exact compatibility statements:
 
