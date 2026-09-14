@@ -456,6 +456,7 @@ func TestModelAndAPIKeyFiltersRunTogetherAfterAuth(t *testing.T) {
 		name       string
 		configYAML string
 		request    pluginapi.RequestInterceptRequest
+		active     bool
 	}{
 		{
 			name:       "and exact caller scope and matching model",
@@ -468,6 +469,22 @@ func TestModelAndAPIKeyFiltersRunTogetherAfterAuth(t *testing.T) {
 				Metadata: map[string]any{
 					executor.SelectedAuthMetadataKey: "auth-1",
 					callerScopeMetadataKey:           testKeyCallerScope,
+				},
+				Body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
+			},
+			active: true,
+		},
+		{
+			name:       "and exact caller scope mismatch and matching model",
+			configYAML: "filter_mode: include\nfilter_logic: and\nfilter:\n  api-keys: [test-key]\n  models: [target-model]\nwords:\n  block: [blocked]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "and-filter-scope-decoy",
+				SourceFormat:   "openai",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Metadata: map[string]any{
+					executor.SelectedAuthMetadataKey: "auth-1",
+					callerScopeMetadataKey:           testKeyCallerScope + "-decoy",
 				},
 				Body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
 			},
@@ -487,6 +504,24 @@ func TestModelAndAPIKeyFiltersRunTogetherAfterAuth(t *testing.T) {
 				},
 				Body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
 			},
+			active: true,
+		},
+		{
+			name:       "or wildcard authorization and requested model decoy",
+			configYAML: "filter_mode: include\nfilter_logic: or\nfilter:\n  api-keys: [test-*]\n  models: [target-model]\nwords:\n  block: [blocked]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "or-filter-model-decoy",
+				SourceFormat:   "openai",
+				Model:          "model-decoy",
+				RequestedModel: "target-model",
+				Headers:        http.Header{"Authorization": {"Bearer test-key"}},
+				Metadata: map[string]any{
+					executor.SelectedAuthMetadataKey: "auth-1",
+					callerScopeMetadataKey:           testKeyCallerScope,
+				},
+				Body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
+			},
+			active: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -495,7 +530,9 @@ func TestModelAndAPIKeyFiltersRunTogetherAfterAuth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !response.Terminate || response.StatusCode != 400 || !strings.Contains(string(response.ResponseBody), "censorship_blocked") {
+			if !tc.active {
+				requireNoOpResponse(t, response)
+			} else if !response.Terminate || response.StatusCode != 400 || !strings.Contains(string(response.ResponseBody), "censorship_blocked") {
 				t.Fatalf("AfterAuth response = %#v, want terminated censorship_blocked", response)
 			}
 
