@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +141,41 @@ func TestHTTPBlockIncludesTermAndRole(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestFilterMatchesAllSupportedFormats(t *testing.T) {
+	const config = `words:
+  block: [SECRET]
+filter_mode: include
+filter_logic: and
+filter:
+  api-keys: ["censorship-integration-?ey"]
+  models: ["censorship-integration-*"]
+`
+	for _, tc := range []struct {
+		name string
+		path string
+		body []byte
+	}{
+		{name: "OpenAI Chat", path: "/v1/chat/completions", body: []byte(`{"model":"censorship-integration-model","messages":[{"role":"user","content":"SECRET"}]}`)},
+		{name: "Responses", path: "/v1/responses", body: []byte(`{"model":"censorship-integration-model","input":"SECRET"}`)},
+		{name: "Claude", path: "/v1/messages", body: []byte(`{"model":"censorship-integration-model","max_tokens":16,"messages":[{"role":"user","content":"SECRET"}]}`)},
+		{name: "Gemini", path: "/v1beta/models/censorship-integration-model:generateContent", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET"}]}]}`)},
+		{name: "Interactions", path: "/v1beta/interactions", body: []byte(`{"model":"censorship-integration-model","input":"SECRET"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newMockUpstream(t)
+			cpa := startCPA(t, upstream.URL, true, config)
+			status, _, body := postJSON(t, cpa.baseURL+tc.path, tc.body)
+			errorResponse, err := decodeCensorshipError(body)
+			if err != nil || status != 400 || errorResponse.Error.Code != "censorship_blocked" {
+				t.Fatalf("status=%d body=%s error=%v", status, body, err)
+			}
+			if upstream.arrivalCount() != 0 {
+				t.Fatal("blocked request reached upstream")
+			}
+		})
+	}
+}
+
 func TestHTTPRejectsDuplicateJSONMembers(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: strip\nwords: [SECRET]\n")
@@ -169,7 +205,12 @@ func TestLegacyCompletionsPromptUsesConvertedUserRole(t *testing.T) {
 
 func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
 	upstream := newMockUpstream(t)
-	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [alpha-only]\n")
+	cpa := startCPA(t, upstream.URL, true, `words:
+  block: [alpha-only]
+filter_mode: include
+filter:
+  models: [censorship-integration-model]
+`)
 	status, _, body := postChat(t, cpa, "alpha-only")
 	if status != 400 || gjson.GetBytes(body, "error.term").String() != "alpha-only" {
 		t.Fatalf("snapshot A did not block alpha-only: status=%d body=%s", status, body)
@@ -180,7 +221,12 @@ func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
 
 	watcherDeadline := time.Now().Add(20 * time.Second)
 	for {
-		writePluginConfig(t, cpa.config, "mode: block\nwords: [alpha-only, watcher-ready-only]\n")
+		writePluginConfig(t, cpa.config, `words:
+  block: [alpha-only, watcher-ready-only]
+filter_mode: include
+filter:
+  models: [censorship-integration-model]
+`)
 		status, _, body = postChat(t, cpa, "watcher-ready-only")
 		if status == 400 && gjson.GetBytes(body, "error.term").String() == "watcher-ready-only" {
 			break
@@ -191,7 +237,13 @@ func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
-	writePluginConfig(t, cpa.config, "mode: block\nignore_case: true\nwords: [beta-only]\n")
+	writePluginConfig(t, cpa.config, `words:
+  block: [beta-only]
+ignore_case: true
+filter_mode: exclude
+filter:
+  models: [never-match]
+`)
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		status, _, body = postChat(t, cpa, "BETA-ONLY")
@@ -202,6 +254,27 @@ func TestWatcherReloadLinearizesAtObservedSnapshotB(t *testing.T) {
 			t.Fatalf("snapshot B not observed, last status=%d body=%s\n%s", status, body, readCPALog(cpa.logPath))
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+
+	writePluginConfig(t, cpa.config, `words:
+  block: [beta-only]
+ignore_case: true
+filter_mode: exclude
+filter_logic: xor
+filter:
+  models: [never-match]
+`)
+	deadline = time.Now().Add(20 * time.Second)
+	for !strings.Contains(readCPALog(cpa.logPath), "censorship plugin reconfigure rejected") {
+		if time.Now().After(deadline) {
+			t.Fatalf("invalid snapshot rejection not observed\n%s", readCPALog(cpa.logPath))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	status, _, body = postChat(t, cpa, "BETA-ONLY")
+	if status != 400 || gjson.GetBytes(body, "error.term").String() != "beta-only" {
+		t.Fatalf("last known good snapshot B did not block BETA-ONLY: status=%d body=%s", status, body)
 	}
 	requestsBeforeAlpha := upstream.requestCount()
 	status, _, body = postChat(t, cpa, "alpha-only")
@@ -222,6 +295,59 @@ func TestHTTPResponsesBlockStringInput(t *testing.T) {
 	}
 	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked Responses input reached upstream")
+	}
+}
+
+func TestHTTPRequestFilterStripPreservesNonTargetFields(t *testing.T) {
+	const input = "before SECRET after"
+	const transformed = "before  after"
+	body := []byte(`{"model":"censorship-integration-model","messages":[{"role":"user","content":"before SECRET after"}]}`)
+	baselineUpstream := newMockUpstream(t)
+	transformedUpstream := newMockUpstream(t)
+	baseline := startCPA(t, baselineUpstream.URL, false, "")
+	transformedCPA := startCPA(t, transformedUpstream.URL, true, `words:
+  strip: [SECRET]
+filter_mode: include
+filter_logic: and
+filter:
+  api-keys: ["censorship-integration-?ey"]
+  models: ["censorship-integration-*"]
+`)
+	status, _, response := postJSON(t, baseline.baseURL+"/v1/chat/completions", body)
+	if status != 200 {
+		t.Fatalf("disabled status=%d body=%s", status, response)
+	}
+	status, _, response = postJSON(t, transformedCPA.baseURL+"/v1/chat/completions", body)
+	if status != 200 {
+		t.Fatalf("strip status=%d body=%s", status, response)
+	}
+	if err := validateCapturedChatRequest(transformedUpstream.lastRequest(), baselineUpstream.lastRequest(), input, transformed); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPRequestFilterBypassMatchesDisabledPlugin(t *testing.T) {
+	const input = "before SECRET after"
+	body := []byte(`{"model":"censorship-integration-model","messages":[{"role":"user","content":"before SECRET after"}]}`)
+	disabledUpstream := newMockUpstream(t)
+	enabledUpstream := newMockUpstream(t)
+	disabled := startCPA(t, disabledUpstream.URL, false, "")
+	enabled := startCPA(t, enabledUpstream.URL, true, `words:
+  block: [SECRET]
+filter_mode: include
+filter:
+  models: ["never-*"]
+`)
+	disabledTrace := captureHTTP11Trace(t, disabled.baseURL+"/v1/chat/completions", downstreamKey, body)
+	enabledTrace := captureHTTP11Trace(t, enabled.baseURL+"/v1/chat/completions", downstreamKey, body)
+	if err := validateCapturedChatRequest(enabledUpstream.lastRequest(), disabledUpstream.lastRequest(), input, input); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(enabledTrace, disabledTrace) {
+		t.Fatalf("enabled trace = %#v, disabled trace = %#v", enabledTrace, disabledTrace)
+	}
+	if enabledUpstream.arrivalCount() != 1 || disabledUpstream.arrivalCount() != 1 {
+		t.Fatalf("enabled arrivals=%d disabled arrivals=%d, want 1 each", enabledUpstream.arrivalCount(), disabledUpstream.arrivalCount())
 	}
 }
 
@@ -327,9 +453,6 @@ func validateCapturedChatContent(captured []byte, input, transformed string) err
 	got := gjson.GetBytes(captured, "messages.0.content").String()
 	if got != transformed {
 		return fmt.Errorf("upstream message content = %q, want %q; body = %s", got, transformed, captured)
-	}
-	if got == input {
-		return fmt.Errorf("upstream message content remained input %q; body = %s", got, captured)
 	}
 	return nil
 }

@@ -315,7 +315,12 @@ func TestResponsesWebSocketSecondTurnBlocksLoadedToolDefinition(t *testing.T) {
 
 func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
 	upstream := newMockUpstream(t)
-	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\n")
+	cpa := startCPA(t, upstream.URL, true, `words:
+  block: [SECRET]
+filter_mode: include
+filter:
+  models: ["censorship-integration-*"]
+`)
 	conn := dialResponsesWebSocket(t, cpa.wsURL, downstreamKey)
 	t.Cleanup(func() { _ = conn.Close() })
 
@@ -342,6 +347,27 @@ func TestResponsesWebSocketBlockReturnsStatus400ThenCloses(t *testing.T) {
 	}
 	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked WebSocket turn reached upstream")
+	}
+}
+
+func TestResponsesWebSocketRequestFilterBypassMatchesDisabledPlugin(t *testing.T) {
+	payload := []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":"SECRET"}`, modelName))
+	disabledUpstream := newMockUpstream(t)
+	enabledUpstream := newMockUpstream(t)
+	disabled := startCPA(t, disabledUpstream.URL, false, "")
+	enabled := startCPA(t, enabledUpstream.URL, true, `words:
+  block: [SECRET]
+filter_mode: include
+filter:
+  models: ["never-*"]
+`)
+	gotDisabled := responsesWSExchange(t, disabled, payload)
+	gotEnabled := responsesWSExchange(t, enabled, payload)
+	if !reflect.DeepEqual(gotEnabled, gotDisabled) {
+		t.Fatalf("enabled messages = %#v, disabled messages = %#v", gotEnabled, gotDisabled)
+	}
+	if !bytes.Equal(enabledUpstream.lastRequest(), disabledUpstream.lastRequest()) {
+		t.Fatalf("enabled upstream request = %s, disabled upstream request = %s", enabledUpstream.lastRequest(), disabledUpstream.lastRequest())
 	}
 }
 
