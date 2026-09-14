@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	testKeyCallerScope = "a420e246227b259b532446574f6fd7719cc2d7f551efd9944f93422b96811a56"
-	accountCallerScope = "70d7f532bbb4b34d73d8b94cd09d49cb1836a9a1d81949e0fd1c5d3b19d0dc37"
+	testKeyCallerScope            = "a420e246227b259b532446574f6fd7719cc2d7f551efd9944f93422b96811a56"
+	accountCallerScope            = "70d7f532bbb4b34d73d8b94cd09d49cb1836a9a1d81949e0fd1c5d3b19d0dc37"
+	pluginHostModelCallbackSource = "plugin_host_model_callback"
 )
 
 func TestMatchFilterGlob(t *testing.T) {
@@ -334,7 +335,7 @@ func TestRequestFilterShouldProcess(t *testing.T) {
 			if test.modelConfigured {
 				filter.Models = []compiledFilterPattern{{Text: "target"}}
 			}
-			request := &pluginapi.RequestInterceptRequest{RequestedModel: "other"}
+			request := &pluginapi.RequestInterceptRequest{Model: "upstream-decoy", RequestedModel: "other"}
 			if test.apiMatches {
 				request.Metadata = map[string]any{callerScopeMetadataKey: testKeyCallerScope}
 			} else if test.apiConfigured {
@@ -350,35 +351,49 @@ func TestRequestFilterShouldProcess(t *testing.T) {
 	}
 }
 
-func TestRequestFilterShouldProcessUsesRequestedModel(t *testing.T) {
+func TestRequestFilterShouldProcessUsesInvocationModelSubject(t *testing.T) {
 	filter := requestFilter{
 		Mode:   filterModeInclude,
 		Logic:  filterLogicOr,
-		Models: []compiledFilterPattern{{Text: "target"}},
+		Models: []compiledFilterPattern{{Text: "upstream-b"}},
 	}
 	request := &pluginapi.RequestInterceptRequest{
-		Model:          "target",
-		RequestedModel: "other",
-		Body:           []byte(`{"model":"target"}`),
+		Model:          "upstream-b",
+		RequestedModel: "client-a",
+		Body:           []byte(`{"model":"body-decoy"}`),
 	}
 	if filter.shouldProcess(request) {
-		t.Fatal("shouldProcess() matched Model or body instead of RequestedModel")
+		t.Fatal("outer invocation matched a future Model instead of RequestedModel")
+	}
+
+	request.Metadata = map[string]any{"source": pluginHostModelCallbackSource}
+	if !filter.shouldProcess(request) {
+		t.Fatal("nested callback invocation did not match Model")
+	}
+
+	request.Model = "client-a"
+	if filter.shouldProcess(request) {
+		t.Fatal("nested callback invocation matched RequestedModel instead of Model")
 	}
 }
 
-func TestRequestFilterShouldProcessRejectsMissingRequestedModel(t *testing.T) {
-	filter := requestFilter{
-		Mode:   filterModeInclude,
-		Logic:  filterLogicOr,
-		Models: []compiledFilterPattern{{Text: "*"}},
-	}
+func TestRequestFilterShouldProcessRejectsUntrustedNestedModelFallback(t *testing.T) {
+	filter := requestFilter{Mode: filterModeInclude, Logic: filterLogicOr, Models: []compiledFilterPattern{{Text: "anything"}}}
 	compileRequestFilter(&filter)
 	request := &pluginapi.RequestInterceptRequest{
-		Model: "anything",
-		Body:  []byte(`{"model":"anything"}`),
+		Model: "", RequestedModel: "other", Body: []byte(`{"model":"anything"}`),
+		Metadata: map[string]any{"source": "unknown"},
 	}
 	if filter.shouldProcess(request) {
-		t.Fatal("shouldProcess() matched missing RequestedModel")
+		t.Fatal("shouldProcess trusted an unknown source or body model")
+	}
+	request.Metadata["source"] = pluginHostModelCallbackSource
+	if filter.shouldProcess(request) {
+		t.Fatal("shouldProcess matched an empty nested Model")
+	}
+	filter.Mode = filterModeExclude
+	if !filter.shouldProcess(request) {
+		t.Fatal("exclude filter did not process an empty nested Model")
 	}
 }
 
@@ -508,7 +523,7 @@ func TestRequestFilterGatesAllSupportedFormats(t *testing.T) {
 				RequestID:      "matching-" + format.name,
 				SourceFormat:   format.format,
 				RequestedModel: "target-model",
-				Model:          "ignored-current-model",
+				Model:          "upstream-decoy",
 				Body:           format.body,
 			})
 			if err != nil {
