@@ -1,4 +1,20 @@
+# Censorship v0.3.2
+
+## v0.3.2 fixes
+
+- v0.3.2 is provisional until fresh tag preflight.
+- Fixes the reported `claude-opus -> kimi-k3` mapping route: when `filter.models` excludes `kimi-k3`, censorship no longer blocks `claude-opus` before the mapping Executor runs. In the supported non-stream `host.model.execute` path returning to ordinary AuthManager, model-bearing filtering runs after auth selection.
+- When filter.models is empty, model-free filters process BeforeAuth. When filter.models is non-empty, BeforeAuth no-ops and only a selected-auth AfterAuth attempt with non-empty `selected_auth_id` or `selected_auth_index` processes. That attempt uses `request.Model`, not `RequestedModel`, body model fields, or callback `source`; model+API combinations evaluate together, and wildcard credentials inspect headers visible at AfterAuth.
+- A same-instance config-only reconfigure may update only within one `filter.models` phase class. A filter.models phase change requires draining in-flight requests and a full restart; the same rule applies before plugin binary or enabled-status changes.
+- BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every AfterAuth call that reads an input body performs synchronous `C.GoBytes` and incurs input-sized copy.
+- A mapped nonexcluded block remains zero-upstream on the supported callback path. Pinned CLIProxyAPI v7.2.152 loses its nested terminal response and returns HTTP 500; this is a host limitation, not the intended censorship response.
+- The selected-auth attempt model can differ from the final wire model after Executor-side payload rewrites. Mapped `host.model.execute_stream`, opaque terminal Executor, and Antigravity credits fallback are excluded from the post-route model-filter guarantee.
+
+v0.3.2 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
 # Censorship v0.3.1
+
+> v0.3.1 behavior is superseded by v0.3.2; this section is preserved as release history.
 
 ## v0.3.1 features
 

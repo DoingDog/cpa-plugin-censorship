@@ -1026,12 +1026,6 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"| no | no | no match | no match |",
 		"| `exclude` | bypass | process |",
 		"| `include` | process | bypass |",
-		"Outer request-interceptor calls match `RequestedModel`.",
-		"host-owned `Metadata[\"source\"]` value `plugin_host_model_callback`",
-		"only that nested call matches `Model`.",
-		"does not parse request-body model fields or implement CPA alias routing.",
-		"The filter gate is evaluated independently for each host invocation;",
-		"the nested call's result does not undo an outer transform that has already completed.",
 		"`api-keys` matches authenticated `caller_scope`.",
 		"`Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.",
 		"Query-only conditions support exact values only; wildcard query conditions are not supported.",
@@ -1055,7 +1049,7 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"straße/STRASSE does not match",
 		"no Unicode normalization",
 		"assistant is inspected only when explicitly listed in scope.roles",
-		"valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel",
+		"same-instance config-only reconfigure may update only within one `filter.models` phase class",
 		"invalid reconfiguration keeps the last-known-good snapshot",
 		"Machine exclusions: tool calls, machine schema values, arguments, reasoning, thinking, JSON keys, machine JSON, binary uploads, and image/audio/video/file base64 are never changed.",
 		"1. hook is not raw ingress; document order follows current execution-body spans",
@@ -1066,7 +1060,6 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"6. Alpha Search bypasses the plugin",
 		"7. WebSocket block events omit `term` and `role`",
 		"8. RequestInterceptor failures are fail-open",
-		"9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost",
 		"10. Home mode does not watch local YAML",
 		"11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA",
 		"censorship_<version>_<goos>_<goarch>.zip",
@@ -1100,9 +1093,19 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"and every model response",
 	}
 	readmeRequired := []string{
-		"All five supported `SourceFormat` values use the same stage-aware request-filter sources",
-		"`RequestedModel` for ordinary model checks",
-		"`Model` only when `Metadata[\"source\"]` equals `plugin_host_model_callback`",
+		"filter.models is empty",
+		"filter.models is non-empty",
+		"RequestAfterAuthInterceptor",
+		"selected_auth_id",
+		"selected_auth_index",
+		"request.Model",
+		"does not parse request-body model fields or implement CPA alias routing.",
+		"non-stream host.model.execute",
+		"HTTP 500",
+		"filter.models phase change requires restart",
+		"in-flight requests",
+		"C.GoBytes",
+		"every AfterAuth call that reads an input body performs synchronous `C.GoBytes` and incurs input-sized copy",
 		"documented wildcard credential carriers",
 		"Wildcard credential carriers are scanned in this exact order: `Authorization`, `X-Goog-Api-Key`, then `X-Api-Key`.",
 		"`Authorization` accepts case-insensitive `Bearer <credential>` or a raw credential.",
@@ -1138,6 +1141,18 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 			t.Errorf("README.md missing %q", token)
 		}
 	}
+	for _, token := range []string{
+		"It examines selected text leaves in model request bodies before authentication.",
+		"`RequestedModel` for ordinary model checks",
+		"`Model` only when `Metadata[\"source\"]` equals `plugin_host_model_callback`",
+		"valid non-Home YAML changes apply without restart",
+		"After-auth intentionally does not read input.",
+		"the plugin does not perform a C-to-Go input copy.",
+	} {
+		if bytes.Contains(readme, []byte(token)) {
+			t.Errorf("README.md contains superseded current-contract claim %q", token)
+		}
+	}
 
 	workflow, err := os.ReadFile(".github/workflows/build.yml")
 	if err != nil {
@@ -1170,12 +1185,51 @@ func TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	const currentHeader = "# Censorship v0.3.2\n\n## v0.3.2 fixes\n"
+	if !bytes.HasPrefix(raw, []byte(currentHeader)) {
+		t.Fatal("RELEASE_NOTES.md does not begin with the v0.3.2 current-release section")
+	}
+	currentEnd := bytes.Index(raw, []byte("\n# Censorship v0.3.1\n"))
+	if currentEnd < 0 {
+		t.Fatal("RELEASE_NOTES.md does not separate the v0.3.2 current-release section")
+	}
+	currentRelease := raw[:currentEnd]
+	for _, claim := range []string{
+		"censorship only runs before authentication",
+		"Outer request-interceptor calls match `RequestedModel`.",
+		"only that nested call matches `Model`.",
+		"valid non-Home YAML changes apply without restart",
+		"After-auth intentionally does not read input.",
+		"the plugin does not perform a C-to-Go input copy.",
+	} {
+		if bytes.Contains(currentRelease, []byte(claim)) {
+			t.Errorf("RELEASE_NOTES.md current release contains superseded claim %q", claim)
+		}
+	}
 	for _, sentence := range []string{
+		"v0.3.2 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.1 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 	} {
 		if !bytes.Contains(raw, []byte(sentence)) {
 			t.Fatalf("RELEASE_NOTES.md does not contain compatibility sentence %q", sentence)
+		}
+	}
+
+	const superseded = "> Superseded by `docs/superpowers/specs/2026-09-15-model-filter-post-route-execution-design.md`. Do not execute the v0.3.1 outer-`RequestedModel` plan."
+	for _, name := range []string{
+		"docs/superpowers/specs/2026-09-14-model-filter-plugin-compatibility-design.md",
+		"docs/superpowers/plans/2026-09-14-model-filter-plugin-compatibility.md",
+	} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+		titleEnd := bytes.Index(raw, []byte("\n\n"))
+		if titleEnd < 0 || !bytes.HasPrefix(raw[titleEnd:], []byte("\n\n"+superseded+"\n")) {
+			t.Errorf("%s does not begin with the superseded notice", name)
 		}
 	}
 }

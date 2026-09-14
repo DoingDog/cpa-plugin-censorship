@@ -1,5 +1,7 @@
 # Models Filter 与模型名称修改插件兼容 Implementation Plan
 
+> Superseded by `docs/superpowers/specs/2026-09-15-model-filter-post-route-execution-design.md`. Do not execute the v0.3.1 outer-`RequestedModel` plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 `filter.models` 在 host callback 产生 nested execution 时按该 invocation 的 effective model 匹配，同时保持 outer invocation 的原始客户端模型语义。

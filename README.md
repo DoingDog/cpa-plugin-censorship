@@ -1,6 +1,6 @@
 # cpa-plugin-censorship
 
-`censorship` is a pure dynamic plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). It examines selected text leaves in model request bodies before authentication. The plugin is request-only; does not inspect live model output, response bodies, SSE output, or server WebSocket output. Explicit historical output fields replayed as later request input may be inspected under assistant scope.
+`censorship` is a pure dynamic plugin for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). It examines selected text leaves in model request bodies. When filter.models is empty, model-free filters process BeforeAuth. When filter.models is non-empty, model-bearing filters skip BeforeAuth and process only selected-auth `RequestAfterAuthInterceptor` calls. The plugin is request-only; does not inspect live model output, response bodies, SSE output, or server WebSocket output. Explicit historical output fields replayed as later request input may be inspected under assistant scope.
 
 The plugin exposes only `RequestInterceptor`. It has no custom panel, menu, or Management API. CPA's standard configuration UI supplies the Object-only rule editor described below; terms still live in CPA YAML. words is the only term source; the plugin has no built-in terms, fallback list, or online download.
 
@@ -20,7 +20,7 @@ Copy the native library to the CPA platform plugin directory, then start or rest
 
 Linux release libraries require glibc 2.34+.
 
-v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.3.2 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Configuration
 
@@ -79,9 +79,11 @@ An empty `filter: {}` or a filter with both lists empty disables request filteri
 | `exclude` | bypass | process |
 | `include` | process | bypass |
 
-Full-string, case-sensitive glob matching uses `*` for zero or more Unicode scalars and `?` for exactly one Unicode scalar. Outer request-interceptor calls match `RequestedModel`. When CPA invokes a nested execution through the host model callback, the request carries the host-owned `Metadata["source"]` value `plugin_host_model_callback`; only that nested call matches `Model`. The plugin does not parse request-body model fields or implement CPA alias routing. The filter gate is evaluated independently for each host invocation; the nested call's result does not undo an outer transform that has already completed. `api-keys` matches authenticated `caller_scope`. `Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.
+Full-string, case-sensitive glob matching uses `*` for zero or more Unicode scalars and `?` for exactly one Unicode scalar. When filter.models is empty, the model-free filter gate and transforms process at BeforeAuth. When filter.models is non-empty, every BeforeAuth call returns no-op before request-envelope or body parsing; only a selected-auth `RequestAfterAuthInterceptor` call processes. A non-empty, non-whitespace string in either `selected_auth_id` or `selected_auth_index` marks a selected-auth attempt. That attempt uses `request.Model` as its only model subject. The plugin does not parse request-body model fields or implement CPA alias routing. It does not use `RequestedModel`, URL, headers, callback `source`, or other Metadata as model fallbacks. The filter gate is evaluated independently for each valid selected-auth AfterAuth invocation; an ordinary AuthManager attempt receives at most one transform. `api-keys` matches authenticated `caller_scope`. `Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.
 
-All five supported `SourceFormat` values use the same stage-aware request-filter sources: `Metadata["caller_scope"]` for API keys, `RequestedModel` for ordinary model checks, `Model` only when `Metadata["source"]` equals `plugin_host_model_callback`, and the documented wildcard credential carriers. Wildcard credential carriers are scanned in this exact order: `Authorization`, `X-Goog-Api-Key`, then `X-Api-Key`. `Authorization` accepts case-insensitive `Bearer <credential>` or a raw credential. Every wildcard candidate is trimmed and scope-bound before glob matching. Other headers and query-only credentials are unsupported wildcard carriers.
+All five supported `SourceFormat` values keep the same provider selectors and use the stage source above. When filter.models is empty, exact API-key filters process at BeforeAuth using `Metadata["caller_scope"]`. When filter.models is non-empty, model+API combinations move together on a valid selected-auth AfterAuth call: model matching uses `request.Model`, exact API-key matching uses `Metadata["caller_scope"]`, and the documented wildcard credential carriers inspect headers visible at AfterAuth. The supported mapped scope is the non-stream host.model.execute callback that returns to ordinary AuthManager. Wildcard credential carriers are scanned in this exact order: `Authorization`, `X-Goog-Api-Key`, then `X-Api-Key`. `Authorization` accepts case-insensitive `Bearer <credential>` or a raw credential. Every wildcard candidate is trimmed and scope-bound before glob matching. Other headers and query-only credentials are unsupported wildcard carriers.
+
+A mapped nonexcluded block on the supported callback path remains zero-upstream, but pinned CLIProxyAPI v7.2.152 loses the nested terminal response and surfaces HTTP 500 to the client. This is a pinned-host limitation, not the intended censorship response. The selected-auth `request.Model` can differ from the final wire model after Executor-side payload rewrites. Mapped `host.model.execute_stream`, opaque terminal Executor, and Antigravity credits fallback paths are excluded from this release's post-route model-filter guarantee.
 
 Query-only conditions support exact values only; wildcard query conditions are not supported. Management configuration readback returns filter values unchanged and does not mask secrets. Do not store secrets in these values.
 
@@ -160,9 +162,11 @@ Enabled known formats reject JSON objects with duplicate member names at any nes
 
 ## Configuration reload
 
-In non-Home local-config mode, CPA watches its YAML and invokes `plugin.reconfigure`. The plugin parses and compiles a complete immutable snapshot, then publishes it with one atomic store. Each request loads exactly one snapshot.
+In non-Home local-config mode, CPA watches its YAML and invokes `plugin.reconfigure`. The plugin parses and compiles a complete immutable snapshot, then publishes it with one atomic store. Each request loads exactly one snapshot. A same-instance config-only reconfigure may update only within one `filter.models` phase class: empty-to-empty and non-empty-to-non-empty are allowed; a candidate that changes the phase class is rejected and keeps the last-known-good snapshot.
 
-For an observable rollout, write configuration A, then change to configuration B with a unique term such as `snapshot-b-sentinel`. Poll a request containing only that term until B blocks it. Therefore: valid non-Home YAML changes apply without restart after observing a snapshot-B sentinel. Requests started after that observation use the complete B snapshot rather than a mix of A and B.
+A filter.models phase change requires restart: drain in-flight requests, then fully restart before a phase-class, plugin binary, or enabled-status change. The plugin cannot drain requests or preserve at-most-once filtering across binary replacement, disable/enable, or restart.
+
+For an observable allowed rollout, write configuration A, then change to configuration B with a unique term such as `snapshot-b-sentinel`. Poll a request containing only that term until B blocks it. Requests started after that observation use the complete B snapshot rather than a mix of A and B.
 
 If B is malformed, it is logged and invalid reconfiguration keeps the last-known-good snapshot. Direct edits to Home-mode local YAML do not trigger `plugin.reconfigure`.
 
@@ -179,7 +183,7 @@ make integration
 
 Bare `make build` and host-artifact `make package` use `0.0.0-dev`; explicit empty or unsafe `VERSION` remains invalid.
 
-The ABI boundary remains v1 and validates native pointer/length descriptors. Production retains `C.GoBytes` for input requests, makes no no-copy performance claim, and does not claim pinned Windows host request-pointer liveness has been proven. After-auth intentionally does not read input. When censorship replaces a decoded request body, it clears `Content-Encoding`, `Content-Length`, and `Transfer-Encoding`; no-op requests preserve headers.
+The ABI boundary remains v1 and validates native pointer/length descriptors. Production synchronously uses `C.GoBytes` for every request input it reads, including selected-auth AfterAuth, so AfterAuth incurs an input-sized C-to-Go copy and does not retain the host pointer. It makes no no-copy performance claim and does not claim pinned Windows host request-pointer liveness has been proven. When censorship replaces a decoded request body, it clears `Content-Encoding`, `Content-Length`, and `Transfer-Encoding`; no-op requests preserve headers.
 
 ## Accepted pure-plugin limits
 
@@ -191,11 +195,11 @@ The ABI boundary remains v1 and validates native pointer/length descriptors. Pro
 6. Alpha Search bypasses the plugin.
 7. WebSocket block events omit `term` and `role`. CPA can emit status 400 and close, but that path cannot retain the plugin's custom HTTP error fields.
 8. RequestInterceptor failures are fail-open. This includes current CPA error, panic, and fuse handling.
-9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every call carries the full body and incurs full-body RPC encoding/copy cost. The host still encodes and carries the full body on every AfterAuth call, but after recognizing the fixed no-op method, the plugin does not perform a C-to-Go input copy.
+9. BeforeAuth runs once per handler execution; AfterAuth can run zero, one, or multiple times; every AfterAuth call that reads an input body performs synchronous `C.GoBytes` and incurs input-sized copy. The host still encodes and carries the full body on every AfterAuth call.
 10. Home mode does not watch local YAML. Use a configuration path that CPA watches or another host-supported reconfiguration mechanism.
 11. unknown SourceFormat and future content types are not inspected; review schema drift when upgrading CPA.
 12. Known SourceFormat JSON objects accept at most 1024 simultaneously open object or array levels, including the top-level object. Deeper requests return `censorship_invalid_request`.
-13. Methods that read or copy request input reject lengths that exceed `C.int` with a non-zero ABI return code. After-auth intentionally does not read input and may accept a coherent non-nil oversized descriptor. Oversized host callback responses return a plugin error.
+13. Methods that read or copy request input, including selected-auth AfterAuth, reject lengths that exceed `C.int` with a non-zero ABI return code. Oversized host callback responses return a plugin error.
 14. The Responses WebSocket integration test fails after 20 seconds without `response.completed`; it does not wait indefinitely.
 15. A provider-controlled Claude signed-history prefix can bind preceding input. The BeforeAuth hook cannot reliably know final model/binding controls, so the plugin neither mutates thinking/signatures nor adds an overbroad runtime rejection.
 16. A filter bypass returns no replacement body or header changes before JSON validation.

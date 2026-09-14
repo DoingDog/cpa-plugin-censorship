@@ -1,5 +1,7 @@
 # Models Filter 与模型名称修改插件兼容设计
 
+> Superseded by `docs/superpowers/specs/2026-09-15-model-filter-post-route-execution-design.md`. Do not execute the v0.3.1 outer-`RequestedModel` plan.
+
 ## 目标
 
 让 censorship 插件的 `filter.models` 在前序模型路由或模型名称修改插件已经改变当前执行模型时，匹配该拦截阶段实际提供的模型名。兼容目标不绑定 `cpa-plugin-model-mapper`，任何遵循 CLIProxyAPI 插件调用契约的模型路由插件都适用。
