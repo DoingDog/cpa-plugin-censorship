@@ -371,22 +371,38 @@ func TestRequestFilterShouldProcessUsesInvocationModelSubject(t *testing.T) {
 		t.Fatal("nested callback invocation did not match Model")
 	}
 
-	request.Model = "client-a"
-	if filter.shouldProcess(request) {
+	requestedModelFilter := requestFilter{
+		Mode:   filterModeInclude,
+		Logic:  filterLogicOr,
+		Models: []compiledFilterPattern{{Text: "client-a"}},
+	}
+	if requestedModelFilter.shouldProcess(request) {
 		t.Fatal("nested callback invocation matched RequestedModel instead of Model")
 	}
 }
 
 func TestRequestFilterShouldProcessRejectsUntrustedNestedModelFallback(t *testing.T) {
-	filter := requestFilter{Mode: filterModeInclude, Logic: filterLogicOr, Models: []compiledFilterPattern{{Text: "anything"}}}
+	filter := requestFilter{
+		Mode:   filterModeInclude,
+		Logic:  filterLogicOr,
+		Models: []compiledFilterPattern{{Text: "anything"}},
+	}
 	compileRequestFilter(&filter)
 	request := &pluginapi.RequestInterceptRequest{
-		Model: "", RequestedModel: "other", Body: []byte(`{"model":"anything"}`),
-		Metadata: map[string]any{"source": "unknown"},
+		Model: "anything",
+		Body:  []byte(`{"model":"anything"}`),
 	}
+	if filter.shouldProcess(request) {
+		t.Fatal("outer invocation fell back from an empty RequestedModel")
+	}
+
+	request.RequestedModel = "other"
+	request.Metadata = map[string]any{"source": "unknown"}
 	if filter.shouldProcess(request) {
 		t.Fatal("shouldProcess trusted an unknown source or body model")
 	}
+
+	request.Model = ""
 	request.Metadata["source"] = pluginHostModelCallbackSource
 	if filter.shouldProcess(request) {
 		t.Fatal("shouldProcess matched an empty nested Model")
