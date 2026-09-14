@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -187,6 +188,55 @@ func TestPreparePluginPlatformDirRemovesStaleArtifacts(t *testing.T) {
 	}
 }
 
+func TestStagePluginLibraryReplacesPlatformDirectory(t *testing.T) {
+	root := t.TempDir()
+	paths, err := resolveRunnerPaths(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(pluginPlatformDir(paths), "stale-plugin")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("stale native library"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	extension, err := pluginExtension(runtime.GOOS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "prebuilt"+extension)
+	sourceBytes := []byte{0, 1, 2, 255, 3}
+	if err := os.WriteFile(source, sourceBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pluginDir, err := stagePluginLibrary(paths, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(paths.run, "plugins"); pluginDir != want {
+		t.Fatalf("plugin directory = %q, want %q", pluginDir, want)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale plugin remains after staging: %v", err)
+	}
+	staged, err := os.ReadFile(filepath.Join(paths.run, "plugins", runtime.GOOS, runtime.GOARCH, "censorship"+extension))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(staged, sourceBytes) {
+		t.Fatalf("staged library = %v, want %v", staged, sourceBytes)
+	}
+	unchanged, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(unchanged, sourceBytes) {
+		t.Fatalf("source library = %v, want %v", unchanged, sourceBytes)
+	}
+}
+
 func TestPrepareCheckoutRejectsSymlinkedCheckoutBeforeRemovingGeneratedTests(t *testing.T) {
 	root := t.TempDir()
 	paths, err := resolveRunnerPaths(root)
@@ -266,31 +316,57 @@ func TestCopyIntegrationFilesCopiesBenchmarkFixture(t *testing.T) {
 	}
 }
 
-func TestBenchmarkPlacementRunsOnlyFixtureInCPAIntegrationPackage(t *testing.T) {
-	got := integrationTestArgs(true)
-	want := []string{
-		"test", "-tags=integration", "-count=1", "-v", "./integration/censorshipplugin",
-		"-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("benchmark arguments = %q, want %q", got, want)
+func TestIntegrationTestArgsSelectsRunnerMode(t *testing.T) {
+	base := []string{"test", "-tags=integration", "-count=1", "-v", "./integration/censorshipplugin"}
+	for _, tc := range []struct {
+		name    string
+		options runnerOptions
+		want    []string
+	}{
+		{name: "full", want: base},
+		{
+			name:    "benchmark",
+			options: runnerOptions{benchmark: true},
+			want:    append(append([]string{}, base...), "-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem"),
+		},
+		{
+			name:    "ABI smoke",
+			options: runnerOptions{abiSmokeLibrary: "censorship.dll"},
+			want:    append(append([]string{}, base...), "-run", "^TestDynamicABIActiveAfter$"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := integrationTestArgs(tc.options); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("integration test arguments = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
-func TestParseBenchmarkMode(t *testing.T) {
+func TestParseRunnerOptionsSelectsExactlyOneMode(t *testing.T) {
 	for _, tc := range []struct {
-		args []string
-		want bool
-		err  bool
+		name     string
+		args     []string
+		benchEnv string
+		want     runnerOptions
+		err      bool
 	}{
-		{args: nil, want: false},
-		{args: []string{"-bench-abi"}, want: true},
-		{args: []string{"-unexpected"}, err: true},
+		{name: "full", want: runnerOptions{}},
+		{name: "benchmark argument", args: []string{"-bench-abi"}, want: runnerOptions{benchmark: true}},
+		{name: "ABI smoke argument", args: []string{"-abi-smoke", "censorship.dll"}, want: runnerOptions{abiSmokeLibrary: "censorship.dll"}},
+		{name: "benchmark environment", benchEnv: "1", want: runnerOptions{benchmark: true}},
+		{name: "ABI smoke overrides benchmark environment", args: []string{"-abi-smoke", "censorship.dll"}, benchEnv: "1", want: runnerOptions{abiSmokeLibrary: "censorship.dll"}},
+		{name: "missing ABI smoke library", args: []string{"-abi-smoke"}, err: true},
+		{name: "empty ABI smoke library", args: []string{"-abi-smoke", ""}, err: true},
+		{name: "mixed CLI modes", args: []string{"-bench-abi", "-abi-smoke", "censorship.dll"}, err: true},
+		{name: "unknown argument", args: []string{"-unexpected"}, err: true},
 	} {
-		got, err := parseBenchmarkMode(tc.args)
-		if (err != nil) != tc.err || got != tc.want {
-			t.Errorf("parseBenchmarkMode(%q) = %t, %v; want %t, error %t", tc.args, got, err, tc.want, tc.err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseRunnerOptions(tc.args, tc.benchEnv)
+			if (err != nil) != tc.err || got != tc.want {
+				t.Fatalf("parseRunnerOptions(%q, %q) = %#v, %v; want %#v, error %t", tc.args, tc.benchEnv, got, err, tc.want, tc.err)
+			}
+		})
 	}
 }
 

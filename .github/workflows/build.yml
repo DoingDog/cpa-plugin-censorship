@@ -84,6 +84,10 @@ jobs:
         if: "${{ matrix.GOOS == 'windows' }}"
         shell: msys2 {0}
         run: make package VERSION="${MAKE_VERSION}" GOOS=${{ matrix.GOOS }} GOARCH=${{ matrix.GOARCH }}
+      - name: Verify Windows amd64 active-after ABI
+        if: "${{ matrix.GOOS == 'windows' && matrix.GOARCH == 'amd64' }}"
+        shell: msys2 {0}
+        run: go run ./.github/scripts/integration-runner.go -abi-smoke dist/windows_amd64/censorship.dll
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.GOOS }}-${{ matrix.GOARCH }}

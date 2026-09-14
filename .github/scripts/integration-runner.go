@@ -26,6 +26,11 @@ type runnerPaths struct {
 	run             string
 }
 
+type runnerOptions struct {
+	benchmark       bool
+	abiSmokeLibrary string
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -38,12 +43,9 @@ func main() {
 }
 
 func run() error {
-	bench, err := parseBenchmarkMode(os.Args[1:])
+	options, err := parseRunnerOptions(os.Args[1:], os.Getenv("BENCH"))
 	if err != nil {
 		return err
-	}
-	if os.Getenv("BENCH") == "1" {
-		bench = true
 	}
 	root, err := repositoryRoot()
 	if err != nil {
@@ -55,6 +57,19 @@ func run() error {
 	}
 	if err := prepareCheckout(paths, cpaSHA); err != nil {
 		return err
+	}
+	if options.abiSmokeLibrary != "" {
+		if err := buildCPA(paths); err != nil {
+			return err
+		}
+		pluginDir, err := stagePluginLibrary(paths, options.abiSmokeLibrary)
+		if err != nil {
+			return err
+		}
+		if err := copyIntegrationFiles(paths); err != nil {
+			return err
+		}
+		return runIntegrationTests(paths, pluginDir, options)
 	}
 	if err := prepareModelMapperCheckout(paths, modelMapperSHA); err != nil {
 		return err
@@ -79,17 +94,19 @@ func run() error {
 	if err := copyIntegrationFiles(paths); err != nil {
 		return err
 	}
-	return runIntegrationTests(paths, pluginDir, bench)
+	return runIntegrationTests(paths, pluginDir, options)
 }
 
-func parseBenchmarkMode(args []string) (bool, error) {
+func parseRunnerOptions(args []string, benchEnv string) (runnerOptions, error) {
 	switch {
 	case len(args) == 0:
-		return false, nil
+		return runnerOptions{benchmark: benchEnv == "1"}, nil
 	case len(args) == 1 && args[0] == "-bench-abi":
-		return true, nil
+		return runnerOptions{benchmark: true}, nil
+	case len(args) == 2 && args[0] == "-abi-smoke" && args[1] != "":
+		return runnerOptions{abiSmokeLibrary: args[1]}, nil
 	default:
-		return false, fmt.Errorf("usage: integration-runner [-bench-abi]")
+		return runnerOptions{}, fmt.Errorf("usage: integration-runner [-bench-abi | -abi-smoke <library>]")
 	}
 }
 
@@ -312,6 +329,26 @@ func preparePluginPlatformDir(paths runnerPaths) (string, error) {
 	return platformDir, nil
 }
 
+func stagePluginLibrary(paths runnerPaths, source string) (string, error) {
+	contents, err := os.ReadFile(source)
+	if err != nil {
+		return "", fmt.Errorf("read plugin library %s: %w", filepath.ToSlash(source), err)
+	}
+	platformDir, err := preparePluginPlatformDir(paths)
+	if err != nil {
+		return "", err
+	}
+	extension, err := pluginExtension(runtime.GOOS)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(platformDir, "censorship"+extension)
+	if err := os.WriteFile(target, contents, 0o644); err != nil {
+		return "", fmt.Errorf("stage plugin library to %s: %w", filepath.ToSlash(target), err)
+	}
+	return filepath.Join(paths.run, "plugins"), nil
+}
+
 func buildPlugin(paths runnerPaths, platformDir string) (string, error) {
 	extension, err := pluginExtension(runtime.GOOS)
 	if err != nil {
@@ -370,20 +407,23 @@ func copyIntegrationFiles(paths runnerPaths) error {
 	return nil
 }
 
-func integrationTestArgs(bench bool) []string {
+func integrationTestArgs(options runnerOptions) []string {
 	args := []string{"test", "-tags=integration", "-count=1", "-v", "./integration/censorshipplugin"}
-	if bench {
-		args = append(args, "-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem")
+	if options.abiSmokeLibrary != "" {
+		return append(args, "-run", "^TestDynamicABIActiveAfter$")
+	}
+	if options.benchmark {
+		return append(args, "-run", "^$", "-bench", "^BenchmarkDynamicABIRequestInterceptors$", "-benchmem")
 	}
 	return args
 }
 
-func runIntegrationTests(paths runnerPaths, pluginDir string, bench bool) error {
+func runIntegrationTests(paths runnerPaths, pluginDir string, options runnerOptions) error {
 	env := []string{
 		"CPA_INTEGRATION_BIN=" + paths.bin,
 		"CENSORSHIP_PLUGIN_DIR=" + pluginDir,
 	}
-	return runCommand(paths.checkout, env, goCommand(), integrationTestArgs(bench)...)
+	return runCommand(paths.checkout, env, goCommand(), integrationTestArgs(options)...)
 }
 
 func goCommand() string {

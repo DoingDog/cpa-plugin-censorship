@@ -1138,6 +1138,31 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 			t.Errorf("README.md missing %q", token)
 		}
 	}
+
+	workflow, err := os.ReadFile(".github/workflows/build.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow = bytes.ReplaceAll(workflow, []byte("\r\n"), []byte("\n"))
+	buildStart := bytes.Index(workflow, []byte("\n  build:\n"))
+	buildEnd := bytes.Index(workflow, []byte("\n  build-windows-arm64:\n"))
+	if buildStart < 0 || buildEnd < 0 || buildEnd <= buildStart {
+		t.Fatal("build workflow job boundaries not found")
+	}
+	buildJob := workflow[buildStart:buildEnd]
+	const abiSmokeStep = `      - name: Verify Windows amd64 active-after ABI
+        if: "${{ matrix.GOOS == 'windows' && matrix.GOARCH == 'amd64' }}"
+        shell: msys2 {0}
+        run: go run ./.github/scripts/integration-runner.go -abi-smoke dist/windows_amd64/censorship.dll`
+	if count := bytes.Count(buildJob, []byte(abiSmokeStep)); count != 1 {
+		t.Fatalf("Windows amd64 ABI smoke step count = %d, want 1", count)
+	}
+	buildWindows := bytes.Index(buildJob, []byte("- name: Build and package on Windows"))
+	abiSmoke := bytes.Index(buildJob, []byte(abiSmokeStep))
+	upload := bytes.Index(buildJob, []byte("actions/upload-artifact@v4"))
+	if buildWindows < 0 || abiSmoke < 0 || upload < 0 || buildWindows >= abiSmoke || abiSmoke >= upload {
+		t.Fatal("Windows amd64 ABI smoke must run after package build and before artifact upload")
+	}
 }
 
 func TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions(t *testing.T) {
