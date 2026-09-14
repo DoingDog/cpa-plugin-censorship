@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 const (
-	testKeyCallerScope            = "a420e246227b259b532446574f6fd7719cc2d7f551efd9944f93422b96811a56"
-	accountCallerScope            = "70d7f532bbb4b34d73d8b94cd09d49cb1836a9a1d81949e0fd1c5d3b19d0dc37"
-	pluginHostModelCallbackSource = "plugin_host_model_callback"
+	testKeyCallerScope = "a420e246227b259b532446574f6fd7719cc2d7f551efd9944f93422b96811a56"
+	accountCallerScope = "70d7f532bbb4b34d73d8b94cd09d49cb1836a9a1d81949e0fd1c5d3b19d0dc37"
 )
 
 func TestMatchFilterGlob(t *testing.T) {
@@ -299,7 +300,7 @@ func TestRequestFilterMatchesAPIKey(t *testing.T) {
 	}
 }
 
-func TestRequestFilterShouldProcess(t *testing.T) {
+func TestRequestFilterShouldProcessUsesAttemptModel(t *testing.T) {
 	tests := []struct {
 		name            string
 		mode            filterMode
@@ -335,87 +336,30 @@ func TestRequestFilterShouldProcess(t *testing.T) {
 			if test.modelConfigured {
 				filter.Models = []compiledFilterPattern{{Text: "target"}}
 			}
-			request := &pluginapi.RequestInterceptRequest{Model: "upstream-decoy", RequestedModel: "other"}
+			request := &pluginapi.RequestInterceptRequest{Model: "model-decoy", RequestedModel: "requested-decoy"}
 			if test.apiMatches {
 				request.Metadata = map[string]any{callerScopeMetadataKey: testKeyCallerScope}
 			} else if test.apiConfigured {
 				request.Metadata = map[string]any{callerScopeMetadataKey: accountCallerScope}
 			}
 			if test.modelMatches {
-				request.RequestedModel = "target"
+				request.Model = "target"
 			}
 			if got := filter.shouldProcess(request); got != test.want {
 				t.Fatalf("shouldProcess() = %t, want %t", got, test.want)
 			}
 		})
 	}
-}
 
-func TestRequestFilterShouldProcessUsesInvocationModelSubject(t *testing.T) {
-	filter := requestFilter{
-		Mode:   filterModeInclude,
-		Logic:  filterLogicOr,
-		Models: []compiledFilterPattern{{Text: "upstream-b"}},
-	}
-	request := &pluginapi.RequestInterceptRequest{
-		Model:          "upstream-b",
-		RequestedModel: "client-a",
-		Body:           []byte(`{"model":"body-decoy"}`),
-	}
-	if filter.shouldProcess(request) {
-		t.Fatal("outer invocation matched a future Model instead of RequestedModel")
-	}
-
-	request.Metadata = map[string]any{"source": pluginHostModelCallbackSource}
-	if !filter.shouldProcess(request) {
-		t.Fatal("nested callback invocation did not match Model")
-	}
-
-	requestedModelFilter := requestFilter{
-		Mode:   filterModeInclude,
-		Logic:  filterLogicOr,
-		Models: []compiledFilterPattern{{Text: "client-a"}},
-	}
-	if requestedModelFilter.shouldProcess(request) {
-		t.Fatal("nested callback invocation matched RequestedModel instead of Model")
-	}
-}
-
-func TestRequestFilterShouldProcessRejectsUntrustedNestedModelFallback(t *testing.T) {
-	filter := requestFilter{
-		Mode:   filterModeInclude,
-		Logic:  filterLogicOr,
-		Models: []compiledFilterPattern{{Text: "anything"}},
-	}
+	filter := requestFilter{Mode: filterModeInclude, Logic: filterLogicOr, Models: []compiledFilterPattern{{Text: "target"}}}
 	compileRequestFilter(&filter)
-	request := &pluginapi.RequestInterceptRequest{
-		Model: "anything",
-		Body:  []byte(`{"model":"anything"}`),
-	}
-	if filter.shouldProcess(request) {
-		t.Fatal("outer invocation fell back from an empty RequestedModel")
-	}
-
-	request.RequestedModel = "other"
-	request.Metadata = map[string]any{"source": "unknown"}
-	if filter.shouldProcess(request) {
-		t.Fatal("shouldProcess trusted an unknown source or body model")
-	}
-
-	request.RequestedModel = "anything"
-	request.Model = "other"
-	if !filter.shouldProcess(request) {
-		t.Fatal("unknown source did not match RequestedModel")
-	}
-
-	request.Model = ""
-	request.Metadata["source"] = pluginHostModelCallbackSource
-	if filter.shouldProcess(request) {
-		t.Fatal("empty callback Model fell back to RequestedModel")
-	}
-	filter.Mode = filterModeExclude
-	if !filter.shouldProcess(request) {
-		t.Fatal("exclude filter did not process an empty nested Model")
+	request := &pluginapi.RequestInterceptRequest{Model: "target", RequestedModel: "requested-decoy"}
+	want := filter.shouldProcess(request)
+	for _, source := range []string{"unknown", "plugin_host_model_callback"} {
+		request.Metadata = map[string]any{"source": source}
+		if got := filter.shouldProcess(request); got != want {
+			t.Fatalf("shouldProcess() with source %q = %t, want %t", source, got, want)
+		}
 	}
 }
 
@@ -446,16 +390,20 @@ func TestRequestFilterGatesBeforeBodyValidation(t *testing.T) {
 	cases := []struct {
 		name       string
 		configYAML string
+		method     string
 		request    pluginapi.RequestInterceptRequest
 		bypass     bool
 	}{
 		{
 			name:       "include skips nonmatching model malformed body",
 			configYAML: "filter_mode: include\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			method:     pluginabi.MethodRequestInterceptAfter,
 			request: pluginapi.RequestInterceptRequest{
 				RequestID:      "include-other",
 				SourceFormat:   "openai",
-				RequestedModel: "other",
+				Model:          "model-decoy",
+				RequestedModel: "target-model",
+				Metadata:       map[string]any{executor.SelectedAuthMetadataKey: "auth-1"},
 				Body:           []byte(`not-json`),
 			},
 			bypass: true,
@@ -463,20 +411,26 @@ func TestRequestFilterGatesBeforeBodyValidation(t *testing.T) {
 		{
 			name:       "include processes matching model malformed body",
 			configYAML: "filter_mode: include\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			method:     pluginabi.MethodRequestInterceptAfter,
 			request: pluginapi.RequestInterceptRequest{
 				RequestID:      "include-target",
 				SourceFormat:   "openai",
-				RequestedModel: "target-model",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Metadata:       map[string]any{executor.SelectedAuthMetadataKey: "auth-1"},
 				Body:           []byte(`not-json`),
 			},
 		},
 		{
 			name:       "exclude skips matching model duplicate members",
 			configYAML: "filter_mode: exclude\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			method:     pluginabi.MethodRequestInterceptAfter,
 			request: pluginapi.RequestInterceptRequest{
 				RequestID:      "exclude-target",
 				SourceFormat:   "openai",
-				RequestedModel: "target-model",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Metadata:       map[string]any{executor.SelectedAuthMetadataKey: "auth-1"},
 				Body:           []byte(`{"messages":[],"messages":[]}`),
 			},
 			bypass: true,
@@ -484,16 +438,20 @@ func TestRequestFilterGatesBeforeBodyValidation(t *testing.T) {
 		{
 			name:       "exclude processes nonmatching model duplicate members",
 			configYAML: "filter_mode: exclude\nfilter:\n  models: [target-*]\nwords:\n  block: [SECRET]\n",
+			method:     pluginabi.MethodRequestInterceptAfter,
 			request: pluginapi.RequestInterceptRequest{
 				RequestID:      "exclude-other",
 				SourceFormat:   "openai",
-				RequestedModel: "other",
+				Model:          "model-decoy",
+				RequestedModel: "target-model",
+				Metadata:       map[string]any{executor.SelectedAuthMetadataKey: "auth-1"},
 				Body:           []byte(`{"messages":[],"messages":[]}`),
 			},
 		},
 		{
 			name:       "no rules skip malformed identity and body",
 			configYAML: "filter_mode: include\nfilter:\n  api-keys: [test-*]\nwords: {}\n",
+			method:     pluginabi.MethodRequestInterceptBefore,
 			request: pluginapi.RequestInterceptRequest{
 				RequestID:    "no-rules",
 				SourceFormat: "openai",
@@ -508,7 +466,7 @@ func TestRequestFilterGatesBeforeBodyValidation(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			registerConfig(t, test.configYAML)
-			response, err := callInterceptRequest(test.request)
+			response, err := callInterceptRequestAt(test.method, test.request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -541,13 +499,15 @@ func TestRequestFilterGatesAllSupportedFormats(t *testing.T) {
 
 	for _, format := range formats {
 		t.Run(format.name, func(t *testing.T) {
-			response, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
+			matchingRequest := pluginapi.RequestInterceptRequest{
 				RequestID:      "matching-" + format.name,
 				SourceFormat:   format.format,
-				RequestedModel: "target-model",
-				Model:          "upstream-decoy",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Metadata:       map[string]any{executor.SelectedAuthMetadataKey: "auth-1"},
 				Body:           format.body,
-			})
+			}
+			response, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, matchingRequest)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -555,19 +515,24 @@ func TestRequestFilterGatesAllSupportedFormats(t *testing.T) {
 				t.Fatalf("matching response = %#v, want terminated censorship_blocked", response)
 			}
 
-			response, err = callInterceptRequest(pluginapi.RequestInterceptRequest{
+			response, err = callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
 				RequestID:      "nonmatching-" + format.name,
 				SourceFormat:   format.format,
-				RequestedModel: "other",
-				Model:          "target-model",
+				Model:          "model-decoy",
+				RequestedModel: "target-model",
+				Metadata:       map[string]any{executor.SelectedAuthMetadataKey: "auth-1"},
 				Body:           format.body,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(response, pluginapi.RequestInterceptResponse{}) {
-				t.Fatalf("nonmatching response = %#v, want zero-value response", response)
+			requireNoOpResponse(t, response)
+
+			response, err = callInterceptRequestAt(pluginabi.MethodRequestInterceptBefore, matchingRequest)
+			if err != nil {
+				t.Fatal(err)
 			}
+			requireNoOpResponse(t, response)
 		})
 	}
 }

@@ -159,24 +159,70 @@ filter:
 		providerModels: []string{"kimi-k3", "other-model"},
 	})
 	for _, tc := range []struct {
-		source string
-		want   string
+		name          string
+		source        string
+		content       string
+		wantStatus    int
+		wantModel     string
+		wantArrivals  int
+		wantOuterCode string
+		checkContent  bool
 	}{
-		{source: "claude-opus", want: "kimi-k3"},
-		{source: "claude-control", want: "other-model"},
+		{name: "direct excluded model bypasses censorship", source: "kimi-k3", content: "blocked", wantStatus: 200, wantModel: "kimi-k3", wantArrivals: 1, checkContent: true},
+		{name: "mapped excluded model bypasses censorship", source: "claude-opus", content: "blocked", wantStatus: 200, wantModel: "kimi-k3", wantArrivals: 1, checkContent: true},
+		{name: "mapped nonexcluded clean control", source: "claude-control", content: "clean input", wantStatus: 200, wantModel: "other-model", wantArrivals: 1},
+		{name: "mapped nonexcluded block control", source: "claude-control", content: "blocked", wantStatus: 500, wantArrivals: 0, wantOuterCode: "internal_server_error"},
 	} {
-		before := upstream.arrivalCount()
-		body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"clean input"}]}`, tc.source))
-		status, _, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", body)
-		if status != 200 {
-			t.Fatalf("source model %q status=%d body=%s", tc.source, status, response)
-		}
-		if got, want := upstream.arrivalCount(), before+1; got != want {
-			t.Fatalf("source model %q upstream arrivals=%d, want %d", tc.source, got, want)
-		}
-		if got := gjson.GetBytes(upstream.lastRequest(), "model").String(); got != tc.want {
-			t.Fatalf("source model %q upstream model=%q, want %q", tc.source, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			before := upstream.arrivalCount()
+			body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":%q}]}`, tc.source, tc.content))
+			status, _, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", body)
+			if status != tc.wantStatus {
+				t.Fatalf("source model %q status=%d, want %d; body=%s", tc.source, status, tc.wantStatus, response)
+			}
+			if got, want := upstream.arrivalCount(), before+tc.wantArrivals; got != want {
+				t.Fatalf("source model %q upstream arrivals=%d, want %d", tc.source, got, want)
+			}
+			if tc.wantOuterCode != "" && gjson.GetBytes(response, "error.code").String() != tc.wantOuterCode {
+				t.Fatalf("source model %q outer error code=%q, want %q; body=%s", tc.source, gjson.GetBytes(response, "error.code").String(), tc.wantOuterCode, response)
+			}
+			if tc.wantModel != "" {
+				if got := gjson.GetBytes(upstream.lastRequest(), "model").String(); got != tc.wantModel {
+					t.Fatalf("source model %q upstream model=%q, want %q", tc.source, got, tc.wantModel)
+				}
+			}
+			if tc.checkContent {
+				if got := gjson.GetBytes(upstream.lastRequest(), "messages.0.content").String(); got != tc.content {
+					t.Fatalf("source model %q upstream content=%q, want %q", tc.source, got, tc.content)
+				}
+			}
+		})
+	}
+}
+
+func TestHTTPMappedModelNotFoundWithoutMapper(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPAWithOptions(t, cpaStartOptions{
+		upstreamURL:    upstream.URL,
+		pluginsEnabled: true,
+		censorshipYAML: `priority: 800
+words:
+  block: [blocked]
+filter_mode: exclude
+filter:
+  models: [kimi-k3]
+`,
+		providerModels: []string{"kimi-k3", "other-model"},
+	})
+	status, _, response := postJSON(t, cpa.baseURL+"/v1/chat/completions", []byte(`{"model":"claude-opus","messages":[{"role":"user","content":"clean input"}]}`))
+	if status >= 200 && status < 300 {
+		t.Fatalf("mapper-disabled claude-opus status=%d, want model-not-found failure; body=%s", status, response)
+	}
+	if !bytes.Contains(response, []byte("claude-opus")) {
+		t.Fatalf("mapper-disabled response does not identify claude-opus: %s", response)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatalf("mapper-disabled claude-opus reached upstream %d times", upstream.arrivalCount())
 	}
 }
 

@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"unsafe"
 
@@ -38,7 +39,7 @@ func TestShouldCopyPluginRequest(t *testing.T) {
 		method string
 		want   bool
 	}{
-		{pluginabi.MethodRequestInterceptAfter, false},
+		{pluginabi.MethodRequestInterceptAfter, true},
 		{pluginabi.MethodRequestInterceptBefore, true},
 		{pluginabi.MethodPluginRegister, true},
 		{pluginabi.MethodPluginReconfigure, true},
@@ -80,6 +81,50 @@ func TestCliproxyPluginCallRejectsNilNonzeroAfterAuthRequest(t *testing.T) {
 	}
 	if response.ptr != nil || response.len != 0 {
 		t.Fatalf("rejected request response = (%v, %d), want (nil, 0)", response.ptr, response.len)
+	}
+}
+
+func TestCliproxyPluginCallProcessesAfterAuthRequest(t *testing.T) {
+	registerConfig(t, "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  strip: [BLOCKME]\n")
+	request, err := json.Marshal(pluginapi.RequestInterceptRequest{
+		RequestID:      "after-auth-exported-call",
+		SourceFormat:   "openai",
+		Model:          "target-model",
+		RequestedModel: "requested-decoy",
+		Metadata:       selectedAuthMetadata(),
+		Body:           []byte(`{"messages":[{"role":"user","content":"before BLOCKME after"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	method := append([]byte(pluginabi.MethodRequestInterceptAfter), 0)
+	var response pluginCallBuffer
+	call := reflect.ValueOf(cliproxyPluginCall)
+	requestArg := reflect.NewAt(call.Type().In(1).Elem(), unsafe.Pointer(&request[0]))
+	results := call.Call([]reflect.Value{
+		reflect.ValueOf((*pluginCallChar)(unsafe.Pointer(&method[0]))),
+		requestArg,
+		reflect.ValueOf(pluginCallSize(len(request))),
+		reflect.ValueOf(&response),
+	})
+	if rc := results[0].Int(); rc != 0 {
+		t.Fatalf("cliproxyPluginCall() = %d, want 0", rc)
+	}
+	if response.ptr == nil || response.len == 0 {
+		t.Fatalf("cliproxyPluginCall() response = (%v, %d), want non-empty buffer", response.ptr, response.len)
+	}
+	defer cliproxyPluginFree(unsafe.Pointer(response.ptr), response.len)
+
+	for i := range request {
+		request[i] = 0xa5
+	}
+	// The response buffer is independent of host request memory; this does not prove input copying.
+	responseRaw := unsafe.Slice((*byte)(unsafe.Pointer(response.ptr)), int(response.len))
+	var env pluginabi.Envelope
+	decodeEnvelope(t, responseRaw, &env)
+	got := decodeResult[pluginapi.RequestInterceptResponse](t, env)
+	if got.Terminate || string(got.Body) != `{"messages":[{"role":"user","content":"before  after"}]}` {
+		t.Fatalf("response = %#v, want stripped body", got)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/tidwall/gjson"
@@ -352,13 +353,158 @@ func TestDuplicateMemberWalkerChecksExcludedSubtrees(t *testing.T) {
 	}
 }
 
-func TestAfterAuthAlwaysNoOpsWithoutParsingRequest(t *testing.T) {
-	raw := mustHandle(t, pluginabi.MethodRequestInterceptAfter, []byte(`not-json`))
+func TestModelFilterDefersBeforeAuthBeforeEnvelopeDecode(t *testing.T) {
+	registerConfig(t, "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  block: [blocked]\n")
+
+	raw, err := interceptBeforeAuth([]byte(`not-json`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var env pluginabi.Envelope
 	decodeEnvelope(t, raw, &env)
-	resp := decodeResult[pluginapi.RequestInterceptResponse](t, env)
-	if resp.Terminate || len(resp.Body) != 0 || len(resp.Headers) != 0 || len(resp.ResponseBody) != 0 {
-		t.Fatalf("AfterAuth response = %#v", resp)
+	requireNoOpResponse(t, decodeResult[pluginapi.RequestInterceptResponse](t, env))
+
+	response, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
+		RequestID:      "before-malformed-body",
+		SourceFormat:   "openai",
+		Model:          "target-model",
+		RequestedModel: "requested-decoy",
+		Body:           []byte(`not-json`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNoOpResponse(t, response)
+}
+
+func TestAfterAuthFastPathsBeforeEnvelopeDecode(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configYAML string
+	}{
+		{name: "empty filter", configYAML: "words:\n  block: [blocked]\n"},
+		{name: "API-key-only filter", configYAML: "filter_mode: include\nfilter:\n  api-keys: [test-key]\nwords:\n  block: [blocked]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, tc.configYAML)
+			raw, err := interceptAfterAuth([]byte(`not-json`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var env pluginabi.Envelope
+			decodeEnvelope(t, raw, &env)
+			requireNoOpResponse(t, decodeResult[pluginapi.RequestInterceptResponse](t, env))
+		})
+	}
+}
+
+func TestModelFilterProcessesOnlySelectedAuthAfter(t *testing.T) {
+	registerConfig(t, "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  block: [blocked]\n")
+
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]any
+		body     []byte
+		active   bool
+	}{
+		{name: "missing marker", body: []byte(`not-json`)},
+		{name: "null marker", metadata: map[string]any{executor.SelectedAuthMetadataKey: nil}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
+		{name: "empty marker", metadata: map[string]any{executor.SelectedAuthMetadataKey: ""}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
+		{name: "whitespace marker", metadata: map[string]any{executor.SelectedAuthMetadataKey: "   "}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
+		{name: "integer marker", metadata: map[string]any{executor.SelectedAuthMetadataKey: 1}, body: []byte(`not-json`)},
+		{name: "selected auth ID", metadata: map[string]any{executor.SelectedAuthMetadataKey: "auth-1", "source": "source-decoy"}, body: []byte(`{"model":"body-decoy","messages":[{"role":"user","content":"blocked"}]}`), active: true},
+		{name: "selected auth index", metadata: map[string]any{executor.SelectedAuthIndexMetadataKey: "index-1", "source": "source-decoy"}, body: []byte(`{"model":"body-decoy","messages":[{"role":"user","content":"blocked"}]}`), active: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
+				RequestID:      "selected-auth-" + tc.name,
+				SourceFormat:   "openai",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Metadata:       tc.metadata,
+				Body:           tc.body,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.active {
+				requireNoOpResponse(t, response)
+				return
+			}
+			if !response.Terminate || response.StatusCode != 400 || !strings.Contains(string(response.ResponseBody), "censorship_blocked") {
+				t.Fatalf("response = %#v, want terminated censorship_blocked", response)
+			}
+		})
+	}
+
+	response, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
+		RequestID:      "selected-auth-requested-model-decoy",
+		SourceFormat:   "openai",
+		Model:          "model-decoy",
+		RequestedModel: "target-model",
+		Metadata:       selectedAuthMetadata(),
+		Body:           []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNoOpResponse(t, response)
+}
+
+func TestModelAndAPIKeyFiltersRunTogetherAfterAuth(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configYAML string
+		request    pluginapi.RequestInterceptRequest
+	}{
+		{
+			name:       "and exact caller scope and matching model",
+			configYAML: "filter_mode: include\nfilter_logic: and\nfilter:\n  api-keys: [test-key]\n  models: [target-model]\nwords:\n  block: [blocked]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "and-filter",
+				SourceFormat:   "openai",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Metadata: map[string]any{
+					executor.SelectedAuthMetadataKey: "auth-1",
+					callerScopeMetadataKey:           testKeyCallerScope,
+				},
+				Body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
+			},
+		},
+		{
+			name:       "or wildcard authorization and matching model",
+			configYAML: "filter_mode: include\nfilter_logic: or\nfilter:\n  api-keys: [test-*]\n  models: [target-model]\nwords:\n  block: [blocked]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "or-filter",
+				SourceFormat:   "openai",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Headers:        http.Header{"Authorization": {"Bearer test-key"}},
+				Metadata: map[string]any{
+					executor.SelectedAuthMetadataKey: "auth-1",
+					callerScopeMetadataKey:           testKeyCallerScope,
+				},
+				Body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, tc.configYAML)
+			response, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, tc.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !response.Terminate || response.StatusCode != 400 || !strings.Contains(string(response.ResponseBody), "censorship_blocked") {
+				t.Fatalf("AfterAuth response = %#v, want terminated censorship_blocked", response)
+			}
+
+			response, err = callInterceptRequestAt(pluginabi.MethodRequestInterceptBefore, tc.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNoOpResponse(t, response)
+		})
 	}
 }
 
@@ -380,11 +526,15 @@ func callIntercept(sourceFormat string, body []byte) (pluginapi.RequestIntercept
 }
 
 func callInterceptRequest(request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+	return callInterceptRequestAt(pluginabi.MethodRequestInterceptBefore, request)
+}
+
+func callInterceptRequestAt(method string, request pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return pluginapi.RequestInterceptResponse{}, err
 	}
-	envelopeBytes, err := handleMethod(pluginabi.MethodRequestInterceptBefore, raw)
+	envelopeBytes, err := handleMethod(method, raw)
 	if err != nil {
 		return pluginapi.RequestInterceptResponse{}, err
 	}
@@ -400,6 +550,17 @@ func callInterceptRequest(request pluginapi.RequestInterceptRequest) (pluginapi.
 		return pluginapi.RequestInterceptResponse{}, err
 	}
 	return resp, nil
+}
+
+func requireNoOpResponse(t testing.TB, response pluginapi.RequestInterceptResponse) {
+	t.Helper()
+	if !reflect.DeepEqual(response, pluginapi.RequestInterceptResponse{}) {
+		t.Fatalf("response = %#v, want zero-value response", response)
+	}
+}
+
+func selectedAuthMetadata() map[string]any {
+	return map[string]any{executor.SelectedAuthMetadataKey: "auth-1"}
 }
 
 func interceptRPC(t *testing.T, sourceFormat string, body []byte) pluginapi.RequestInterceptResponse {
@@ -441,10 +602,12 @@ func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T
 	const rawCredential = "secret-sentinel"
 	intercept := func(model, content string) pluginapi.RequestInterceptResponse {
 		t.Helper()
-		resp, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
+		resp, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
 			RequestID:      "filter-lifecycle-test",
 			SourceFormat:   "openai",
-			RequestedModel: model,
+			Model:          model,
+			RequestedModel: "requested-decoy",
+			Metadata:       selectedAuthMetadata(),
 			Body:           []byte(`{"messages":[{"role":"user","content":"` + content + `"}]}`),
 		})
 		if err != nil {
@@ -506,6 +669,124 @@ func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T
 	if !strings.Contains(logError, "filter.api-keys") || strings.Contains(logError, rawCredential) || strings.Contains(logError, "caller_scope") {
 		t.Fatalf("host log error = %q", logError)
 	}
+}
+
+func requirePhaseClassReconfigureLog(t testing.TB, logs []hostLogRequest, yamlTerms ...string) {
+	t.Helper()
+	if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" {
+		t.Fatalf("host logs = %#v", logs)
+	}
+	if got := fmt.Sprint(logs[0].Fields["error"]); got != "filter.models phase change requires restart" {
+		t.Fatalf("host log error = %q", got)
+	}
+	fields := fmt.Sprint(logs[0].Fields)
+	for _, term := range yamlTerms {
+		if strings.Contains(fields, term) {
+			t.Fatalf("host log fields contain YAML term %q: %s", term, fields)
+		}
+	}
+}
+
+func TestReconfigureRejectsModelFilterPhaseClassChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		initialConfigYAML string
+		reconfigureYAML   string
+		method            string
+		request           pluginapi.RequestInterceptRequest
+	}{
+		{
+			name:              "non-empty to empty",
+			initialConfigYAML: "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  block: [old-block]\n",
+			reconfigureYAML:   "words:\n  block: [new-block]\n",
+			method:            pluginabi.MethodRequestInterceptAfter,
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "phase-nonempty-to-empty",
+				SourceFormat:   "openai",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Metadata:       selectedAuthMetadata(),
+				Body:           []byte(`{"messages":[{"role":"user","content":"old-block"}]}`),
+			},
+		},
+		{
+			name:              "empty to non-empty",
+			initialConfigYAML: "words:\n  block: [old-block]\n",
+			reconfigureYAML:   "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  block: [new-block]\n",
+			method:            pluginabi.MethodRequestInterceptBefore,
+			request: pluginapi.RequestInterceptRequest{
+				RequestID:      "phase-empty-to-nonempty",
+				SourceFormat:   "openai",
+				Model:          "target-model",
+				RequestedModel: "requested-decoy",
+				Body:           []byte(`{"messages":[{"role":"user","content":"old-block"}]}`),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, tc.initialConfigYAML)
+			var logs []hostLogRequest
+			setHostCallbackForTest(func(method string, request []byte) ([]byte, error) {
+				if method == pluginabi.MethodHostLog {
+					var req hostLogRequest
+					if err := json.Unmarshal(request, &req); err != nil {
+						return nil, err
+					}
+					logs = append(logs, req)
+				}
+				return okEnvelope(struct{}{})
+			})
+			t.Cleanup(func() { setHostCallbackForTest(nil) })
+
+			reconfigureConfig(t, tc.reconfigureYAML)
+			requirePhaseClassReconfigureLog(t, logs, "target-model", "old-block", "new-block")
+
+			response, err := callInterceptRequestAt(tc.method, tc.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !response.Terminate || response.StatusCode != 400 || gjson.GetBytes(response.ResponseBody, "error.term").String() != "old-block" {
+				t.Fatalf("response = %#v, want old snapshot block", response)
+			}
+		})
+	}
+}
+
+func TestReconfigureAllowsSameModelFilterPhaseClass(t *testing.T) {
+	t.Run("empty to empty", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [old-block]\n")
+		reconfigureConfig(t, "words:\n  strip: [new-strip]\n")
+		response, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
+			RequestID:    "same-empty",
+			SourceFormat: "openai",
+			Body:         []byte(`{"messages":[{"role":"user","content":"new-strip"}]}`),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Terminate || string(response.Body) != `{"messages":[{"role":"user","content":""}]}` {
+			t.Fatalf("response = %#v, want reconfigured strip response", response)
+		}
+	})
+
+	t.Run("non-empty to non-empty", func(t *testing.T) {
+		registerConfig(t, "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  block: [old-block]\n")
+		reconfigureConfig(t, "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  strip: [new-strip]\n")
+		response, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
+			RequestID:      "same-nonempty",
+			SourceFormat:   "openai",
+			Model:          "target-model",
+			RequestedModel: "requested-decoy",
+			Metadata:       selectedAuthMetadata(),
+			Body:           []byte(`{"messages":[{"role":"user","content":"new-strip"}]}`),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Terminate || string(response.Body) != `{"messages":[{"role":"user","content":""}]}` {
+			t.Fatalf("response = %#v, want reconfigured strip response", response)
+		}
+	})
 }
 
 func TestRegisterYAMLDecodeErrorDoesNotDiscloseFilterSourceToken(t *testing.T) {
