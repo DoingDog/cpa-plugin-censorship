@@ -20,11 +20,11 @@ Copy the native library to the CPA platform plugin directory, then start or rest
 
 Linux release libraries require glibc 2.34+.
 
-v0.2.6 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Configuration
 
-CPA management clients expose `ignore_case`, `words`, `scope`, and `obfs` through standard `ConfigFields`. `words` is the Object-only rule editor: it has action buckets instead of a global selector. The panel does not render or emit global `mode`.
+CPA management clients expose `ignore_case`, `words`, `scope`, `obfs`, `filter_mode`, `filter_logic`, and `filter` through standard `ConfigFields`. `words` is the Object-only rule editor: it has action buckets instead of a global selector. The panel does not render or emit global `mode`.
 
 ```yaml
 plugins:
@@ -42,6 +42,9 @@ plugins:
         roles: [system, developer, user]
       obfs:
         char: "​"
+      filter_mode: exclude
+      filter_logic: or
+      filter: {}
 ```
 
 Configuration types are strict and are not coerced. Unknown plugin keys, duplicate mapping keys, multiple YAML documents, invalid enum values, and incorrectly typed values reject the candidate configuration.
@@ -54,8 +57,33 @@ Configuration types are strict and are not coerced. Unknown plugin keys, duplica
 | `scope.formats` | `scope.formats`: sequence of strings; default all five formats. Allowed values are `openai`, `openai-response`, `claude`, `gemini`, and `interactions`; explicit `[]` disables all formats. |
 | `scope.roles` | `scope.roles`: sequence of strings; default `system`, `developer`, and `user`. Optional values are `assistant` and `tool`; explicit `[]` disables all roles. |
 | `obfs.char` | `obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`. |
+| `filter_mode` | `filter_mode`: string; default `exclude`. Allowed values are `exclude` and `include`. |
+| `filter_logic` | `filter_logic`: string; default `or`. Allowed values are `or` and `and`. |
+| `filter` | `filter`: Object with optional `api-keys` and `models` arrays. |
 
 The parser also accepts host-owned `priority` and `store` keys. It preserves each term's YAML order, duplicates, case, leading/trailing whitespace, and newlines; it does not sort, deduplicate, trim, normalize, or interpret regular expressions. `words.obfs` terms must contain at least two Unicode scalars and must not already contain the configured `obfs.char`. Block and strip terms do not receive that obfs-only validation.
+
+## Request filtering
+
+An empty `filter: {}` or a filter with both lists empty disables request filtering and processes all requests. `api-keys` and `models` each apply list-internal OR. Only non-empty dimensions participate. Across non-empty dimensions, `filter_logic: or` matches either dimension and `filter_logic: and` requires both dimensions.
+
+| API-key list matches | Model list matches | `filter_logic: or` | `filter_logic: and` |
+|---|---|---|---|
+| yes | yes | match | match |
+| yes | no | match | no match |
+| no | yes | match | no match |
+| no | no | no match | no match |
+
+| `filter_mode` | Filter match | No filter match |
+|---|---|---|
+| `exclude` | bypass | process |
+| `include` | process | bypass |
+
+Full-string, case-sensitive glob matching uses `*` for zero or more Unicode scalars and `?` for exactly one Unicode scalar. `models` matches `RequestedModel`, never `Model` or a body model. `api-keys` matches authenticated `caller_scope`. `Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.
+
+Query-only conditions support exact values only; wildcard query conditions are not supported. Management configuration readback returns filter values unchanged and does not mask secrets. Do not store secrets in these values.
+
+A filter bypass returns no replacement body or header changes before JSON validation.
 
 ## Legacy handwritten YAML
 
@@ -168,6 +196,7 @@ The ABI boundary remains v1 and validates native pointer/length descriptors. Pro
 13. Methods that read or copy request input reject lengths that exceed `C.int` with a non-zero ABI return code. After-auth intentionally does not read input and may accept a coherent non-nil oversized descriptor. Oversized host callback responses return a plugin error.
 14. The Responses WebSocket integration test fails after 20 seconds without `response.completed`; it does not wait indefinitely.
 15. A provider-controlled Claude signed-history prefix can bind preceding input. The BeforeAuth hook cannot reliably know final model/binding controls, so the plugin neither mutates thinking/signatures nor adds an overbroad runtime rejection.
+16. A filter bypass returns no replacement body or header changes before JSON validation.
 
 ## Release artifacts
 

@@ -1,4 +1,14 @@
-# Censorship v0.2.6
+# Censorship v0.3.0
+
+## v0.3.0 features
+
+- Adds `filter_mode` with `exclude` default and `include` selection.
+- Adds `filter_logic` with `or` default and `and` selection across non-empty `api-keys` and `models` lists.
+- Adds full-string, case-sensitive `*` and `?` request patterns, bound to authenticated `caller_scope` for API keys and `RequestedModel` for models.
+- Applies one shared filter gate to `openai`, `openai-response`, `claude`, `gemini`, and `interactions`; bypassed requests return no body or header modification before body validation.
+- Appends the three settings to standard plugin `ConfigFields`; `words` remains Object-only and the panel still does not emit global `mode`.
+
+v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
 
 ## v0.2.6 fixes
 
@@ -30,7 +40,7 @@ v0.2.5 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab90
 
 ## Object configuration panel
 
-CPA's standard `ConfigFields` panel exposes `ignore_case`, `words`, `scope`, and `obfs`. `words` is the Object-only rule editor. It does not render or emit global `mode`.
+CPA management clients expose `ignore_case`, `words`, `scope`, `obfs`, `filter_mode`, `filter_logic`, and `filter` through standard `ConfigFields`. `words` is the Object-only rule editor: it has action buckets instead of a global selector. The panel does not render or emit global `mode`.
 
 ```yaml
 plugins:
@@ -48,18 +58,48 @@ plugins:
         roles: [system, developer, user]
       obfs:
         char: "​"
+      filter_mode: exclude
+      filter_logic: or
+      filter: {}
 ```
 
 Configuration types are strict and are not coerced. Unknown plugin keys, duplicate mapping keys, multiple YAML documents, invalid enum values, and incorrectly typed values reject the candidate configuration.
 
-- `enabled`: boolean; host-owned. CPA uses it to enable this plugin.
-- `ignore_case`: boolean; default `false`.
-- `words`: Object with optional `block`, `strip`, and `obfs` arrays. Any subset of those strict bucket keys is valid; unknown keys reject the configuration. Each term is non-empty.
-- `scope.formats`: sequence of strings; default all five formats. Allowed values are `openai`, `openai-response`, `claude`, `gemini`, and `interactions`; explicit `[]` disables all formats.
-- `scope.roles`: sequence of strings; default `system`, `developer`, and `user`. Optional values are `assistant` and `tool`; explicit `[]` disables all roles.
-- `obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`.
+| Field | Contract |
+|---|---|
+| `enabled` | `enabled`: boolean; host-owned. CPA uses it to enable this plugin. |
+| `ignore_case` | `ignore_case`: boolean; default `false`. |
+| `words` | `words`: Object with optional `block`, `strip`, and `obfs` arrays. Bucket keys are strict; any subset is valid, while unknown keys reject the configuration. Every term is a non-empty string. |
+| `scope.formats` | `scope.formats`: sequence of strings; default all five formats. Allowed values are `openai`, `openai-response`, `claude`, `gemini`, and `interactions`; explicit `[]` disables all formats. |
+| `scope.roles` | `scope.roles`: sequence of strings; default `system`, `developer`, and `user`. Optional values are `assistant` and `tool`; explicit `[]` disables all roles. |
+| `obfs.char` | `obfs.char`: must be `U+200B` or `U+2060`; default `U+200B`. |
+| `filter_mode` | `filter_mode`: string; default `exclude`. Allowed values are `exclude` and `include`. |
+| `filter_logic` | `filter_logic`: string; default `or`. Allowed values are `or` and `and`. |
+| `filter` | `filter`: Object with optional `api-keys` and `models` arrays. |
 
-Terms preserve YAML order, duplicates, case, whitespace, and newlines; they are not sorted, deduplicated, trimmed, normalized, or interpreted as regular expressions. `words.obfs` terms must have at least two Unicode scalars and omit the configured `obfs.char`; block and strip terms do not receive that obfs-only validation. words is the only term source; the plugin has no built-in terms, fallback terms, or online word-list download.
+The parser also accepts host-owned `priority` and `store` keys. It preserves each term's YAML order, duplicates, case, leading/trailing whitespace, and newlines; it does not sort, deduplicate, trim, normalize, or interpret regular expressions. `words.obfs` terms must contain at least two Unicode scalars and must not already contain the configured `obfs.char`. Block and strip terms do not receive that obfs-only validation. words is the only term source; the plugin has no built-in terms, fallback list, or online download.
+
+## Request filtering
+
+An empty `filter: {}` or a filter with both lists empty disables request filtering and processes all requests. `api-keys` and `models` each apply list-internal OR. Only non-empty dimensions participate. Across non-empty dimensions, `filter_logic: or` matches either dimension and `filter_logic: and` requires both dimensions.
+
+| API-key list matches | Model list matches | `filter_logic: or` | `filter_logic: and` |
+|---|---|---|---|
+| yes | yes | match | match |
+| yes | no | match | no match |
+| no | yes | match | no match |
+| no | no | no match | no match |
+
+| `filter_mode` | Filter match | No filter match |
+|---|---|---|
+| `exclude` | bypass | process |
+| `include` | process | bypass |
+
+Full-string, case-sensitive glob matching uses `*` for zero or more Unicode scalars and `?` for exactly one Unicode scalar. `models` matches `RequestedModel`, never `Model` or a body model. `api-keys` matches authenticated `caller_scope`. `Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.
+
+Query-only conditions support exact values only; wildcard query conditions are not supported. Management configuration readback returns filter values unchanged and does not mask secrets. Do not store secrets in these values.
+
+A filter bypass returns no replacement body or header changes before JSON validation.
 
 ## Legacy handwritten YAML
 
@@ -143,6 +183,7 @@ The integration harness verifies upstream arrival, HTTP/1.1 EOF, chunk/trailer h
 13. Methods that read or copy request input reject lengths that exceed `C.int` with a non-zero ABI return code. After-auth intentionally does not read input and may accept a coherent non-nil oversized descriptor. Oversized host callback responses return a plugin error.
 14. The Responses WebSocket integration test fails after 20 seconds without `response.completed`; it does not wait indefinitely.
 15. A provider-controlled Claude signed-history prefix can bind preceding input. The BeforeAuth hook cannot reliably know final model/binding controls, so the plugin neither mutates thinking/signatures nor adds an overbroad runtime rejection.
+16. A filter bypass returns no replacement body or header changes before JSON validation.
 
 ## Artifacts
 

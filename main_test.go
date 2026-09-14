@@ -572,7 +572,10 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
         formats: [openai, openai-response, claude, gemini, interactions]
         roles: [system, developer, user]
       obfs:
-        char: "​"`
+        char: "​"
+      filter_mode: exclude
+      filter_logic: or
+      filter: {}`
 
 	required := []string{
 		configExample,
@@ -608,6 +611,26 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"words is the only term source; the plugin has no built-in terms",
 		"`scope.formats`: sequence of strings; default all five formats",
 		"`scope.roles`: sequence of strings; default `system`, `developer`, and `user`",
+		"CPA management clients expose `ignore_case`, `words`, `scope`, `obfs`, `filter_mode`, `filter_logic`, and `filter` through standard `ConfigFields`.",
+		"`filter_mode`: string; default `exclude`. Allowed values are `exclude` and `include`.",
+		"`filter_logic`: string; default `or`. Allowed values are `or` and `and`.",
+		"`filter`: Object with optional `api-keys` and `models` arrays.",
+		"An empty `filter: {}` or a filter with both lists empty disables request filtering and processes all requests.",
+		"`api-keys` and `models` each apply list-internal OR.",
+		"Across non-empty dimensions, `filter_logic: or` matches either dimension and `filter_logic: and` requires both dimensions.",
+		"Full-string, case-sensitive glob matching uses `*` for zero or more Unicode scalars and `?` for exactly one Unicode scalar.",
+		"| yes | yes | match | match |",
+		"| yes | no | match | no match |",
+		"| no | yes | match | no match |",
+		"| no | no | no match | no match |",
+		"| `exclude` | bypass | process |",
+		"| `include` | process | bypass |",
+		"`models` matches `RequestedModel`, never `Model` or a body model.",
+		"`api-keys` matches authenticated `caller_scope`.",
+		"`Principal` and literal credentials, including credentials carried in headers, do not match `caller_scope` when they differ.",
+		"Query-only conditions support exact values only; wildcard query conditions are not supported.",
+		"Management configuration readback returns filter values unchanged and does not mask secrets.",
+		"A filter bypass returns no replacement body or header changes before JSON validation.",
 		"OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role.",
 		"Missing Gemini roles follow CPA's user/model alternation.",
 		"Invalid Gemini roles advance CPA's user/model alternation but remain unselected.",
@@ -697,7 +720,7 @@ func TestReleaseNotesCompatibilityTargetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(raw, []byte("v0.2.6 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.")) {
-		t.Fatal("RELEASE_NOTES.md does not contain the complete v0.2.6 compatibility sentence")
+	if !bytes.Contains(raw, []byte("v0.3.0 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.")) {
+		t.Fatal("RELEASE_NOTES.md does not contain the complete v0.3.0 compatibility sentence")
 	}
 }
