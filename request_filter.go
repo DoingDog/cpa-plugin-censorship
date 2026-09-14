@@ -293,9 +293,12 @@ func (f requestFilter) shouldProcess(request *pluginapi.RequestInterceptRequest)
 	if !f.enabled() {
 		return true
 	}
-	model := f.modelSubject(request)
 	apiConfigured := len(f.APIKeys) != 0
 	modelConfigured := len(f.Models) != 0
+	var model string
+	if modelConfigured {
+		model = f.modelSubject(request)
+	}
 	var matched bool
 	switch {
 	case apiConfigured && modelConfigured && f.Logic == filterLogicAnd:
