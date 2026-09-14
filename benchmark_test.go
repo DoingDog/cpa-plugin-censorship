@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"runtime"
 	"strings"
 	"testing"
@@ -37,6 +38,93 @@ func TestBeforeAuthBenchmarkFixtureResult(t *testing.T) {
 	}
 	if !envelope.OK || !bytes.Equal(envelope.Result, wantResult) {
 		t.Fatalf("before auth envelope = %q; want successful no-op response", got)
+	}
+}
+
+func BenchmarkRequestFilter(b *testing.B) {
+	cases := []struct {
+		name    string
+		yaml    string
+		request pluginapi.RequestInterceptRequest
+		want    bool
+	}{
+		{
+			name: "disabled",
+			yaml: "filter: {}\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestedModel: "target-model",
+			},
+			want: true,
+		},
+		{
+			name: "model-exact",
+			yaml: "filter_mode: include\nfilter:\n  models: [target-model]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestedModel: "target-model",
+			},
+			want: true,
+		},
+		{
+			name: "api-exact",
+			yaml: "filter_mode: include\nfilter:\n  api-keys: [test-key]\n",
+			request: pluginapi.RequestInterceptRequest{
+				Metadata: map[string]any{callerScopeMetadataKey: testKeyCallerScope},
+			},
+			want: true,
+		},
+		{
+			name: "api-wildcard",
+			yaml: "filter_mode: include\nfilter:\n  api-keys: [test-*]\n",
+			request: pluginapi.RequestInterceptRequest{
+				Headers:  http.Header{"Authorization": {"Bearer test-key"}},
+				Metadata: map[string]any{callerScopeMetadataKey: testKeyCallerScope},
+			},
+			want: true,
+		},
+		{
+			name: "and-both",
+			yaml: "filter_mode: include\nfilter_logic: and\nfilter:\n  api-keys: [test-*]\n  models: [target-model]\n",
+			request: pluginapi.RequestInterceptRequest{
+				Headers:        http.Header{"Authorization": {"Bearer test-key"}},
+				Metadata:       map[string]any{callerScopeMetadataKey: testKeyCallerScope},
+				RequestedModel: "target-model",
+			},
+			want: true,
+		},
+		{
+			name: "or-model-decisive",
+			yaml: "filter_mode: include\nfilter_logic: or\nfilter:\n  api-keys: [test-*]\n  models: [target-model]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestedModel: "target-model",
+			},
+			want: true,
+		},
+		{
+			name: "and-model-decisive",
+			yaml: "filter_mode: include\nfilter_logic: and\nfilter:\n  api-keys: [test-*]\n  models: [target-model]\n",
+			request: pluginapi.RequestInterceptRequest{
+				RequestedModel: "other-model",
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		b.Run(tc.name, func(b *testing.B) {
+			filter := requestFilter{}
+			if tc.yaml != "" {
+				filter = mustBenchmarkConfig(b, tc.yaml).Filter
+			}
+			if got := filter.shouldProcess(&tc.request); got != tc.want {
+				b.Fatalf("shouldProcess() = %t, want %t", got, tc.want)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchmarkBoolSink = filter.shouldProcess(&tc.request)
+			}
+		})
 	}
 }
 
