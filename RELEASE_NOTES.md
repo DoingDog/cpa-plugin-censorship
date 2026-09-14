@@ -1,4 +1,11 @@
-# Censorship v0.3.0
+# Censorship v0.3.1
+
+## v0.3.1 features
+
+- Outer request-interceptor calls match `RequestedModel`. When CPA invokes a nested execution through the host model callback, the request carries the host-owned `Metadata["source"]` value `plugin_host_model_callback`; only that nested call matches `Model`. The plugin does not parse request-body model fields or implement CPA alias routing.
+- The filter gate is evaluated independently for each host invocation; the nested call's result does not undo an outer transform that has already completed.
+
+v0.3.1 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
 
 ## v0.3.0 features
 
