@@ -130,10 +130,10 @@ Add `mapperCheckout` to `runnerPaths`. Extract the existing git init/fetch/check
 Use one `pluginPlatformDir(paths)` helper and one `preparePluginPlatformDir(paths) (string, error)` helper. Full and benchmark modes prepare both checkouts and build CPA, then call `preparePluginPlatformDir` exactly once before writing either native library. Build current censorship first and pinned model-mapper second; neither build helper may clear the directory itself. Build model-mapper with the same current GOOS/GOARCH and `CGO_ENABLED=1`:
 
 ```bash
-go build -trimpath -buildmode=c-shared -o <plugin-platform-dir>/model-mapper.<ext> .
+go build -mod=readonly -trimpath -buildmode=c-shared -o <plugin-platform-dir>/model-mapper.<ext> .
 ```
 
-The command directory is `paths.mapperCheckout`. Remove generated `.h` through `removeContained`; never edit it.
+The command directory is `paths.mapperCheckout`. Remove generated `.h` through `removeContained`; never edit it. After the build and header removal, call `verifyCheckout(paths.mapperCheckout, modelMapperSHA)` again before copying/running integration tests. The existing wrong-HEAD and dirty-worktree unit tests cover that verifier; the full integration run exercises its post-build placement. This prevents module-file mutation from silently changing the pinned fixture without adding a command-injection seam solely for a runner test.
 
 - [ ] **Step 4: Verify infrastructure green**
 
