@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"testing"
 	"unsafe"
@@ -91,12 +92,18 @@ func TestCliproxyPluginCallProcessesAfterAuthRequest(t *testing.T) {
 		SourceFormat:   "openai",
 		Model:          "target-model",
 		RequestedModel: "requested-decoy",
-		Metadata:       selectedAuthMetadata(),
-		Body:           []byte(`{"messages":[{"role":"user","content":"before BLOCKME after"}]}`),
+		Headers: http.Header{
+			"Content-Encoding":  {"gzip"},
+			"Content-Length":    {"999"},
+			"Transfer-Encoding": {"chunked"},
+		},
+		Metadata: selectedAuthMetadata(),
+		Body:     []byte(`{"messages":[{"role":"user","content":"before BLOCKME after"}]}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	requestBeforeCall := bytes.Clone(request)
 	method := append([]byte(pluginabi.MethodRequestInterceptAfter), 0)
 	var response pluginCallBuffer
 	call := reflect.ValueOf(cliproxyPluginCall)
@@ -107,6 +114,9 @@ func TestCliproxyPluginCallProcessesAfterAuthRequest(t *testing.T) {
 		reflect.ValueOf(pluginCallSize(len(request))),
 		reflect.ValueOf(&response),
 	})
+	if !bytes.Equal(request, requestBeforeCall) {
+		t.Fatalf("cliproxyPluginCall() modified serialized request: got %x, want %x", request, requestBeforeCall)
+	}
 	if rc := results[0].Int(); rc != 0 {
 		t.Fatalf("cliproxyPluginCall() = %d, want 0", rc)
 	}
@@ -125,6 +135,9 @@ func TestCliproxyPluginCallProcessesAfterAuthRequest(t *testing.T) {
 	got := decodeResult[pluginapi.RequestInterceptResponse](t, env)
 	if got.Terminate || string(got.Body) != `{"messages":[{"role":"user","content":"before  after"}]}` {
 		t.Fatalf("response = %#v, want stripped body", got)
+	}
+	if want := []string{"Content-Encoding", "Content-Length", "Transfer-Encoding"}; !reflect.DeepEqual(got.ClearHeaders, want) {
+		t.Fatalf("response clear headers = %#v, want %#v", got.ClearHeaders, want)
 	}
 }
 

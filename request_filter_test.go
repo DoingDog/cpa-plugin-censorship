@@ -353,7 +353,15 @@ func TestRequestFilterShouldProcessUsesAttemptModel(t *testing.T) {
 
 	filter := requestFilter{Mode: filterModeInclude, Logic: filterLogicOr, Models: []compiledFilterPattern{{Text: "target"}}}
 	compileRequestFilter(&filter)
-	request := &pluginapi.RequestInterceptRequest{Model: "target", RequestedModel: "requested-decoy"}
+	request := &pluginapi.RequestInterceptRequest{
+		Model:          "model-decoy",
+		RequestedModel: "target",
+		Metadata:       map[string]any{"source": "plugin_host_model_callback"},
+	}
+	if got := filter.shouldProcess(request); got {
+		t.Fatalf("shouldProcess() with callback source and requested-model match = %t, want false", got)
+	}
+	request = &pluginapi.RequestInterceptRequest{Model: "target", RequestedModel: "requested-decoy"}
 	want := filter.shouldProcess(request)
 	for _, source := range []string{"unknown", "plugin_host_model_callback"} {
 		request.Metadata = map[string]any{"source": source}

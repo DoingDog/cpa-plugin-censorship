@@ -169,6 +169,7 @@ filter:
 		checkContent  bool
 	}{
 		{name: "direct excluded model bypasses censorship", source: "kimi-k3", content: "blocked", wantStatus: 200, wantModel: "kimi-k3", wantArrivals: 1, checkContent: true},
+		{name: "mapped excluded model clean route", source: "claude-opus", content: "clean input", wantStatus: 200, wantModel: "kimi-k3", wantArrivals: 1, checkContent: true},
 		{name: "mapped excluded model bypasses censorship", source: "claude-opus", content: "blocked", wantStatus: 200, wantModel: "kimi-k3", wantArrivals: 1, checkContent: true},
 		{name: "mapped nonexcluded clean control", source: "claude-control", content: "clean input", wantStatus: 200, wantModel: "other-model", wantArrivals: 1},
 		{name: "mapped nonexcluded block control", source: "claude-control", content: "blocked", wantStatus: 500, wantArrivals: 0, wantOuterCode: "internal_server_error"},
@@ -220,6 +221,9 @@ filter:
 	}
 	if !bytes.Contains(response, []byte("claude-opus")) {
 		t.Fatalf("mapper-disabled response does not identify claude-opus: %s", response)
+	}
+	if got := gjson.GetBytes(response, "error.code").String(); got != "model_not_found" {
+		t.Fatalf("mapper-disabled error code=%q, want model_not_found; body=%s", got, response)
 	}
 	if upstream.arrivalCount() != 0 {
 		t.Fatalf("mapper-disabled claude-opus reached upstream %d times", upstream.arrivalCount())

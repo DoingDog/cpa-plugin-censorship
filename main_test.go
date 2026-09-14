@@ -384,6 +384,7 @@ func TestAfterAuthFastPathsBeforeEnvelopeDecode(t *testing.T) {
 	}{
 		{name: "empty filter", configYAML: "words:\n  block: [blocked]\n"},
 		{name: "API-key-only filter", configYAML: "filter_mode: include\nfilter:\n  api-keys: [test-key]\nwords:\n  block: [blocked]\n"},
+		{name: "model filter with zero rules", configYAML: "filter_mode: include\nfilter:\n  models: [target-model]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			registerConfig(t, tc.configYAML)
@@ -412,6 +413,10 @@ func TestModelFilterProcessesOnlySelectedAuthAfter(t *testing.T) {
 		{name: "empty marker", metadata: map[string]any{executor.SelectedAuthMetadataKey: ""}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
 		{name: "whitespace marker", metadata: map[string]any{executor.SelectedAuthMetadataKey: "   "}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
 		{name: "integer marker", metadata: map[string]any{executor.SelectedAuthMetadataKey: 1}, body: []byte(`not-json`)},
+		{name: "null selected auth index", metadata: map[string]any{executor.SelectedAuthIndexMetadataKey: nil}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
+		{name: "empty selected auth index", metadata: map[string]any{executor.SelectedAuthIndexMetadataKey: ""}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
+		{name: "whitespace selected auth index", metadata: map[string]any{executor.SelectedAuthIndexMetadataKey: "   "}, body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`)},
+		{name: "integer selected auth index", metadata: map[string]any{executor.SelectedAuthIndexMetadataKey: 1}, body: []byte(`not-json`)},
 		{name: "selected auth ID", metadata: map[string]any{executor.SelectedAuthMetadataKey: "auth-1", "source": "source-decoy"}, body: []byte(`{"model":"body-decoy","messages":[{"role":"user","content":"blocked"}]}`), active: true},
 		{name: "selected auth index", metadata: map[string]any{executor.SelectedAuthIndexMetadataKey: "index-1", "source": "source-decoy"}, body: []byte(`{"model":"body-decoy","messages":[{"role":"user","content":"blocked"}]}`), active: true},
 	} {
@@ -443,7 +448,20 @@ func TestModelFilterProcessesOnlySelectedAuthAfter(t *testing.T) {
 		Model:          "model-decoy",
 		RequestedModel: "target-model",
 		Metadata:       selectedAuthMetadata(),
-		Body:           []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
+		Body:           []byte(`{"model":"target-model","messages":[{"role":"user","content":"blocked"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireNoOpResponse(t, response)
+
+	response, err = callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
+		RequestID:      "selected-auth-unknown-format",
+		SourceFormat:   "unknown",
+		Model:          "target-model",
+		RequestedModel: "requested-decoy",
+		Metadata:       selectedAuthMetadata(),
+		Body:           []byte(`not-json`),
 	})
 	if err != nil {
 		t.Fatal(err)
