@@ -23,6 +23,18 @@ const (
 	filterLogicAnd filterLogic = "and"
 )
 
+const (
+	modelExecutionSourceKey      = "source"
+	modelExecutionCallbackSource = "plugin_host_model_callback"
+)
+
+func (f requestFilter) modelSubject(request *pluginapi.RequestInterceptRequest) string {
+	if source, _ := request.Metadata[modelExecutionSourceKey].(string); source == modelExecutionCallbackSource {
+		return request.Model
+	}
+	return request.RequestedModel
+}
+
 type compiledFilterPattern struct {
 	Text        string
 	Glob        *compiledFilterGlob
@@ -281,18 +293,19 @@ func (f requestFilter) shouldProcess(request *pluginapi.RequestInterceptRequest)
 	if !f.enabled() {
 		return true
 	}
+	model := f.modelSubject(request)
 	apiConfigured := len(f.APIKeys) != 0
 	modelConfigured := len(f.Models) != 0
 	var matched bool
 	switch {
 	case apiConfigured && modelConfigured && f.Logic == filterLogicAnd:
-		matched = f.matchesModel(request.RequestedModel) && f.matchesAPIKey(request.Headers, request.Metadata)
+		matched = f.matchesModel(model) && f.matchesAPIKey(request.Headers, request.Metadata)
 	case apiConfigured && modelConfigured:
-		matched = f.matchesModel(request.RequestedModel) || f.matchesAPIKey(request.Headers, request.Metadata)
+		matched = f.matchesModel(model) || f.matchesAPIKey(request.Headers, request.Metadata)
 	case apiConfigured:
 		matched = f.matchesAPIKey(request.Headers, request.Metadata)
 	default:
-		matched = f.matchesModel(request.RequestedModel)
+		matched = f.matchesModel(model)
 	}
 	return matched == (f.Mode == filterModeInclude)
 }
