@@ -382,6 +382,19 @@ func TestHTTPResponsesBlockStringInput(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsesDeveloperInstructionsBlock(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+	status, _, body := postJSON(t, cpa.baseURL+"/v1/responses", []byte(`{"model":"censorship-integration-model","instructions":"SECRET","input":"safe"}`))
+	response, err := decodeCensorshipError(body)
+	if err != nil || status != 400 || response.Error.Code != "censorship_blocked" || response.Error.Term != "SECRET" || response.Error.Role != "developer" {
+		t.Fatalf("status=%d body=%s error=%v", status, body, err)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("blocked Responses instructions reached upstream")
+	}
+}
+
 func TestHTTPRequestFilterStripPreservesNonTargetFields(t *testing.T) {
 	const input = "before SECRET after"
 	const transformed = "before  after"
