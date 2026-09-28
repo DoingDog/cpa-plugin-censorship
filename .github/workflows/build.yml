@@ -168,17 +168,15 @@ jobs:
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
           echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-      - uses: go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a # v1
+      - name: Build FreeBSD amd64 plugin
         env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: .
-          packages: .
-          targets: freebsd-amd64
-          out-dir: dist/freebsd_amd64
-          output: censorship.so
-          flags: -ldflags=-s -w
-          x-flags: main.pluginVersion=${{ steps.release_metadata.outputs.version }}
+          CGO_LDFLAGS: -fuse-ld=lld
+        run: |
+          curl -fsSL https://download.freebsd.org/releases/amd64/14.5-RELEASE/base.txz -o "${RUNNER_TEMP}/base.txz"
+          mkdir -p "${RUNNER_TEMP}/freebsd-sysroot"
+          sudo tar -xf "${RUNNER_TEMP}/base.txz" -C "${RUNNER_TEMP}/freebsd-sysroot"
+          make build-platform VERSION="${MAKE_VERSION}" GOOS=freebsd GOARCH=amd64 \
+            BUILD_CC="clang --target=x86_64-unknown-freebsd14.5 --sysroot=${RUNNER_TEMP}/freebsd-sysroot"
       - name: Package artifact
         run: |
           go run ./.github/scripts/package-release.go \

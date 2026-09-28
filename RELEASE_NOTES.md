@@ -1,3 +1,11 @@
+# Censorship v0.3.4
+
+## v0.3.4 fix
+
+- Fixes the FreeBSD amd64 CI build failure caused by the unavailable `14.3-RELEASE/base.txz` download (HTTP 404). Plugin filtering behavior is unchanged from v0.3.3.
+
+v0.3.4 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
 # Censorship v0.3.3
 
 ## v0.3.3 fix

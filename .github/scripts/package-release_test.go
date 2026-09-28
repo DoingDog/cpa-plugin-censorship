@@ -1895,7 +1895,6 @@ func TestBuildWorkflowContract(t *testing.T) {
 	if workflow.Env["PLUGIN_NAME"] != "censorship" {
 		t.Fatalf("workflow env = %#v", workflow.Env)
 	}
-
 	testRuns := nonemptyRuns(workflow.Jobs["test"].Steps)
 	wantTestRuns := []string{
 		"make test",
@@ -1936,14 +1935,13 @@ func TestBuildWorkflowContract(t *testing.T) {
 	}
 
 	const crossAction = "go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a"
-	if got := bytes.Count(raw, []byte("uses: "+crossAction+" # v1")); got != 2 {
-		t.Fatalf("pinned cross action lines = %d, want 2", got)
+	if got := bytes.Count(raw, []byte("uses: "+crossAction+" # v1")); got != 1 {
+		t.Fatalf("pinned cross action lines = %d, want 1", got)
 	}
 	cross := map[string]struct {
 		target, dir, library, archive string
 	}{
 		"build-windows-arm64": {target: "windows-arm64", dir: "windows_arm64", library: "censorship.dll", archive: "censorship_${VERSION}_windows_arm64.zip"},
-		"build-freebsd-amd64": {target: "freebsd-amd64", dir: "freebsd_amd64", library: "censorship.so", archive: "censorship_${VERSION}_freebsd_amd64.zip"},
 	}
 	for id, tc := range cross {
 		job := workflow.Jobs[id]
@@ -1969,6 +1967,30 @@ func TestBuildWorkflowContract(t *testing.T) {
 			jobActionWithValue(job, "actions/upload-artifact@v4", "compression-level") != 0 ||
 			jobActionWith(job, "actions/upload-artifact@v4", "if-no-files-found") != "error" {
 			t.Fatalf("cross job %s = %#v", id, job)
+		}
+	}
+
+	freebsd := workflow.Jobs["build-freebsd-amd64"]
+	if !reflect.DeepEqual(normalizeNeeds(freebsd.Needs), []string{"test"}) ||
+		freebsd.If != buildCondition ||
+		!hasReleaseMetadata(freebsd) ||
+		jobUses(freebsd, crossAction) ||
+		!jobRunContains(freebsd, "https://download.freebsd.org/releases/amd64/14.5-RELEASE/base.txz") ||
+		!jobRunContains(freebsd, "sudo tar -xf") ||
+		!jobRunContains(freebsd, `make build-platform VERSION="${MAKE_VERSION}" GOOS=freebsd GOARCH=amd64`) ||
+		!jobRunContains(freebsd, "clang --target=x86_64-unknown-freebsd14.5 --sysroot=") ||
+		!jobRunContains(freebsd, "go run ./.github/scripts/package-release.go") ||
+		!jobRunContains(freebsd, "-library \"dist/freebsd_amd64/censorship.so\"") ||
+		!jobRunContains(freebsd, "-archive \"dist/censorship_${VERSION}_freebsd_amd64.zip\"") ||
+		!jobRunContains(freebsd, "-checksum \"dist/censorship_${VERSION}_freebsd_amd64.zip.sha256\"") ||
+		!jobUses(freebsd, "actions/upload-artifact@v4") ||
+		jobActionWithValue(freebsd, "actions/upload-artifact@v4", "compression-level") != 0 ||
+		jobActionWith(freebsd, "actions/upload-artifact@v4", "if-no-files-found") != "error" {
+		t.Fatalf("FreeBSD job = %#v", freebsd)
+	}
+	for _, step := range freebsd.Steps {
+		if strings.Contains(step.Run, "make build-platform") && step.Env["CGO_LDFLAGS"] != "-fuse-ld=lld" {
+			t.Fatalf("FreeBSD build linker flags = %#v", step.Env)
 		}
 	}
 

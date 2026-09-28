@@ -1187,13 +1187,13 @@ func TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions(t *testing
 		t.Fatal(err)
 	}
 	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
-	const currentHeader = "# Censorship v0.3.3\n\n## v0.3.3 fix\n"
+	const currentHeader = "# Censorship v0.3.4\n\n## v0.3.4 fix\n"
 	if !bytes.HasPrefix(raw, []byte(currentHeader)) {
-		t.Fatal("RELEASE_NOTES.md does not begin with the v0.3.3 current-release section")
+		t.Fatal("RELEASE_NOTES.md does not begin with the v0.3.4 current-release section")
 	}
-	currentEnd := bytes.Index(raw, []byte("\n# Censorship v0.3.2\n"))
+	currentEnd := bytes.Index(raw, []byte("\n# Censorship v0.3.3\n"))
 	if currentEnd < 0 {
-		t.Fatal("RELEASE_NOTES.md does not separate the v0.3.3 current-release section")
+		t.Fatal("RELEASE_NOTES.md does not separate the v0.3.4 current-release section")
 	}
 	currentRelease := raw[:currentEnd]
 	for _, claim := range []string{
@@ -1209,6 +1209,7 @@ func TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions(t *testing
 		}
 	}
 	for _, sentence := range []string{
+		"v0.3.4 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.3 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.2 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.1 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
