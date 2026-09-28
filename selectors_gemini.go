@@ -29,6 +29,30 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		})
 	}
 
+	if roles.has("developer") {
+		tools := root.Get("tools")
+		if tools.IsArray() {
+			tools.ForEach(func(_, tool gjson.Result) bool {
+				if !tool.IsObject() {
+					return true
+				}
+				declarations := tool.Get("functionDeclarations")
+				if declarations.IsArray() {
+					declarations.ForEach(func(_, declaration gjson.Result) bool {
+						if !declaration.IsObject() {
+							return true
+						}
+						appendStringSpan(spans, declaration.Get("description"), "developer", roles)
+						for _, key := range []string{"parameters", "parametersJsonSchema", "response", "responseJsonSchema"} {
+							appendJSONSchemaDescriptions(spans, declaration.Get(key), "developer", roles)
+						}
+						return true
+					})
+				}
+				return true
+			})
+		}
+	}
 	if roles.has("system") {
 		collectParts(root.Get("systemInstruction"), "system")
 		collectParts(root.Get("system_instruction"), "system")

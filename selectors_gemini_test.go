@@ -8,6 +8,61 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestGeminiToolDeclarationDescriptionBlocksAsDeveloper(t *testing.T) {
+	registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"tools":[{"functionDeclarations":[{"name":"lookup","description":"SECRET lookup"}]}],"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
+	resp := interceptRPC(t, "gemini", body)
+	if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "developer" {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestGeminiToolDeclarationDescriptionsStripWithoutChangingMachineFields(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{
+		"tools":[{"functionDeclarations":[
+			{"name":"SECRET_function","description":"SECRET declaration",
+			 "parameters":{"type":"OBJECT","description":"SECRET parameters","properties":{"SECRET_key":{"type":"STRING","description":"SECRET property","enum":["SECRET enum"]}}},
+			 "response":{"type":"ARRAY","description":"SECRET response","items":{"type":"STRING","description":"SECRET response item"}}},
+			{"name":"SECRET_json_function",
+			 "parametersJsonSchema":{"type":"object","description":"SECRET parametersJsonSchema","properties":{"value":{"type":"array","items":{"type":"string","description":"SECRET parameters item"}}}},
+			 "responseJsonSchema":{"type":"object","description":"SECRET responseJsonSchema","properties":{"value":{"type":"string","description":"SECRET response property"}}}}
+		]}],
+		"contents":[
+			{"role":"user","parts":[{"text":"SECRET conversation"}]},
+			{"role":"model","parts":[{"functionCall":{"name":"SECRET_function","args":{"text":"SECRET argument"}}}]},
+			{"role":"user","parts":[{"functionResponse":{"name":"SECRET_function","response":{"text":"ok"}}}]}
+		]
+	}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate {
+		t.Fatalf("response = %#v", resp)
+	}
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET declaration"`, After: `" declaration"`},
+		rawReplacement{Before: `"SECRET parameters"`, After: `" parameters"`},
+		rawReplacement{Before: `"SECRET property"`, After: `" property"`},
+		rawReplacement{Before: `"SECRET parametersJsonSchema"`, After: `" parametersJsonSchema"`},
+		rawReplacement{Before: `"SECRET parameters item"`, After: `" parameters item"`},
+		rawReplacement{Before: `"SECRET response"`, After: `" response"`},
+		rawReplacement{Before: `"SECRET response item"`, After: `" response item"`},
+		rawReplacement{Before: `"SECRET responseJsonSchema"`, After: `" responseJsonSchema"`},
+		rawReplacement{Before: `"SECRET response property"`, After: `" response property"`},
+	)
+	if !bytes.Equal(resp.Body, want) {
+		t.Fatalf("body = %s, want %s", resp.Body, want)
+	}
+}
+
+func TestGeminiToolDeclarationDescriptionsRequireDeveloperRole(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"tools":[{"functionDeclarations":[{"description":"SECRET declaration","parameters":{"description":"SECRET schema"}}]}]}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestGeminiSelectorRowsAndMachineExclusions(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, user, assistant, tool]\n")
 	body := []byte(`{
