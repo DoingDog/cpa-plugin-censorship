@@ -376,6 +376,46 @@ func TestOpenAIResponsesSelectorCanonicalRoles(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesInstructionsScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, roles, wantRole string
+	}{
+		{name: "developer only", roles: "developer", wantRole: "developer"},
+		{name: "system only", roles: "system", wantRole: "system"},
+		{name: "system and developer", roles: "system, developer", wantRole: "system"},
+	} {
+		t.Run(tc.name+" block", func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: ["+tc.roles+"]\n")
+			resp := interceptRPC(t, "openai-response", []byte(`{"instructions":"SECRET","input":"safe"}`))
+			if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").String() != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.term").String() != "SECRET" || gjson.GetBytes(resp.ResponseBody, "error.role").String() != tc.wantRole {
+				t.Fatalf("response = %#v, body = %s", resp, resp.ResponseBody)
+			}
+		})
+	}
+	t.Run("developer only strip", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+		resp := interceptRPC(t, "openai-response", []byte(`{"instructions":"SECRET plan","input":"safe","metadata":{"note":"SECRET"}}`))
+		want := `{"instructions":" plan","input":"safe","metadata":{"note":"SECRET"}}`
+		if resp.Terminate || string(resp.Body) != want {
+			t.Fatalf("response = %#v, want body %s", resp, want)
+		}
+	})
+	t.Run("user only", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [user]\n")
+		resp := interceptRPC(t, "openai-response", []byte(`{"instructions":"SECRET","input":"safe"}`))
+		if resp.Terminate || len(resp.Body) != 0 {
+			t.Fatalf("response = %#v, want no-op", resp)
+		}
+	})
+	t.Run("nonstring instructions", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+		resp := interceptRPC(t, "openai-response", []byte(`{"instructions":{"text":"SECRET"},"input":"safe"}`))
+		if resp.Terminate || len(resp.Body) != 0 {
+			t.Fatalf("response = %#v, want no-op", resp)
+		}
+	})
+}
+
 func TestOpenAIChatModelVisibleDefinitionsUseDeclaredRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string

@@ -370,6 +370,8 @@ func collectOpenAIResponsesPromptVariables(spans *[]textSpan, root gjson.Result,
 func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	if roles.has("system") {
 		appendStringSpan(spans, root.Get("instructions"), "system", roles)
+	} else if roles.has("developer") {
+		appendStringSpan(spans, root.Get("instructions"), "developer", roles)
 	}
 	collectOpenAIResponsesPromptVariables(spans, root, roles)
 	if roles.has("developer") {
