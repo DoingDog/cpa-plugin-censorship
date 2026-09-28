@@ -1975,10 +1975,10 @@ func TestBuildWorkflowContract(t *testing.T) {
 		freebsd.If != buildCondition ||
 		!hasReleaseMetadata(freebsd) ||
 		jobUses(freebsd, crossAction) ||
-		!jobRunContains(freebsd, "https://download.freebsd.org/releases/amd64/14.5-RELEASE/base.txz") ||
+		!jobRunContains(freebsd, "https://download.freebsd.org/releases/amd64/14.4-RELEASE/base.txz") ||
 		!jobRunContains(freebsd, "sudo tar -xf") ||
 		!jobRunContains(freebsd, `make build-platform VERSION="${MAKE_VERSION}" GOOS=freebsd GOARCH=amd64`) ||
-		!jobRunContains(freebsd, "clang --target=x86_64-unknown-freebsd14.5 --sysroot=") ||
+		!jobRunContains(freebsd, "clang --target=x86_64-unknown-freebsd14.4 --sysroot=") ||
 		!jobRunContains(freebsd, "go run ./.github/scripts/package-release.go") ||
 		!jobRunContains(freebsd, "-library \"dist/freebsd_amd64/censorship.so\"") ||
 		!jobRunContains(freebsd, "-archive \"dist/censorship_${VERSION}_freebsd_amd64.zip\"") ||

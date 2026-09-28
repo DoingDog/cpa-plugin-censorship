@@ -172,11 +172,11 @@ jobs:
         env:
           CGO_LDFLAGS: -fuse-ld=lld
         run: |
-          curl -fsSL https://download.freebsd.org/releases/amd64/14.5-RELEASE/base.txz -o "${RUNNER_TEMP}/base.txz"
+          curl -fsSL https://download.freebsd.org/releases/amd64/14.4-RELEASE/base.txz -o "${RUNNER_TEMP}/base.txz"
           mkdir -p "${RUNNER_TEMP}/freebsd-sysroot"
           sudo tar -xf "${RUNNER_TEMP}/base.txz" -C "${RUNNER_TEMP}/freebsd-sysroot"
           make build-platform VERSION="${MAKE_VERSION}" GOOS=freebsd GOARCH=amd64 \
-            BUILD_CC="clang --target=x86_64-unknown-freebsd14.5 --sysroot=${RUNNER_TEMP}/freebsd-sysroot"
+            BUILD_CC="clang --target=x86_64-unknown-freebsd14.4 --sysroot=${RUNNER_TEMP}/freebsd-sysroot"
       - name: Package artifact
         run: |
           go run ./.github/scripts/package-release.go \
