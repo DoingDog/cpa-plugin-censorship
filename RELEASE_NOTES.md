@@ -1,3 +1,12 @@
+# Censorship v0.3.5
+
+## v0.3.5 fixes
+
+- Gemini function declaration descriptions and description fields within `parameters`, `parametersJsonSchema`, `response`, and `responseJsonSchema` now use canonical `developer` scope. Names, enum values, call arguments, and signatures remain excluded.
+- Claude `mcp_tool_result` nested typed-text blocks now reject a full `strip` that leaves empty text with local `censorship_invalid_request` instead of forwarding an invalid request.
+
+v0.3.5 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
 # Censorship v0.3.4
 
 ## v0.3.4 fix
