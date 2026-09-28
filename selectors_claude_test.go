@@ -105,6 +105,49 @@ func TestClaudeBetaMCPToolResult(t *testing.T) {
 	}
 }
 
+func TestClaudeMCPNonEmpty(t *testing.T) {
+	config := "words:\n  strip: [SECRET]\nscope:\n  roles: [tool]\n"
+	t.Run("full strip rejects empty typed text", func(t *testing.T) {
+		registerConfig(t, config)
+		body := []byte(`{"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`)
+		resp := interceptRPC(t, "claude", body)
+		if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || len(resp.Body) != 0 {
+			t.Fatalf("response = %#v", resp)
+		}
+		if got := gjson.GetBytes(resp.ResponseBody, "error.code").String(); got != "censorship_invalid_request" {
+			t.Fatalf("error code = %q, body = %s", got, resp.ResponseBody)
+		}
+		if got := gjson.GetBytes(resp.ResponseBody, "error.message").String(); got != "censorship rewrite would make a text field invalid" {
+			t.Fatalf("error message = %q, body = %s", got, resp.ResponseBody)
+		}
+	})
+	t.Run("partial strip keeps typed text", func(t *testing.T) {
+		registerConfig(t, config)
+		body := []byte(`{"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET tail"}]}]}]}`)
+		want := []byte(`{"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":" tail"}]}]}]}`)
+		resp := interceptRPC(t, "claude", body)
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("response = %#v, want body %s", resp, want)
+		}
+	})
+	t.Run("untyped inner block is untouched", func(t *testing.T) {
+		registerConfig(t, config)
+		body := []byte(`{"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"image","text":"SECRET"}]}]}]}`)
+		resp := interceptRPC(t, "claude", body)
+		if resp.Terminate || resp.Body != nil {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+	t.Run("user role leaves typed text untouched", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [user]\n")
+		body := []byte(`{"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`)
+		resp := interceptRPC(t, "claude", body)
+		if resp.Terminate || resp.Body != nil {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+}
+
 func TestClaudeSelectorCanonicalRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string

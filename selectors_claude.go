@@ -114,7 +114,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				toolContent.ForEach(func(_, inner gjson.Result) bool {
 					innerType := inner.Get("type")
 					if inner.IsObject() && innerType.Type == gjson.String && innerType.Str == "text" {
-						appendStringSpan(spans, inner.Get("text"), "tool", roles)
+						appendNonEmptyStringSpan(spans, inner.Get("text"), "tool", roles)
 					}
 					return true
 				})
