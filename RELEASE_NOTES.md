@@ -1,3 +1,11 @@
+# Censorship v0.3.3
+
+## v0.3.3 fix
+
+- OpenAI Responses `instructions` is inspected with `scope.roles: [developer]`; when `system` is also enabled, its existing `system` role takes precedence. This closes the developer-only block/strip gap without changing other request fields.
+
+v0.3.3 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
 # Censorship v0.3.2
 
 ## v0.3.2 fixes
