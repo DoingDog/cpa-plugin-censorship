@@ -63,6 +63,15 @@ func TestGeminiToolDeclarationDescriptionsRequireDeveloperRole(t *testing.T) {
 	}
 }
 
+func TestGeminiToolDeclarationMetadataDescriptionIsExcluded(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"tools":[{"functionDeclarations":[{"name":"lookup","description":"clean description","metadata":{"description":"SECRET metadata"}}]}]}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate || resp.Body != nil {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestGeminiSelectorRowsAndMachineExclusions(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, user, assistant, tool]\n")
 	body := []byte(`{
