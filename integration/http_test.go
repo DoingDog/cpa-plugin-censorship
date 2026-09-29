@@ -395,6 +395,20 @@ func TestHTTPResponsesDeveloperInstructionsBlock(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsesAnnotatedReplayRejectsRewrite(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"model":"censorship-integration-model","input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET citation","annotations":[{"type":"url_citation","start_index":7,"end_index":15,"title":"source","url":"https://example.com"}]}]}]}`)
+	status, _, response := postJSON(t, cpa.baseURL+"/v1/responses", body)
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || errorResponse.Error.Code != "censorship_invalid_request" {
+		t.Fatalf("status=%d body=%s error=%v", status, response, err)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("invalid Responses annotated replay reached upstream")
+	}
+}
+
 func TestHTTPRequestFilterStripPreservesNonTargetFields(t *testing.T) {
 	const input = "before SECRET after"
 	const transformed = "before  after"
@@ -473,6 +487,20 @@ func TestHTTPGeminiSignedHistoryBlockReturnsLocalError(t *testing.T) {
 	}
 	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked signed Gemini history reached upstream")
+	}
+}
+
+func TestHTTPGeminiSnakeFunctionDeclarationBlocks(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"tools":[{"function_declarations":[{"name":"lookup","description":"SECRET lookup"}]}]}`)
+	status, _, response := postJSON(t, cpa.baseURL+"/v1beta/models/censorship-integration-model:generateContent", body)
+	errorResponse, err := decodeCensorshipError(response)
+	if err != nil || status != 400 || errorResponse.Error.Code != "censorship_blocked" || errorResponse.Error.Role != "developer" {
+		t.Fatalf("status=%d body=%s error=%v", status, response, err)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("blocked Gemini function declaration reached upstream")
 	}
 }
 
