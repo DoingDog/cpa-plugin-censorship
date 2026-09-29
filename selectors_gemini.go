@@ -55,6 +55,9 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				return true
 			})
 		}
+		for _, key := range []string{"responseSchema", "responseJsonSchema", "responseFormat.text.schema"} {
+			appendJSONSchemaDescriptions(spans, root.Get("generationConfig."+key), "developer", roles)
+		}
 	}
 	if roles.has("system") {
 		collectParts(root.Get("systemInstruction"), "system")

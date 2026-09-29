@@ -307,6 +307,51 @@ func TestGeminiDisabledRolesSkipContents(t *testing.T) {
 	}
 }
 
+func TestGeminiGenerationSchemaDescriptionsUseDeveloperScope(t *testing.T) {
+	cases := []struct {
+		name, body string
+	}{
+		{name: "responseSchema", body: `{"generationConfig":{"responseMimeType":"application/json","responseSchema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET"}}}}}`},
+		{name: "responseJsonSchema", body: `{"generationConfig":{"responseMimeType":"application/json","responseJsonSchema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET"}}}}}`},
+		{name: "responseFormat.text.schema", body: `{"generationConfig":{"responseFormat":{"text":{"mimeType":"application/json","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET"}}}}}}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" developer", func(t *testing.T) {
+			assertBlockedRole(t, "gemini", tc.body, "developer")
+		})
+		t.Run(tc.name+" user only", func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [user]\n")
+			resp := interceptRPC(t, "gemini", []byte(tc.body))
+			if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+				t.Fatalf("response = %#v", resp)
+			}
+		})
+	}
+}
+
+func TestGeminiGenerationSchemaDescriptionsStripOnlyDescriptions(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"generationConfig":{"responseSchema":{"type":"object","properties":{"SECRET_key":{"type":"string","description":"SECRET first","enum":["SECRET enum"],"default":"SECRET default"}}},"responseJsonSchema":{"type":"object","description":"SECRET second"},"responseFormat":{"text":{"mimeType":"application/json","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET third"}}}}}}}`)
+	resp := interceptRPC(t, "gemini", body)
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET first"`, After: `" first"`},
+		rawReplacement{Before: `"SECRET second"`, After: `" second"`},
+		rawReplacement{Before: `"SECRET third"`, After: `" third"`},
+	)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v, want body %s", resp, want)
+	}
+}
+
+func TestGeminiGenerationSchemaExcludesMachineFieldsAndUndocumentedRoot(t *testing.T) {
+	registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"generationConfig":{"responseSchema":{"type":"object","properties":{"SECRET_key":{"type":"string","enum":["SECRET"],"default":"SECRET"}}},"responseJsonSchema":{"type":"object","enum":["SECRET"],"default":"SECRET"},"responseFormat":{"text":{"schema":{"type":"object","properties":{"SECRET_key":{"type":"string","default":"SECRET"}}}}}},"generation_config":{"response_schema":{"type":"object","description":"SECRET ignored"}}}`)
+	resp := interceptRPC(t, "gemini", body)
+	if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
 func TestGeminiSelectorCanonicalRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string
