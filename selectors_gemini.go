@@ -74,7 +74,11 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		var effectiveRole string
 		switch {
 		case !role.Exists() || role.Type == gjson.Null || role.String() == "":
-			previousRole = nextGeminiRole(previousRole)
+			if geminiHasFunctionResponse(content) {
+				previousRole = "user"
+			} else {
+				previousRole = nextGeminiRole(previousRole)
+			}
 			if previousRole == "user" {
 				effectiveRole = "user"
 			} else {
@@ -87,12 +91,31 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			previousRole = "model"
 			effectiveRole = "assistant"
 		default:
-			previousRole = nextGeminiRole(previousRole)
+			if geminiHasFunctionResponse(content) {
+				previousRole = "user"
+			} else {
+				previousRole = nextGeminiRole(previousRole)
+			}
 			return true
 		}
 		collectParts(content, effectiveRole)
 		return true
 	})
+}
+
+func geminiHasFunctionResponse(content gjson.Result) bool {
+	parts := content.Get("parts")
+	found := false
+	if parts.IsArray() {
+		parts.ForEach(func(_, part gjson.Result) bool {
+			if part.Get("functionResponse").Exists() || part.Get("function_response").Exists() {
+				found = true
+				return false
+			}
+			return true
+		})
+	}
+	return found
 }
 
 func nextGeminiRole(previousRole string) string {

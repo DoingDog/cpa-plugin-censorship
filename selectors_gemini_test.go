@@ -204,6 +204,47 @@ func TestGeminiOmittedRoleFormsAlternateCanonicalRoles(t *testing.T) {
 	}
 }
 
+func TestGeminiFunctionResponseOmittedRoleUsesUserScope(t *testing.T) {
+	cases := []struct {
+		name, roleField, response string
+	}{
+		{name: "missing camel", response: `"functionResponse":{"name":"f","response":{}}`},
+		{name: "null snake", roleField: `"role":null,`, response: `"function_response":{"name":"f","response":{}}`},
+		{name: "empty null response", roleField: `"role":"",`, response: `"functionResponse":null`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [user]\n")
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"ask"}]},{` + tc.roleField + `"parts":[{` + tc.response + `},{"text":"SECRET"}]}]}`)
+			resp := interceptRPC(t, "gemini", body)
+			if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "user" {
+				t.Fatalf("response = %#v", resp)
+			}
+		})
+	}
+}
+
+func TestGeminiFunctionResponseResetsOmittedRoleAlternation(t *testing.T) {
+	cases := []struct {
+		name, roleField, response, currentText string
+	}{
+		{name: "missing camel", response: `"functionResponse":{"name":"f","response":{}}`},
+		{name: "null snake", roleField: `"role":null,`, response: `"function_response":{"name":"f","response":{}}`},
+		{name: "empty camel", roleField: `"role":"",`, response: `"functionResponse":null`},
+		{name: "invalid role", roleField: `"role":"assistant",`, response: `"functionResponse":{"name":"f","response":{}}`, currentText: `,{"text":"SECRET ignored"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [user]\n")
+			body := []byte(`{"contents":[{"role":"user","parts":[{"text":"ask"}]},{` + tc.roleField + `"parts":[{` + tc.response + `}` + tc.currentText + `]},{"parts":[{"text":"SECRET model text"}]}]}`)
+			resp := interceptRPC(t, "gemini", body)
+			if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+				t.Fatalf("response = %#v", resp)
+			}
+		})
+	}
+}
+
 func TestGeminiInvalidRolesAdvanceCanonicalAlternation(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\n")
 	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"prior"}]},{"role":"assistant","parts":[{"text":"ignored"}]},{"parts":[{"text":"SECRET user"}]}]}`)
