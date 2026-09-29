@@ -446,6 +446,43 @@ func TestHTTPResponsesNestedFunctionDescriptionsStrip(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsesStripActivatesNestedDescription(t *testing.T) {
+	t.Run("strips effective description", func(t *testing.T) {
+		upstream := newMockUpstream(t)
+		cpa := startCPA(t, upstream.URL, true, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+		body := []byte(`{"model":"censorship-integration-model","input":"safe","tools":[{"type":"function","description":"SECRET","function":{"name":"SECRET_lookup","description":"SECRET nested","parameters":{"type":"object","properties":{"query":{"type":"string","enum":["SECRET machine"]}}}}}]}`)
+		status, _, response := postJSON(t, cpa.baseURL+"/v1/responses", body)
+		if status != 200 || upstream.arrivalCount() != 1 {
+			t.Fatalf("status=%d body=%s upstream arrivals=%d", status, response, upstream.arrivalCount())
+		}
+		captured := upstream.lastRequest()
+		for path, want := range map[string]string{
+			"tools.0.function.description":                        " nested",
+			"tools.0.function.name":                               "SECRET_lookup",
+			"tools.0.function.parameters.properties.query.type":   "string",
+			"tools.0.function.parameters.properties.query.enum.0": "SECRET machine",
+		} {
+			if got := gjson.GetBytes(captured, path).String(); got != want {
+				t.Errorf("upstream %s = %q, want %q; body = %s", path, got, want, captured)
+			}
+		}
+	})
+
+	t.Run("blocks activated description", func(t *testing.T) {
+		upstream := newMockUpstream(t)
+		cpa := startCPA(t, upstream.URL, true, "words:\n  block: [BLOCK]\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+		body := []byte(`{"model":"censorship-integration-model","input":"safe","tools":[{"type":"function","description":"SECRET","function":{"name":"lookup","description":"BLOCK nested"}}]}`)
+		status, _, response := postJSON(t, cpa.baseURL+"/v1/responses", body)
+		errorResponse, err := decodeCensorshipError(response)
+		if err != nil || status != 400 || errorResponse.Error.Code != "censorship_blocked" || errorResponse.Error.Term != "BLOCK" || errorResponse.Error.Role != "developer" {
+			t.Fatalf("status=%d body=%s error=%v", status, response, err)
+		}
+		if upstream.arrivalCount() != 0 {
+			t.Fatal("blocked activated Responses description reached upstream")
+		}
+	})
+}
+
 func TestHTTPResponsesAnnotatedReplayRejectsRewrite(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
