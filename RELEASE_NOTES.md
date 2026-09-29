@@ -1,3 +1,12 @@
+# Censorship v0.3.6
+
+## v0.3.6 fixes
+
+- OpenAI Responses historical assistant `output_text` with non-empty annotations now rejects a final rewrite locally with `censorship_invalid_request` instead of forwarding text with stale citation offsets. Blocking and rewrites that leave the final text unchanged remain available; empty annotations remain rewritable.
+- Gemini `tools[].function_declarations` and description fields within `parameters_json_schema` and `response_json_schema` now use `developer` scope alongside their camelCase equivalents. Function names, enum values, and other machine fields remain excluded.
+
+v0.3.6 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
 # Censorship v0.3.5
 
 ## v0.3.5 fixes
