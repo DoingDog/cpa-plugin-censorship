@@ -738,17 +738,23 @@ func TestOpenAIResponsesNestedFunctionTypeAndScope(t *testing.T) {
 		{name: "custom description", tool: `{"type":"custom","name":"lookup","function":{"description":"SECRET tool"}}`, blocked: true},
 		{name: "custom parameters excluded", tool: `{"type":"custom","name":"lookup","function":{"parameters":{"description":"SECRET schema"}}}`},
 		{name: "missing type flat name", tool: `{"name":"lookup","function":{"description":"SECRET tool","parameters":{"description":"SECRET schema"}}}`, blocked: true},
+		{name: "missing type schema only", tool: `{"name":"lookup","function":{"parameters":{"type":"object","description":"SECRET schema"}}}`, blocked: true},
 		{name: "missing type nested name", tool: `{"function":{"name":"lookup","description":"SECRET tool"}}`, blocked: true},
 		{name: "empty type", tool: `{"type":"","name":"lookup","function":{"parameters":{"description":"SECRET schema"}}}`, blocked: true},
 		{name: "missing type and name", tool: `{"function":{"description":"SECRET tool"}}`},
 		{name: "null type", tool: `{"type":null,"name":"lookup","function":{"description":"SECRET tool"}}`},
-		{name: "wrong additional role", role: "additional", tool: `{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}`},
+		{name: "missing additional role", role: "additional", tool: `{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}`},
+		{name: "explicit invalid additional role", role: "critic", tool: `{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
 			body := `{"tools":[` + tc.tool + `]}`
-			if tc.role == "additional" {
-				body = `{"input":[{"type":"additional_tools","tools":[` + tc.tool + `]}]}`
+			if tc.role != "" {
+				role := ""
+				if tc.role != "additional" {
+					role = `"role":"` + tc.role + `",`
+				}
+				body = `{"input":[{"type":"additional_tools",` + role + `"tools":[` + tc.tool + `]}]}`
 			}
 			resp := interceptRPC(t, "openai-response", []byte(body))
 			if tc.blocked {
