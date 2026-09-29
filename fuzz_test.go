@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -272,6 +273,110 @@ func TestProtocolOracleResponsesFullStripDescription(t *testing.T) {
 			after, ok := oracleProtocolSpans("openai-response", got.Body)
 			if !ok || len(after) != 0 {
 				t.Fatalf("after spans = %#v, parse ok = %t, want none", after, ok)
+			}
+		})
+	}
+}
+
+func TestProtocolOracleResponsesFullStripFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+		fold             bool
+		invalid          bool
+	}{
+		{
+			name: "function without nested description",
+			body: `{"tools":[{"type":"function","name":"lookup","description":"SECRET","id":"machine SECRET"}]}`,
+			want: `{"tools":[{"type":"function","name":"lookup","description":"","id":"machine SECRET"}]}`,
+		},
+		{
+			name: "custom without nested description",
+			body: `{"tools":[{"type":"custom","description":"SECRET"}]}`,
+			want: `{"tools":[{"type":"custom","description":""}]}`,
+		},
+		{
+			name: "function nested description is stripped",
+			body: `{"tools":[{"type":"function","name":"lookup","description":"SECRET","function":{"description":"SECRET nested","name":"machine SECRET"},"id":"machine SECRET"}]}`,
+			want: `{"tools":[{"type":"function","name":"lookup","description":"","function":{"description":" nested","name":"machine SECRET"},"id":"machine SECRET"}]}`,
+		},
+		{
+			name: "custom nested description is stripped completely with case folding",
+			body: `{"tools":[{"type":"custom","function":{"description":"secret"},"description":"secret","name":"machine SECRET"}]}`,
+			want: `{"tools":[{"type":"custom","function":{"description":""},"description":"","name":"machine SECRET"}]}`,
+			fold: true,
+		},
+		{
+			name: "developer additional tool nested before flat",
+			body: `{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","function":{"description":"SECRET nested"},"description":"SECRET","name":"lookup"}]}]}`,
+			want: `{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","function":{"description":" nested"},"description":"","name":"lookup"}]}]}`,
+		},
+		{
+			name:    "nested number makes the rewrite invalid",
+			body:    `{"tools":[{"type":"function","description":"SECRET","function":{"description":123}}]}`,
+			invalid: true,
+		},
+		{
+			name:    "nested object makes the rewrite invalid",
+			body:    `{"tools":[{"type":"custom","description":"SECRET","function":{"description":{"value":"machine SECRET"}}}]}`,
+			invalid: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mustConfig(t, fmt.Sprintf("mode: strip\nignore_case: %t\nwords: [SECRET]\n", tc.fold))
+			body := []byte(tc.body)
+			got, err := transformRequest(body, "openai-response", cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.invalid {
+				if !got.Invalid || got.InvalidMessage != "censorship cannot rewrite non-string tool description" || got.Blocked != nil || len(got.Body) != 0 {
+					t.Fatalf("transformRequest() = %#v, want local invalid", got)
+				}
+			} else if got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, []byte(tc.want)) {
+				t.Fatalf("transformRequest() = %#v, want body %s", got, tc.want)
+			}
+			if err := checkProtocolResult("openai-response", body, modeStrip, tc.fold, got); err != nil {
+				t.Fatalf("checker rejected correct transform: %v", err)
+			}
+		})
+	}
+}
+
+func TestProtocolOracleResponsesFullStripRejectsForgedResults(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","description":"SECRET","function":{"description":"SECRET nested"},"name":"machine SECRET"}]}`)
+	cfg := mustConfig(t, "mode: strip\nwords: [SECRET]\n")
+	got, err := transformRequest(body, "openai-response", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []byte(`{"tools":[{"type":"function","description":"","function":{"description":" nested"},"name":"machine SECRET"}]}`)
+	if got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
+		t.Fatalf("transformRequest() = %#v, want body %s", got, want)
+	}
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{name: "nested description left unchanged", body: bytes.Replace(want, []byte(`" nested"`), []byte(`"SECRET nested"`), 1)},
+		{name: "machine name changed", body: bytes.Replace(want, []byte(`"machine SECRET"`), []byte(`"machine changed"`), 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := checkProtocolResult("openai-response", body, modeStrip, false, transformResult{Body: tc.body}); err == nil {
+				t.Fatal("checker accepted a forged full-strip result")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{name: "partial flat description", body: `{"tools":[{"type":"function","description":"SECRET tail","function":{"description":123}}]}`},
+		{name: "nested null", body: `{"tools":[{"type":"function","description":"SECRET","function":{"description":null}}]}`},
+		{name: "disabled additional tool role", body: `{"input":[{"type":"additional_tools","role":"tool","tools":[{"type":"function","description":"SECRET","function":{"description":123}}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := transformResult{Invalid: true, InvalidMessage: "censorship cannot rewrite non-string tool description"}
+			if err := checkProtocolResult("openai-response", []byte(tc.body), modeStrip, false, invalid); err == nil {
+				t.Fatal("checker accepted a forged non-string invalid result")
 			}
 		})
 	}
@@ -747,10 +852,13 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","extra_content":{"google":{"thought_signature":"signature"}}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thought":false,"thought":true}]}]}`)},
 		{format: "openai", body: []byte(`{"functions":[{"description":"SECRET"}],"response_format":{"type":"json_schema","json_schema":{"schema":{"type":"object","description":"SECRET"}}}}`)},
-		{format: "openai-response", body: []byte(`{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}},"tools":[{"type":"function","description":"tool SECRET tail"}]}`)},
+		{format: "openai-response", body: []byte(`{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}},"tools":[{"type":"function","description":"SECRET"}]}`)},
+		{format: "openai-response", body: []byte(`{"tools":[{"type":"function","name":"lookup","description":"SECRET","function":{"description":"SECRET nested"},"id":"machine SECRET"}]}`)},
 		{format: "openai-response", body: []byte(`{"tools":[{"name":"lookup","function":{"description":"SECRET","parameters":{"description":"SECRET"}}},{"type":"custom","description":null,"function":{"description":"SECRET","parameters":{"description":"SECRET"}}}]}`)},
 		{format: "openai-response", body: []byte(`{"tools":[{"type":"function","parameters":null,"parametersJsonSchema":{"description":"SECRET"},"output_schema":{"description":"SECRET"}}],"input":[{"type":"additional_tools","role":"user","tools":[{"type":"","name":"lookup","function":{"parametersJsonSchema":{"description":"SECRET"}}}]}]}`)},
-		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"custom SECRET tail"}]}]}`)},
+		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"SECRET","function":{"description":"secret nested"}}]}]}`)},
+		{format: "openai-response", body: []byte(`{"tools":[{"type":"function","name":"lookup","description":"SECRET","function":{"description":123}}]}`)},
+		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","function":{"description":{"value":"machine SECRET"}},"description":"SECRET"}]}]}`)},
 		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"shell","environment":{"type":"local","skills":[{"description":"SECRET"}]}}]},{"type":"mcp_approval_response","approve":true,"approval_request_id":"id","reason":"SECRET"}]}`)},
 		{format: "claude", body: []byte(`{"context_management":{"edits":[{"type":"compact_20260112","instructions":"SECRET"}]},"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`)},
 		{format: "interactions", body: []byte(`{"tools":[{"type":"function","description":"SECRET","parameters":{"description":"SECRET"}}],"response_format":{"type":"text","schema":{"description":"SECRET"}},"input":[{"type":"function_result","result":"SECRET"},{"type":"mcp_server_tool_result","result":[{"type":"text","text":"SECRET"}]},{"type":"code_execution_result","result":"SECRET","signature":"sig"}]}`)},
@@ -812,6 +920,15 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		return nil
 	}
 	if got.Invalid {
+		if format == "openai-response" && selected == modeStrip && got.Blocked == nil && len(got.Body) == 0 &&
+			got.InvalidMessage == "censorship cannot rewrite non-string tool description" {
+			if spans, ok := oracleRawProtocolSpans(format, body); ok {
+				_, _, invalid, err := oracleResponsesFullStripOutcome(body, spans, fold)
+				if err == nil && invalid {
+					return nil
+				}
+			}
+		}
 		if format == "claude" && selected == modeStrip && got.Blocked == nil && len(got.Body) == 0 &&
 			got.InvalidMessage == "censorship rewrite would make a text field invalid" &&
 			oracleClaudeRequiredFieldWouldBeEmpty(body, fold) {
@@ -900,34 +1017,55 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 	if !json.Valid(got.Body) {
 		return fmt.Errorf("changed output is invalid JSON: %s", got.Body)
 	}
+	var expected []byte
+	fullStripFallback := false
+	if format == "openai-response" && selected == modeStrip {
+		var invalid bool
+		var err error
+		expected, fullStripFallback, invalid, err = oracleResponsesFullStripOutcome(body, beforeRaw, fold)
+		if err != nil {
+			return err
+		}
+		if invalid {
+			return fmt.Errorf("non-string nested description was not rejected")
+		}
+	}
 	after, ok := oracleProtocolSpans(format, got.Body)
-	if !ok || len(after) != len(before) {
+	if !ok || !fullStripFallback && len(after) != len(before) {
 		return fmt.Errorf("eligible spans changed shape: before=%#v after=%#v", before, after)
 	}
 	afterRaw, rawOK := oracleRawProtocolSpans(format, got.Body)
-	if !rawOK || len(afterRaw) != len(beforeRaw) {
+	if !rawOK || len(afterRaw) != len(after) || !fullStripFallback && len(afterRaw) != len(beforeRaw) {
 		return fmt.Errorf("eligible raw spans changed shape: before=%#v after=%#v", beforeRaw, afterRaw)
 	}
-	selectedRawIndexes := make([]int, 0, len(beforeRaw))
-	for i := range before {
-		want := oracleStrip(before[i].Text, "SECRET", fold)
-		if selected == modeObfs {
-			want = oracleObfuscate(before[i].Text, "SECRET", fold, "​")
-		}
-		if after[i].Role != before[i].Role || after[i].Text != want {
-			return fmt.Errorf("eligible span %d = %#v, want role %q text %q", i, after[i], before[i].Role, want)
-		}
+	for i := range after {
 		if afterRaw[i].Role != after[i].Role || afterRaw[i].Text != after[i].Text ||
 			afterRaw[i].RequiresUnmodified != after[i].RequiresUnmodified ||
 			afterRaw[i].UnmodifiedMessage != after[i].UnmodifiedMessage {
 			return fmt.Errorf("oracle raw span %d = %#v, want %#v", i, afterRaw[i], after[i])
 		}
-		if oracleContains(beforeRaw[i].Text, "SECRET", fold) {
-			selectedRawIndexes = append(selectedRawIndexes, i)
-		}
 	}
-	if err := oracleRequireUnchangedOutsideRawRanges(body, got.Body, beforeRaw, afterRaw, selectedRawIndexes); err != nil {
-		return err
+	if fullStripFallback {
+		if !bytes.Equal(got.Body, expected) {
+			return fmt.Errorf("Responses full strip body = %s, want %s", got.Body, expected)
+		}
+	} else {
+		selectedRawIndexes := make([]int, 0, len(beforeRaw))
+		for i := range before {
+			want := oracleStrip(before[i].Text, "SECRET", fold)
+			if selected == modeObfs {
+				want = oracleObfuscate(before[i].Text, "SECRET", fold, "​")
+			}
+			if after[i].Role != before[i].Role || after[i].Text != want {
+				return fmt.Errorf("eligible span %d = %#v, want role %q text %q", i, after[i], before[i].Role, want)
+			}
+			if oracleContains(beforeRaw[i].Text, "SECRET", fold) {
+				selectedRawIndexes = append(selectedRawIndexes, i)
+			}
+		}
+		if err := oracleRequireUnchangedOutsideRawRanges(body, got.Body, beforeRaw, afterRaw, selectedRawIndexes); err != nil {
+			return err
+		}
 	}
 	beforeExcluded := oracleExcludedTokens(format, body)
 	if afterExcluded := oracleExcludedTokens(format, got.Body); !reflect.DeepEqual(afterExcluded, beforeExcluded) {
@@ -1073,6 +1211,33 @@ func oracleWouldEmptyAfterStrip(text string, fold bool) bool {
 	return stripped != text && stripped == ""
 }
 
+func oracleResponsesFullStripOutcome(body []byte, spans []oracleRawStringToken, fold bool) ([]byte, bool, bool, error) {
+	var changed []textSpan
+	activated, invalid := false, false
+	for _, span := range spans {
+		stripped := oracleStrip(span.Text, "SECRET", fold)
+		if stripped != span.Text {
+			changed = append(changed, textSpan{RawStart: span.Start, RawEnd: span.End, Text: stripped, Changed: true})
+		}
+		if !span.ResponsesFlatDescription || stripped == span.Text || stripped != "" {
+			continue
+		}
+		activated = true
+		invalid = invalid || span.NestedNonString
+		if nested := span.NestedDescription; nested != nil {
+			if stripped := oracleStrip(nested.Text, "SECRET", fold); stripped != nested.Text {
+				changed = append(changed, textSpan{RawStart: nested.Start, RawEnd: nested.End, Text: stripped, Changed: true})
+			}
+		}
+	}
+	if invalid || !activated {
+		return nil, activated, invalid, nil
+	}
+	sort.Slice(changed, func(i, j int) bool { return changed[i].RawStart < changed[j].RawStart })
+	out, err := marshalRebuildOracle(body, changed)
+	return out, true, false, err
+}
+
 func oracleRequireUnchangedOutsideRawRanges(before, after []byte, beforeSpans, afterSpans []oracleRawStringToken, selected []int) error {
 	ordered := append([]int(nil), selected...)
 	for i := 1; i < len(ordered); i++ {
@@ -1121,12 +1286,15 @@ func oracleProtocolSpans(format string, body []byte) ([]oracleProtocolSpan, bool
 }
 
 type oracleRawStringToken struct {
-	Text               string
-	Role               string
-	RequiresUnmodified bool
-	UnmodifiedMessage  string
-	Start              int
-	End                int
+	Text                     string
+	Role                     string
+	RequiresUnmodified       bool
+	UnmodifiedMessage        string
+	Start                    int
+	End                      int
+	ResponsesFlatDescription bool
+	NestedDescription        *oracleRawStringToken
+	NestedNonString          bool
 }
 
 type oracleRawValue struct {
@@ -2296,10 +2464,23 @@ func oracleRawAppendOpenAIResponsesTool(spans *[]oracleRawStringToken, tool *ora
 	switch typeName {
 	case "function", "custom":
 		description, _ := tool.firstField("description")
+		flat := description != nil && description.kind == 's' && description.text != ""
 		if !oracleRawValueHasText(description) {
 			description, _ = function.firstField("description")
 		}
+		before := len(*spans)
 		oracleRawAppendString(spans, description, role)
+		if flat && len(*spans) > before {
+			span := &(*spans)[before]
+			span.ResponsesFlatDescription = true
+			if nested, ok := function.firstField("description"); ok && oracleRawValueHasText(nested) {
+				if nested.kind == 's' {
+					span.NestedDescription = &oracleRawStringToken{Text: nested.text, Role: role, Start: nested.start, End: nested.end}
+				} else {
+					span.NestedNonString = true
+				}
+			}
+		}
 		if typeName == "function" {
 			schema, exists := tool.firstField("parameters")
 			if !exists {
