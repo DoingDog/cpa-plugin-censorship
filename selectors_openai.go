@@ -205,10 +205,10 @@ func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role strin
 					var candidates []textSpan
 					appendStringSpan(&candidates, fallback, role, roles)
 					if len(candidates) > 0 {
-						(*spans)[before].FallbackDescription = &candidates[0]
+						(*spans)[before].NestedDescription = &candidates[0]
 					}
 				} else {
-					(*spans)[before].UnsafeFallbackDescription = true
+					(*spans)[before].NestedNonString = true
 				}
 			}
 		}
