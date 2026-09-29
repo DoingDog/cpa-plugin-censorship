@@ -361,6 +361,63 @@ func TestOpenAIResponsesAssistantOutputShapesUseAssistantScope(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesAnnotatedOutputRewrite(t *testing.T) {
+	body := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET citation","annotations":[{"type":"url_citation","start_index":7,"end_index":15,"title":"source","url":"https://example.com"}]}]}]}`)
+	for _, mode := range []string{"strip", "obfs"} {
+		t.Run(mode, func(t *testing.T) {
+			registerConfig(t, "words:\n  "+mode+": [SECRET]\nscope:\n  roles: [assistant]\n")
+			resp := interceptRPC(t, "openai-response", body)
+			if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").String() != "censorship_invalid_request" || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v, response body = %s", resp, resp.ResponseBody)
+			}
+		})
+	}
+
+	t.Run("block precedes annotation protection", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [assistant]\n")
+		resp := interceptRPC(t, "openai-response", body)
+		if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").String() != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "assistant" || len(resp.Body) != 0 {
+			t.Fatalf("response = %#v, response body = %s", resp, resp.ResponseBody)
+		}
+	})
+
+	t.Run("empty annotations allow strip", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
+		input := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET citation","annotations":[],"title":"SECRET"}]}]}`)
+		want := `{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":" citation","annotations":[],"title":"SECRET"}]}]}`
+		resp := interceptRPC(t, "openai-response", input)
+		if resp.Terminate || string(resp.Body) != want {
+			t.Fatalf("response = %#v, want body %s", resp, want)
+		}
+	})
+
+	t.Run("unmatched annotated text is unchanged", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
+		input := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"safe citation","annotations":[{"type":"url_citation","start_index":5,"end_index":13,"title":"source","url":"https://example.com"}]}]}]}`)
+		resp := interceptRPC(t, "openai-response", input)
+		if resp.Terminate || len(resp.Body) != 0 {
+			t.Fatalf("response = %#v, want no rewrite", resp)
+		}
+	})
+
+	t.Run("cancelling rewrites leave annotated text unchanged", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [\"​\"]\n  obfs: [ab]\nscope:\n  roles: [assistant]\n")
+		input := []byte(`{"input":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a​b citation","annotations":[{"type":"url_citation","start_index":4,"end_index":12,"title":"source","url":"https://example.com"}]}]}]}`)
+		resp := interceptRPC(t, "openai-response", input)
+		if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+			t.Fatalf("response = %#v, want no rewrite or error", resp)
+		}
+	})
+
+	t.Run("user-only scope excludes assistant output", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [user]\n")
+		resp := interceptRPC(t, "openai-response", body)
+		if resp.Terminate || len(resp.Body) != 0 {
+			t.Fatalf("response = %#v, want no rewrite", resp)
+		}
+	})
+}
+
 func TestOpenAIResponsesSelectorCanonicalRoles(t *testing.T) {
 	cases := []struct {
 		name, body, role string

@@ -429,7 +429,14 @@ func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan
 						partRole = "assistant"
 					}
 					if roles.has(partRole) {
+						before := len(*spans)
 						appendStringSpan(spans, part.Get("text"), partRole, roles)
+						annotations := part.Get("annotations")
+						if role == "assistant" && partType.Str == "output_text" && len(*spans) != before && annotations.IsArray() && annotations.Get("#").Int() > 0 {
+							span := &(*spans)[len(*spans)-1]
+							span.RequiresUnmodified = true
+							span.UnmodifiedMessage = "censorship cannot rewrite annotated text"
+						}
 					}
 				}
 				return true
