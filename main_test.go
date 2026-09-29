@@ -1032,8 +1032,6 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"Management configuration readback returns filter values unchanged and does not mask secrets.",
 		"A filter bypass returns no replacement body or header changes before JSON validation.",
 		"OpenAI Responses `output_text` and `refusal` leaves use canonical `assistant` scope regardless of the source item role.",
-		"Missing Gemini roles follow CPA's user/model alternation.",
-		"Invalid Gemini roles advance CPA's user/model alternation but remain unselected.",
 		"Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent.",
 		"Gemini machine exclusions include camelCase and snake_case non-null function, media, file, and code carriers; signature values remain excluded without excluding same-Part visible text.",
 		"Enabled known formats reject JSON objects with duplicate member names at any nesting depth.",
@@ -1093,6 +1091,8 @@ func TestDocumentationListsConfigAndLimits(t *testing.T) {
 		"and every model response",
 	}
 	readmeRequired := []string{
+		"Missing Gemini roles follow CPA's user/model alternation, except that a content containing `functionResponse` or `function_response`",
+		"Invalid Gemini roles remain unselected; those containing a function response reset the next inferred role to `user`",
 		"filter.models is empty",
 		"filter.models is non-empty",
 		"RequestAfterAuthInterceptor",
@@ -1187,13 +1187,13 @@ func TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions(t *testing
 		t.Fatal(err)
 	}
 	raw = bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
-	const currentHeader = "# Censorship v0.3.7\n\n## v0.3.7 fixes\n"
+	const currentHeader = "# Censorship v0.3.8\n\n## v0.3.8 fixes\n"
 	if !bytes.HasPrefix(raw, []byte(currentHeader)) {
-		t.Fatal("RELEASE_NOTES.md does not begin with the v0.3.7 current-release section")
+		t.Fatal("RELEASE_NOTES.md does not begin with the v0.3.8 current-release section")
 	}
-	currentEnd := bytes.Index(raw, []byte("\n# Censorship v0.3.6\n"))
+	currentEnd := bytes.Index(raw, []byte("\n# Censorship v0.3.7\n"))
 	if currentEnd < 0 {
-		t.Fatal("RELEASE_NOTES.md does not separate the v0.3.7 current-release section")
+		t.Fatal("RELEASE_NOTES.md does not separate the v0.3.8 current-release section")
 	}
 	currentRelease := raw[:currentEnd]
 	for _, claim := range []string{
@@ -1208,11 +1208,12 @@ func TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions(t *testing
 			t.Errorf("RELEASE_NOTES.md current release contains superseded claim %q", claim)
 		}
 	}
-	const currentCompatibility = "v0.3.7 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+."
+	const currentCompatibility = "v0.3.8 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+."
 	if !bytes.Contains(currentRelease, []byte(currentCompatibility)) {
 		t.Fatal("RELEASE_NOTES.md current release lacks its compatibility sentence")
 	}
 	for _, sentence := range []string{
+		"v0.3.7 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.6 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.5 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
 		"v0.3.4 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",

@@ -1,3 +1,17 @@
+# Censorship v0.3.8
+
+## v0.3.8 fixes
+
+- Gemini contents with an omitted, null, or empty role and a `functionResponse`/`function_response` now use `user` scope and reset later inferred roles. Invalid roles remain unselected but a function response resets the next inferred role, preventing missed user text and unintended rewrites of model history.
+- Gemini JSON Schema `description` leaves at `generationConfig.responseSchema`, `generationConfig.responseJsonSchema`, and `generationConfig.responseFormat.text.schema` now use `developer` scope. Schema keys and machine values remain unchanged.
+- OpenAI Responses function/custom tool descriptions now use the effective flat or nested `function.description`; function parameter schema descriptions follow CPA's first-present field priority. Role gates, names, and machine values remain unchanged.
+- When `strip` empties an active Responses tool description, the newly effective nested string description is filtered before forwarding. A non-string nested description that would become effective rejects the rewrite locally; otherwise unused nested descriptions remain untouched.
+- Claude legacy beta `output_format.schema` JSON Schema descriptions now use `system` scope when `output_format.type` is `json_schema`. This is verified before upstream forwarding, not as remote Anthropic beta or OAuth acceptance.
+
+v0.3.8 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
+Remaining limits: conflicting noncanonical Responses or Interactions roles can translate differently across CPA backends before `ToFormat` is known. Non-empty `filter.models` still depends on selected-auth processing and does not cover an opaque terminal Executor. Neither behavior changed in this release.
+
 # Censorship v0.3.7
 
 ## v0.3.7 fixes
