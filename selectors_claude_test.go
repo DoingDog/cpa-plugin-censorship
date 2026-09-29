@@ -393,6 +393,7 @@ func TestClaudeDescriptionPaths(t *testing.T) {
 		{"tool description", `{"tools":[{"name":"lookup","description":"SECRET lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"safe"}]}`},
 		{"tool schema description", `{"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"query":{"type":"array","items":{"type":"string","description":"SECRET query"}}}}}],"messages":[{"role":"user","content":"safe"}]}`},
 		{"output schema description", `{"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET answer"}}}}},"messages":[{"role":"user","content":"safe"}]}`},
+		{"output_format", `{"output_format":{"type":"json_schema","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET answer"}}}},"messages":[{"role":"user","content":"safe"}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -424,6 +425,15 @@ func TestClaudeDescriptionRewrites(t *testing.T) {
 		t.Fatalf("response = %#v body = %s, want = %s", resp, resp.Body, want)
 	}
 
+	t.Run("legacy output_format changes only description", func(t *testing.T) {
+		body := []byte(`{"output_format":{"type":"json_schema","schema":{"type":"object","properties":{"SECRET_answer":{"type":"string","description":"SECRET output","enum":["SECRET"],"default":"SECRET"}}}},"messages":[{"role":"user","content":"safe"}]}`)
+		want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET output"`, After: `" output"`})
+		resp := interceptRPC(t, "claude", body)
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("response = %#v body = %s, want = %s", resp, resp.Body, want)
+		}
+	})
+
 	t.Run("full strip keeps optional description", func(t *testing.T) {
 		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [system]\n")
 		resp := interceptRPC(t, "claude", []byte(`{"tools":[{"name":"lookup","description":"SECRET","input_schema":{"type":"object"}}]}`))
@@ -448,6 +458,7 @@ func TestClaudeDescriptionRewrites(t *testing.T) {
 			`{"tools":[{"name":"lookup","description":42,"input_schema":{"type":"object","properties":{"query":{"enum":["SECRET"]}}}}]}`,
 			`{"output_config":{"format":{"type":"text","schema":{"description":"SECRET"}}}}`,
 			`{"output_config":{"format":{"type":null,"schema":{"description":"SECRET"}}}}`,
+			`{"output_format":{"type":"text","schema":{"description":"SECRET"}}}`,
 		} {
 			resp := interceptRPC(t, "claude", []byte(body))
 			if resp.Terminate || resp.Body != nil {

@@ -32,6 +32,10 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		if format.Get("type").Type == gjson.String && format.Get("type").Str == "json_schema" {
 			appendJSONSchemaDescriptions(spans, format.Get("schema"), "system", roles)
 		}
+		legacy := root.Get("output_format")
+		if legacy.Get("type").Str == "json_schema" {
+			appendJSONSchemaDescriptions(spans, legacy.Get("schema"), "system", roles)
+		}
 	}
 
 	if roles.has("system") {
