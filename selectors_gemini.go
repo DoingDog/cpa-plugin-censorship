@@ -36,14 +36,17 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				if !tool.IsObject() {
 					return true
 				}
-				declarations := tool.Get("functionDeclarations")
-				if declarations.IsArray() {
+				for _, declarationsKey := range []string{"functionDeclarations", "function_declarations"} {
+					declarations := tool.Get(declarationsKey)
+					if !declarations.IsArray() {
+						continue
+					}
 					declarations.ForEach(func(_, declaration gjson.Result) bool {
 						if !declaration.IsObject() {
 							return true
 						}
 						appendStringSpan(spans, declaration.Get("description"), "developer", roles)
-						for _, key := range []string{"parameters", "parametersJsonSchema", "response", "responseJsonSchema"} {
+						for _, key := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
 							appendJSONSchemaDescriptions(spans, declaration.Get(key), "developer", roles)
 						}
 						return true

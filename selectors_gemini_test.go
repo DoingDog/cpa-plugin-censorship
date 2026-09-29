@@ -8,6 +8,48 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestGeminiSnakeFunctionDeclarations(t *testing.T) {
+	body := []byte(`{"tools":[{"function_declarations":[{"name":"SECRET_lookup","description":"SECRET lookup","parameters_json_schema":{"type":"object","description":"SECRET parameters","enum":["SECRET enum"]},"response_json_schema":{"type":"object","description":"SECRET response","enum":["SECRET enum"]}}]}],"contents":[{"role":"user","parts":[{"text":"safe"}]}]}`)
+	t.Run("block as developer", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+		resp := interceptRPC(t, "gemini", body)
+		if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").String() != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "developer" {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+	t.Run("strip descriptions without changing machine fields", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+		resp := interceptRPC(t, "gemini", body)
+		want := replaceRawTokens(t, body,
+			rawReplacement{Before: `"SECRET lookup"`, After: `" lookup"`},
+			rawReplacement{Before: `"SECRET parameters"`, After: `" parameters"`},
+			rawReplacement{Before: `"SECRET response"`, After: `" response"`},
+		)
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("response = %#v, want body %s", resp, want)
+		}
+	})
+	t.Run("camel and snake declarations in one tool", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+		body := []byte(`{"tools":[{"functionDeclarations":[{"name":"SECRET_camel","description":"SECRET camel"}],"function_declarations":[{"name":"SECRET_snake","description":"SECRET snake"}]}]}`)
+		resp := interceptRPC(t, "gemini", body)
+		want := replaceRawTokens(t, body,
+			rawReplacement{Before: `"SECRET camel"`, After: `" camel"`},
+			rawReplacement{Before: `"SECRET snake"`, After: `" snake"`},
+		)
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("response = %#v, want body %s", resp, want)
+		}
+	})
+	t.Run("user role excludes declarations", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [user]\n")
+		resp := interceptRPC(t, "gemini", body)
+		if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+}
+
 func TestGeminiToolDeclarationDescriptionBlocksAsDeveloper(t *testing.T) {
 	registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
 	body := []byte(`{"tools":[{"functionDeclarations":[{"name":"lookup","description":"SECRET lookup"}]}],"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
