@@ -167,19 +167,33 @@ if upstream.arrivalCount() != 0 {
 - [ ] **Step 2: 独占验证。** `make integration` 由 runner 重建 plugin DLL、固定 CPA binary 并运行全部 HTTP/ABI tests；不要同时执行其他 `make integration`、`-abi-smoke`、`.integration/run` 写入任务。若阶段基线历史中曾出现 `integration/censorshipplugin/doc.go` 缺失，那是并发暂存目录冲突，应查看实际输出后独占重跑，不把它称作产品 bug。
 - [ ] **Step 3: 完成代码 review。** 对每个任务进行 spec 符合性与实现质量独立审查；重点复核 Gemini 角色状态、Responses 字段优先级、签名与 annotations、ABI 指针所有权。只修复可复现且归属于本次改动的高置信问题，每处行为修订再按 RED/GREEN。整体验证 `go test ./...`。
 
+### Task 6A: Responses 完整 strip 激活嵌套描述
+
+**发现与依赖：** Task 5 的独立 fuzz seed 揭露 flat `description:"SECRET"` 经 `strip` 清空时，固定 CPA 的 `.String()==""` 回退选用未处理的 `function.description:"SECRET nested"`。临时插件输出探针已观察到原文残留；先等待 Task 6 实施者交付其 integration 文件，再加 HTTP 回归，不并发写同一文件。此任务仅在已证实边界实施，不改 CPA core 或泛化其他字段。
+
+**Files:** Modify `selectors_openai_test.go`、`selectors_openai.go:187-209`、`transform.go:10-20,56-91`；Task 6 文件提交后再修改 `integration/http_test.go` 增加一条回归。`fuzz_test.go` 已有完整 strip 的 oracle 回归；只在新的实际 fuzz 失败确认为 checker 边界时另行修订，不能通过删除 seed 或全面放宽断言跳过。
+
+**Interfaces:** 现有 `textSpan` 保持原始 raw offset 和 role，可仅为已选中的非空 flat Responses function/custom 描述保留同工具的休眠 nested `*textSpan` 与非字符串标记。初始 `selectTextSpans` 仍只返回 CPA 当前有效的 active 文本。`applyMode` 仅在 flat 最终变空时对新增激活的字符串候选运行一次；追加真正改写的候选后按 `RawStart` 排序，再调用既有 `rebuildBody`。
+
+- [ ] **Step 1: RED。** 在 `selectors_openai_test.go` 写 `TestOpenAIResponsesStripActivatesNestedDescription`：developer `words.strip:[SECRET]`、`type:function`、有效 `name`、flat `description:"SECRET"`、nested `function.description:"SECRET nested"`，期望 replacement body 的 flat 为 `""`、nested 为 `" nested"`，其余 JSON 原始字节不变。对 `custom` 与显式 developer 的 `additional_tools` 复用同一规则；另加带 `words.block:[BLOCK]`、`words.strip:[SECRET]` 的 nested `"BLOCK nested"`，应返回 censorship_blocked/developer 且无 replacement。运行 `go test . -run '^TestOpenAIResponsesStripActivatesNestedDescription' -count=1 -v`，必须观察 nested 仍含 SECRET 或本应 block 却没有 block 的断言失败，不得以编译错误冒充 RED。
+- [ ] **Step 2: 最小生产改动。** 在 `collectOpenAIResponsesTool` 仅为 active 非空字符串 flat description 捕获同工具 `function.description`：nested 非空字符串保留其现有 `RawStart`/`RawEnd`/`Text`/`Role` 为休眠候选，CPA `.String()` 非空而非字符串者标记为不可安全改写；不要初始选择或改写 nested。`transformRequest` 原 `applyMode` 后，仅对 `Changed && Text==""` 的此类 flat span 激活候选；非字符串候选返回本地 `censorship_invalid_request`；将所有激活候选按 `RawStart` 排序，复用 `applyMode` 的 block -> strip -> obfs，block 立即终止，改写候选与原 spans 一起按 raw offset 排序并 `rebuildBody`。未激活时不得增加第二次 matcher、额外替换或整个请求重扫。
+- [ ] **Step 3: GREEN 与负例。** 聚焦测试和 `go test . -run '^TestOpenAIResponses' -count=1` 通过；加 flat `"SECRET flat"` + nested `"SECRET nested"` 仅改 flat、flat 清空 + nested `"safe"` 放行、role 不启用时保持不变、nested 为非字符串 Object/数字时本地 invalid、nested 原始字节在 flat 前后两种顺序都正确处理的测试。保留 names/schema machine fields、原 `output_schema`、签名和 annotations 排除。`go test ./...` 通过；若并行 Task 6 integration runner 尚在写 `.integration/run`，本步骤不操作 runner。
+- [ ] **Step 4: HTTP 注册回归。** 等 Task 6 提交后，用同一个 `startCPA/newMockUpstream` 在 `integration/http_test.go` 增加 `/v1/responses` 请求：strip flat 后 mock upstream 实际收到不含 SECRET 的有效 nested description，且机器字段不变；nested 命中 block 的对照应 400/developer、upstream 零请求。仅由一个实施者独占运行 `make integration`，然后执行一次 30s `FuzzProtocolTransform`；若 fuzz 的 active span 同形假设在这个动态回退上失败，增加聚焦断言并只对该确切变体调整 oracle checker，绝不放宽其他机器字段和角色断言。
+- [ ] **Step 5: 单独提交与独立 review。** 仅提交上述文件；review 特别检查功能性 `strip` 未被改成 400、flat 不清空时 nested 仍未选中、非字符串 fail-closed 仅在激活时发生、offset 排序和前后角色优先级。若无法无回归实现，应回退 Task 6A 的生产改动，保留先前安全修复，并在 README/RELEASE_NOTES 明确列出此残余风险，不能宣称其修复。
+
 ### Task 7: 文档、完整验证与版本发布
 
 **Files:** Modify `README.md:138-160`、`RELEASE_NOTES.md:1-9`；仅在确有对应 GREEN 的路径上更新。`go.mod`、CPA core、`.integration/`、`dist/` 均不提交。
 
 **Interfaces:** GitHub `Build` workflow `.github/workflows/build.yml` 接收 `push main` 和 `tag v*`，并构建各平台包及 SHA-256 文件；`make package VERSION=v0.3.8 GOOS=windows GOARCH=amd64` 本地只检验 Windows 路径。
 
-- [ ] **Step 1: 文档。** 在 README 的 provider selector 列表只增加实际修复的路径，明确 Gemini 缺省 role 含 function response 时 user/无效条目仍不选中；在 RELEASE_NOTES 顶部增加 `v0.3.8` 的每项真实修复与 pinned CPA v7.2.152/ABI v1 说明；明确列出未解决的跨后端非规范角色冲突和 terminal Executor 限制，不扩大支持声明。
+- [ ] **Step 1: 文档。** 在 README 的 provider selector 列表只增加实际修复的路径，明确 Gemini 缺省 role 含 function response 时 user/无效条目仍不选中；Task 6A 通过时说明 Responses flat 描述完整 strip 后仅对激活的 nested 描述继续过滤，未通过则说明残余漏检。在 RELEASE_NOTES 顶部增加 `v0.3.8` 的每项真实修复与 pinned CPA v7.2.152/ABI v1 说明；明确列出未解决的跨后端非规范角色冲突和 terminal Executor 限制，不扩大支持声明。
 - [ ] **Step 2: 本地完整验证。** 顺序运行 `make test`、`make race`、`make vet`、`make build`、`go test .github/scripts/package-release.go .github/scripts/package-release_test.go`、`make package VERSION=v0.3.8 GOOS=windows GOARCH=amd64`、`make integration`、`go run ./.github/scripts/integration-runner.go -abi-smoke dist/windows_amd64/censorship.dll`；按 runner 要求提供插件 DLL 与固定 CPA 路径并运行专门的注册测试。`git diff --check` 和受追踪文件清单必须只包含本次任务改动。若任一命令失败，保留准确输出，修复并重跑后再进入下一步。
 - [ ] **Step 3: 提交与合并。** 提交 README/RELEASE_NOTES/集成测试，在当前 worktree 做整体复核。退出 worktree 时用 `ExitWorktree(action:"keep")` 保留分支，再在原始 checkout 确认 local `main` 未变脏及当前 ref，执行常规非破坏性 merge；有冲突时停止发布，修复后重跑测试。
 - [ ] **Step 4: 发布与 CI。** 在合并后的 `main` 创建递增 tag `v0.3.8`，先检查 `git remote -v`、现有 tag 与 remote 状态，然后推送 `main` 和 tag；查看 `gh run` 中对应 tag 的全部 jobs 与 release assets。对七个平台 ZIP、对应小写 SHA-256 sidecar 和 `checksums.txt` 的内容逐项验证，确认 `v0.3.8` GitHub release 已发布且无缺失资产。仅在远端状态实际验证后宣称完成。
 
 ## 计划自检
 
-- spec 的四个选择器修改分别对应 Tasks 1 到 4；只在已确认和 RED 通过的范围实施。独立 oracle、HTTP 插件注册、docs、ABI 与发布分别由 Tasks 5 到 7 覆盖。
+- spec 的四个选择器修改分别对应 Tasks 1 到 4；Task 5 动态揭露的 Responses 改写后回退缺陷另由 Task 6A 覆盖。独立 oracle、HTTP 插件注册、docs、ABI 与发布分别由 Tasks 5 到 7 覆盖。所有生产改动均在已确认和预期 RED 的范围实施。
 - Review Focus 的五类边界均分配了具体测试；不存在对异后端冲突角色的全局改动。
 - 所有生产代码均在对应失败测试之后修改；共享文件与 `.integration/run` 串行，三个独立 provider 的测试与实现并行。

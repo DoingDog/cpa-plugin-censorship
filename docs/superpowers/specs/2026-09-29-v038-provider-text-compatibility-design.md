@@ -4,7 +4,7 @@
 
 修复固定 CLIProxyAPI v7.2.152 请求路径中已经定位的文本漏检与 Gemini 角色错位，使 `block`、`strip`、`obfs` 只作用于实际可见、明确指定的自然语言文本。保持插件 native ABI v1、配置 schema 5、阶段选择、过滤器以及 `block` -> `strip` -> `obfs` 顺序不变。不修改 CPA core、固定 Go 依赖、生成的 `.integration/` 或 `dist/` 文件。
 
-本次扫描的动态复现确认了 Gemini `functionResponse` 的角色状态错位、Gemini 输出 schema `description` 的漏检，以及 Responses 嵌套 `function` 描述透过 CPA 的 Chat 兼容转换到达上游。Claude 旧 `output_format` 的可达性由官方文档和固定 CPA 的直通代码确认，但隔离探针被权限护栏拒绝，没有声称已动态执行；实施前必须先用正常的仓库 TDD 测试观察预期 RED，若不能复现则不实施该子项，也不在发行说明宣称已修复。
+本次扫描的动态复现确认了 Gemini `functionResponse` 的角色状态错位、Gemini 输出 schema `description` 的漏检，以及 Responses 嵌套 `function` 描述透过 CPA 的 Chat 兼容转换到达上游。Claude 旧 `output_format` 的可达性由官方文档和固定 CPA 的直通代码确认，但隔离探针被权限护栏拒绝，没有声称已动态执行；实施前必须先用正常的仓库 TDD 测试观察预期 RED，若不能复现则不实施该子项，也不在发行说明宣称已修复。该正式 RED 后来已复现。实施阶段独立 fuzz seed 又揭露了 Responses 完整 strip 后激活 nested 描述的已复现漏检，本 spec 在下文新增其局部处理边界。
 
 ## 请求路径与设计
 
@@ -26,6 +26,12 @@
 
 描述的候选只取一个：`tool.description.String() != ""` 时用扁平字段，否则用 `tool.function.description`；最终仍要求字符串类型才能生成 span。参数候选依次为 `parameters`、`parametersJsonSchema`、`input_schema`、`function.parameters`、`function.parametersJsonSchema`，取首个 `Exists()` 字段，包括显式 `null`；只在所取候选为 Object 时选其 JSON Schema `description`。`custom` 仅使用描述回退，不扫描其参数或 grammar。固定 CPA 将缺失/空 `type` 的具名工具视作 function；只在工具有非空扁平或嵌套函数名时让它走相同的 function 分支。保留原本 `output_schema`、namespace、工具结果选择范围以及角色门控，不对同名工具做跨后端统一去重。
 
+### Responses 完整 strip 后激活的描述回退
+
+独立协议 fuzz 回归阶段动态复现：flat `description:"SECRET"` 与同一工具的 `function.description:"SECRET nested"` 同时存在时，当前插件只选择 flat；`strip` 把 flat 清空后，CPA 的 `.String()==""` 回退将未处理的 nested 描述发给上游。此问题发生于本次改动前，先前选择器修复和普通 fuzz GREEN 均未消除它。
+
+只为选中的非空 flat function/custom 描述保留同工具的 nested 描述作为休眠候选，不在初始 `block`/`strip`/`obfs` 中选择它。初始改写把 flat 清空时，在同一次请求拦截中仅激活该候选：对字符串候选按原配置顺序执行 `block` -> `strip` -> `obfs`，命中 block 时终止请求，发生改写时将两个已修改 span 按原始字节位置排序后一起重建请求。安全 nested 保持原样；flat 仍非空时 nested 完全不处理。若 CPA 会在此时使用非字符串 nested 的非空 `.String()`，拒绝这类无明确自然语言文本路径的改写请求，不扫描其机器值。不要递归重扫整份请求、改变其他 provider 的文本选择或重排原有规则；native ABI v1 与 `C.GoBytes` 不变。
+
 ### Claude 旧版结构化输出
 
 [Anthropic 迁移文档](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide)仍允许在 `structured-outputs-2025-11-13` beta 下使用 `output_format: {type: "json_schema", schema: ...}`。固定 CPA 的 Claude 入站至默认 caller-owned/API-key Claude 上游路径保留请求体和 beta；插件目前只选 `output_config.format.schema`。正式 RED 确认后，仅在 canonical `system` 范围且 `output_format.type == "json_schema"` 时对该 schema 使用既有 `appendJSONSchemaDescriptions`。不假定 OAuth 或跨提供商转换也保留 beta，不检查 schema 机器字段，不改变新式 `output_config` 路径。
@@ -38,6 +44,6 @@
 
 ## 测试与验收
 
-每个行为修复先写聚焦失败测试并观察正确 RED，再以最小修改 GREEN。Gemini 测试包含缺失、`null`、空、无效 role 的 function response，对比普通交替、`functionCall`、签名保护和机器 Part 排除；schema 测试包含三个正式根、developer-only 门控以及 enum/键名不变。Responses 测试覆盖顶层、`additional_tools`、`namespace`、优先级、空值、非字符串字段和机器字段不变；用已注册插件与 mock 上游确认阻断前零请求。Claude 测试覆盖旧式 schema、新式对照、user-only 不选中及 beta 直通条件。修改所影响的独立 fuzz oracle 和 seed，不放宽已有断言。
+每个行为修复先写聚焦失败测试并观察正确 RED，再以最小修改 GREEN。Gemini 测试包含缺失、`null`、空、无效 role 的 function response，对比普通交替、`functionCall`、签名保护和机器 Part 排除；schema 测试包含三个正式根、developer-only 门控以及 enum/键名不变。Responses 测试覆盖顶层、`additional_tools`、`namespace`、优先级、空值、非字符串字段和机器字段不变；完整 strip 后的 nested 描述另用 RED/GREEN、无命中与非字符串负例及已注册插件的 mock 上游断言验证，确保未处理的 SECRET 不被转发。用已注册插件与 mock 上游确认阻断前零请求。Claude 测试覆盖旧式 schema、新式对照、user-only 不选中及 beta 直通条件。修改所影响的独立 fuzz oracle 和 seed，不放宽已有断言；普通 fuzz 的同形假设不代替动态回退的聚焦回归。
 
 通过 `make test`、`make race`、`make vet`、`make build`、`make integration`、`make package` 以及插件注册/ABI smoke；共享 `.integration/run` 相关任务串行运行。只更新 README 的实际新增路径、对应版本的 RELEASE_NOTES，保留 `C.GoBytes` 和 ABI 所有权约定。提交后退出 worktree、合并本地 `main`、发布 `v0.3.8` 并推送触发 GitHub 自动构建；核对远端 CI、发行资产与 SHA-256，未通过的项目必须如实报告，不宣称成功。
