@@ -184,13 +184,28 @@ func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role strin
 	if !roles.has(role) {
 		return
 	}
-	switch tool.Get("type").Str {
-	case "function":
-		appendStringSpan(spans, tool.Get("description"), role, roles)
-		appendJSONSchemaDescriptions(spans, tool.Get("parameters"), role, roles)
-		appendJSONSchemaDescriptions(spans, tool.Get("output_schema"), role, roles)
-	case "custom":
-		appendStringSpan(spans, tool.Get("description"), role, roles)
+	toolType := tool.Get("type")
+	kind := toolType.Str
+	if (!toolType.Exists() || toolType.Type == gjson.String && kind == "") && (tool.Get("name").String() != "" || tool.Get("function.name").String() != "") {
+		kind = "function"
+	}
+	switch kind {
+	case "function", "custom":
+		description := tool.Get("description")
+		if description.String() == "" {
+			description = tool.Get("function.description")
+		}
+		appendStringSpan(spans, description, role, roles)
+		if kind == "function" {
+			for _, path := range []string{"parameters", "parametersJsonSchema", "input_schema", "function.parameters", "function.parametersJsonSchema"} {
+				schema := tool.Get(path)
+				if schema.Exists() {
+					appendJSONSchemaDescriptions(spans, schema, role, roles)
+					break
+				}
+			}
+			appendJSONSchemaDescriptions(spans, tool.Get("output_schema"), role, roles)
+		}
 	case "namespace":
 		appendStringSpan(spans, tool.Get("description"), role, roles)
 		children := tool.Get("tools")

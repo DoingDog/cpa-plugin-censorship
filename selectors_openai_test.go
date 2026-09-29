@@ -222,7 +222,7 @@ func TestOpenAIResponsesSelectorRowsAndExclusions(t *testing.T) {
 				{"type":"function_call_output","role":"user","output":" result","content":"SECRET fake"},
 				{"type":"custom_tool_call_output","role":"user","output":" custom"},
 				{"type":"unknown","role":"user","content":"SECRET unknown"}
-			],"tools":[{"name":"SECRET","description":"SECRET"}]}`,
+			],"tools":[{"name":"SECRET","description":""}]}`,
 		},
 	}
 	for _, tc := range cases {
@@ -615,6 +615,150 @@ func TestOpenAIResponsesModelVisibleDefinitionsUseDeclaredRoles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) { assertBlockedRole(t, "openai-response", tc.body, tc.role) })
+	}
+}
+
+func TestOpenAIResponsesNestedFunctionPathsBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, role string
+	}{
+		{name: "top level description", body: `{"model":"model","input":"safe","tools":[{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}]}`, role: "developer"},
+		{name: "top level schema", body: `{"model":"model","input":"safe","tools":[{"type":"function","name":"lookup","function":{"parameters":{"type":"object","description":"SECRET schema"}}}]}`, role: "developer"},
+		{name: "additional tools", body: `{"model":"model","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}]}]}`, role: "developer"},
+		{name: "namespace child", body: `{"tools":[{"type":"namespace","tools":[{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}]}]}`, role: "developer"},
+		{name: "loaded tool", body: `{"input":[{"type":"tool_search_output","tools":[{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}]}]}`, role: "tool"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: ["+tc.role+"]\n")
+			resp := interceptRPC(t, "openai-response", []byte(tc.body))
+			if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").Str != tc.role {
+				t.Fatalf("response = %#v, body = %s", resp, resp.ResponseBody)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesNestedFunctionRewritesOnlyDescriptions(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+	tool := `{"type":"function","name":"SECRET tool name","function":{"name":"SECRET nested name","description":"SECRET tool description","parameters":{"type":"object","description":"SECRET schema","properties":{"SECRET key":{"type":"string","description":"SECRET property","enum":["SECRET enum"],"default":"SECRET default"}}}}}`
+	for _, tc := range []struct{ name, body string }{
+		{name: "top level", body: `{"model":"model","input":"safe","tools":[` + tool + `]}`},
+		{name: "additional tools", body: `{"model":"model","input":[{"type":"additional_tools","role":"developer","tools":[` + tool + `]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(tc.body)
+			resp := interceptRPC(t, "openai-response", body)
+			want := replaceRawTokens(t, body,
+				rawReplacement{Before: `"SECRET tool description"`, After: `" tool description"`},
+				rawReplacement{Before: `"SECRET schema"`, After: `" schema"`},
+				rawReplacement{Before: `"SECRET property"`, After: `" property"`},
+			)
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("response = %#v, body = %s, want = %s", resp, resp.Body, want)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesNestedFunctionDescriptionPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, flat string
+		blocked    bool
+	}{
+		{name: "missing", blocked: true},
+		{name: "empty", flat: `"description":"",`, blocked: true},
+		{name: "null", flat: `"description":null,`, blocked: true},
+		{name: "nonempty", flat: `"description":"safe",`},
+		{name: "whitespace", flat: `"description":" ",`},
+		{name: "number", flat: `"description":7,`},
+		{name: "boolean", flat: `"description":false,`},
+		{name: "object", flat: `"description":{"note":"SECRET machine value"},`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+			body := []byte(`{"tools":[{"type":"function","name":"lookup",` + tc.flat + `"function":{"description":"SECRET nested"}}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			if tc.blocked {
+				if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" {
+					t.Fatalf("response = %#v, body = %s", resp, resp.ResponseBody)
+				}
+			} else if resp.Terminate || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v, want no-op", resp)
+			}
+		})
+	}
+
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"tools":[{"type":"function","name":"lookup","description":"SECRET flat","function":{"description":"SECRET nested"}}]}`)
+	resp := interceptRPC(t, "openai-response", body)
+	want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET flat"`, After: `" flat"`})
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v, body = %s, want = %s", resp, resp.Body, want)
+	}
+}
+
+func TestOpenAIResponsesNestedFunctionParameterPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		blocked      bool
+	}{
+		{name: "parameters", fields: `"parameters":{"type":"object","description":"SECRET first"},"parametersJsonSchema":{"description":"safe"}`, blocked: true},
+		{name: "parametersJsonSchema", fields: `"parametersJsonSchema":{"type":"object","description":"SECRET second"},"input_schema":{"description":"safe"}`, blocked: true},
+		{name: "input_schema", fields: `"input_schema":{"type":"object","description":"SECRET third"},"function":{"parameters":{"description":"safe"}}`, blocked: true},
+		{name: "function.parameters", fields: `"function":{"parameters":{"type":"object","description":"SECRET fourth"},"parametersJsonSchema":{"description":"safe"}}`, blocked: true},
+		{name: "function.parametersJsonSchema", fields: `"function":{"parametersJsonSchema":{"type":"object","description":"SECRET fifth"}}`, blocked: true},
+		{name: "flat wins", fields: `"parameters":{"type":"object","description":"safe"},"function":{"parameters":{"description":"SECRET nested"}}`},
+		{name: "flat null wins", fields: `"parameters":null,"parametersJsonSchema":{"description":"SECRET second"},"function":{"parameters":{"description":"SECRET nested"}}`},
+		{name: "flat empty object wins", fields: `"parameters":{},"parametersJsonSchema":{"description":"SECRET second"}`},
+		{name: "flat nonobject wins", fields: `"parameters":"safe","parametersJsonSchema":{"description":"SECRET second"}`},
+		{name: "second null wins", fields: `"parametersJsonSchema":null,"input_schema":{"description":"SECRET third"}`},
+		{name: "third null wins", fields: `"input_schema":null,"function":{"parameters":{"description":"SECRET fourth"}}`},
+		{name: "fourth null wins", fields: `"function":{"parameters":null,"parametersJsonSchema":{"description":"SECRET fifth"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+			body := []byte(`{"tools":[{"type":"function","name":"lookup",` + tc.fields + `}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			if tc.blocked {
+				if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" {
+					t.Fatalf("response = %#v, body = %s", resp, resp.ResponseBody)
+				}
+			} else if resp.Terminate || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v, want no-op", resp)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesNestedFunctionTypeAndScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool, role string
+		blocked          bool
+	}{
+		{name: "custom description", tool: `{"type":"custom","name":"lookup","function":{"description":"SECRET tool"}}`, blocked: true},
+		{name: "custom parameters excluded", tool: `{"type":"custom","name":"lookup","function":{"parameters":{"description":"SECRET schema"}}}`},
+		{name: "missing type flat name", tool: `{"name":"lookup","function":{"description":"SECRET tool","parameters":{"description":"SECRET schema"}}}`, blocked: true},
+		{name: "missing type nested name", tool: `{"function":{"name":"lookup","description":"SECRET tool"}}`, blocked: true},
+		{name: "empty type", tool: `{"type":"","name":"lookup","function":{"parameters":{"description":"SECRET schema"}}}`, blocked: true},
+		{name: "missing type and name", tool: `{"function":{"description":"SECRET tool"}}`},
+		{name: "null type", tool: `{"type":null,"name":"lookup","function":{"description":"SECRET tool"}}`},
+		{name: "wrong additional role", role: "additional", tool: `{"type":"function","name":"lookup","function":{"description":"SECRET tool"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+			body := `{"tools":[` + tc.tool + `]}`
+			if tc.role == "additional" {
+				body = `{"input":[{"type":"additional_tools","tools":[` + tc.tool + `]}]}`
+			}
+			resp := interceptRPC(t, "openai-response", []byte(body))
+			if tc.blocked {
+				if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" {
+					t.Fatalf("response = %#v, body = %s", resp, resp.ResponseBody)
+				}
+			} else if resp.Terminate || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v, want no-op", resp)
+			}
+		})
 	}
 }
 
