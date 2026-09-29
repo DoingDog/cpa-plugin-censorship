@@ -192,10 +192,26 @@ func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role strin
 	switch kind {
 	case "function", "custom":
 		description := tool.Get("description")
+		flat := description.Type == gjson.String && description.Str != ""
 		if description.String() == "" {
 			description = tool.Get("function.description")
 		}
+		before := len(*spans)
 		appendStringSpan(spans, description, role, roles)
+		if flat && len(*spans) > before {
+			fallback := tool.Get("function.description")
+			if fallback.String() != "" {
+				if fallback.Type == gjson.String {
+					var candidates []textSpan
+					appendStringSpan(&candidates, fallback, role, roles)
+					if len(candidates) > 0 {
+						(*spans)[before].FallbackDescription = &candidates[0]
+					}
+				} else {
+					(*spans)[before].UnsafeFallbackDescription = true
+				}
+			}
+		}
 		if kind == "function" {
 			for _, path := range []string{"parameters", "parametersJsonSchema", "input_schema", "function.parameters", "function.parametersJsonSchema"} {
 				schema := tool.Get(path)

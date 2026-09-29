@@ -697,6 +697,87 @@ func TestOpenAIResponsesNestedFunctionDescriptionPrecedence(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesStripActivatesNestedDescription(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{name: "function flat first", body: `{"tools":[{"type":"function","name":"SECRET name","description":"SECRET","function":{"description":"SECRET nested"},"parameters":{"enum":["SECRET machine"]}}]}`},
+		{name: "function nested first", body: `{"tools":[{"type":"function","name":"lookup","function":{"description":"SECRET nested"},"description":"SECRET"}]}`},
+		{name: "custom", body: `{"tools":[{"type":"custom","name":"lookup","description":"SECRET","function":{"description":"SECRET nested"},"format":{"definition":"SECRET machine"}}]}`},
+		{name: "additional tools", body: `{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","description":"SECRET","function":{"description":"SECRET nested"}}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+			body := []byte(tc.body)
+			resp := interceptRPC(t, "openai-response", body)
+			want := replaceRawTokens(t, body,
+				rawReplacement{Before: `"SECRET"`, After: `""`},
+				rawReplacement{Before: `"SECRET nested"`, After: `" nested"`},
+			)
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("response = %#v, body = %s, want = %s", resp, resp.Body, want)
+			}
+		})
+	}
+
+	t.Run("activated nested block", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [BLOCK]\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+		body := []byte(`{"tools":[{"type":"function","name":"lookup","description":"SECRET","function":{"description":"BLOCK nested"}}]}`)
+		resp := interceptRPC(t, "openai-response", body)
+		if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "BLOCK" || len(resp.Body) != 0 {
+			t.Fatalf("response = %#v, response body = %s", resp, resp.ResponseBody)
+		}
+	})
+}
+
+func TestOpenAIResponsesStripKeepsDormantNestedDescription(t *testing.T) {
+	for _, tc := range []struct {
+		name, flat, nested, roles string
+		wantBody                  bool
+	}{
+		{name: "flat remains nonempty", flat: `"SECRET flat"`, nested: `"SECRET nested"`, roles: "developer", wantBody: true},
+		{name: "safe nested activates", flat: `"SECRET"`, nested: `"safe"`, roles: "developer", wantBody: true},
+		{name: "role disabled", flat: `"SECRET"`, nested: `"SECRET nested"`, roles: "user"},
+		{name: "nonstring nested remains dormant", flat: `"SECRET flat"`, nested: `{"text":"SECRET machine"}`, roles: "developer", wantBody: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: ["+tc.roles+"]\n")
+			body := []byte(`{"tools":[{"type":"function","name":"lookup","description":` + tc.flat + `,"function":{"description":` + tc.nested + `}}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			if resp.Terminate {
+				t.Fatalf("response = %#v", resp)
+			}
+			if !tc.wantBody {
+				if len(resp.Body) != 0 {
+					t.Fatalf("body = %s, want no rewrite", resp.Body)
+				}
+				return
+			}
+			wantFlat := `" flat"`
+			if tc.flat == `"SECRET"` {
+				wantFlat = `""`
+			}
+			want := replaceRawTokens(t, body, rawReplacement{Before: tc.flat, After: wantFlat})
+			if !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body = %s, want = %s", resp.Body, want)
+			}
+		})
+	}
+}
+
+func TestOpenAIResponsesStripRejectsActivatedNonStringNestedDescription(t *testing.T) {
+	for _, nested := range []string{`{"text":"SECRET machine"}`, `7`} {
+		t.Run(nested, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+			body := []byte(`{"tools":[{"type":"function","name":"lookup","description":"SECRET","function":{"description":` + nested + `}}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_invalid_request" || len(resp.Body) != 0 {
+				t.Fatalf("response = %#v, response body = %s", resp, resp.ResponseBody)
+			}
+		})
+	}
+}
+
 func TestOpenAIResponsesNestedFunctionParameterPrecedence(t *testing.T) {
 	for _, tc := range []struct {
 		name, fields string

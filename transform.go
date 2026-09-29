@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 )
 
@@ -17,6 +18,8 @@ type textSpan struct {
 	RequiresNonEmpty   bool
 	RequiresUnmodified bool
 	UnmodifiedMessage  string
+	NestedDescription  *textSpan
+	NestedNonString    bool
 }
 
 const (
@@ -70,6 +73,35 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	}
 	if !changed {
 		return transformResult{}, nil
+	}
+	var activated []textSpan
+	nonStringNested := false
+	for _, span := range spans {
+		if !span.Changed || span.Text != "" {
+			continue
+		}
+		if span.NestedDescription != nil {
+			activated = append(activated, *span.NestedDescription)
+		}
+		nonStringNested = nonStringNested || span.NestedNonString
+	}
+	if len(activated) > 0 {
+		sort.Slice(activated, func(i, j int) bool { return activated[i].RawStart < activated[j].RawStart })
+		blocked, _ = applyMode(activated, cfg)
+		if blocked != nil {
+			return transformResult{Blocked: blocked}, nil
+		}
+	}
+	if nonStringNested {
+		return transformResult{Invalid: true, InvalidMessage: "censorship cannot rewrite non-string tool description"}, nil
+	}
+	for _, span := range activated {
+		if span.Changed {
+			spans = append(spans, span)
+		}
+	}
+	if len(activated) > 0 {
+		sort.Slice(spans, func(i, j int) bool { return spans[i].RawStart < spans[j].RawStart })
 	}
 	for _, span := range spans {
 		if span.Changed && span.RequiresUnmodified {
