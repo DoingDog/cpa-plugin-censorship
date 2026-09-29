@@ -1,3 +1,12 @@
+# Censorship v0.3.7
+
+## v0.3.7 fixes
+
+- Claude user-defined tool descriptions and their `input_schema` JSON Schema description leaves now use canonical `system` scope. Tool names, schema keys, non-description schema values, and `input_examples` remain unchanged.
+- Claude `output_config.format.schema` description leaves now use canonical `system` scope when `format.type` is `json_schema`; other output formats and machine schema fields remain unchanged.
+
+v0.3.7 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
 # Censorship v0.3.6
 
 ## v0.3.6 fixes

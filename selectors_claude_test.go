@@ -386,6 +386,77 @@ func TestClaudeScalarUserContentControls(t *testing.T) {
 	})
 }
 
+func TestClaudeDescriptionPaths(t *testing.T) {
+	cases := []struct {
+		name, body string
+	}{
+		{"tool description", `{"tools":[{"name":"lookup","description":"SECRET lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"safe"}]}`},
+		{"tool schema description", `{"tools":[{"name":"lookup","input_schema":{"type":"object","properties":{"query":{"type":"array","items":{"type":"string","description":"SECRET query"}}}}}],"messages":[{"role":"user","content":"safe"}]}`},
+		{"output schema description", `{"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET answer"}}}}},"messages":[{"role":"user","content":"safe"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [system]\n")
+			resp := interceptRPC(t, "claude", []byte(tc.body))
+			if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || gjson.GetBytes(resp.ResponseBody, "error.term").String() != "SECRET" || gjson.GetBytes(resp.ResponseBody, "error.role").String() != "system" {
+				t.Fatalf("response = %#v body = %s", resp, resp.ResponseBody)
+			}
+
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [user]\n")
+			resp = interceptRPC(t, "claude", []byte(tc.body))
+			if resp.Terminate || resp.Body != nil {
+				t.Fatalf("user-only response = %#v", resp)
+			}
+		})
+	}
+}
+
+func TestClaudeDescriptionRewrites(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"SECRET_tool","description":"SECRET tool","input_schema":{"type":"object","properties":{"SECRET_field":{"type":"string","description":"SECRET input","enum":["SECRET"],"const":"SECRET"}}},"input_examples":[{"SECRET_field":"SECRET"}]}],"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"SECRET_answer":{"type":"string","description":"SECRET output","enum":["SECRET"]}}}}},"messages":[{"role":"user","content":"safe"}]}`)
+	registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [system]\n")
+	resp := interceptRPC(t, "claude", body)
+	want := replaceRawTokens(t, body,
+		rawReplacement{Before: `"SECRET tool"`, After: `" tool"`},
+		rawReplacement{Before: `"SECRET input"`, After: `" input"`},
+		rawReplacement{Before: `"SECRET output"`, After: `" output"`},
+	)
+	if resp.Terminate || !bytes.Equal(resp.Body, want) {
+		t.Fatalf("response = %#v body = %s, want = %s", resp, resp.Body, want)
+	}
+
+	t.Run("full strip keeps optional description", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [system]\n")
+		resp := interceptRPC(t, "claude", []byte(`{"tools":[{"name":"lookup","description":"SECRET","input_schema":{"type":"object"}}]}`))
+		if resp.Terminate || string(resp.Body) != `{"tools":[{"name":"lookup","description":"","input_schema":{"type":"object"}}]}` {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+	t.Run("obfs changes only description", func(t *testing.T) {
+		registerConfig(t, "words:\n  obfs: [SECRET]\nscope:\n  roles: [system]\n")
+		resp := interceptRPC(t, "claude", []byte(`{"tools":[{"name":"SECRET_tool","description":"SECRET","input_schema":{"type":"object"}}]}`))
+		if resp.Terminate || gjson.GetBytes(resp.Body, "tools.0.name").Str != "SECRET_tool" || gjson.GetBytes(resp.Body, "tools.0.description").Str != "S​ECRET" {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+	t.Run("unsupported shapes stay unchanged", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [system]\n")
+		for _, body := range []string{
+			`{"tools":[{"name":"lookup","description":"SECRET"}]}`,
+			`{"tools":[{"description":"SECRET","input_schema":{"type":"object"}}]}`,
+			`{"tools":[{"type":"web_search_20260209","name":"web_search","description":"SECRET"}]}`,
+			`{"tools":{"description":"SECRET"}}`,
+			`{"tools":[{"name":"lookup","description":42,"input_schema":{"type":"object","properties":{"query":{"enum":["SECRET"]}}}}]}`,
+			`{"output_config":{"format":{"type":"text","schema":{"description":"SECRET"}}}}`,
+			`{"output_config":{"format":{"type":null,"schema":{"description":"SECRET"}}}}`,
+		} {
+			resp := interceptRPC(t, "claude", []byte(body))
+			if resp.Terminate || resp.Body != nil {
+				t.Fatalf("body = %s response = %#v", body, resp)
+			}
+		}
+	})
+}
+
 func TestClaudeNonUserScalarContentAllowsFullStrip(t *testing.T) {
 	cases := []struct {
 		name, roles string

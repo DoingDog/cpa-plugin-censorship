@@ -17,6 +17,21 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				return true
 			})
 		}
+		tools := root.Get("tools")
+		if tools.IsArray() {
+			tools.ForEach(func(_, tool gjson.Result) bool {
+				schema := tool.Get("input_schema")
+				if tool.IsObject() && tool.Get("name").Type == gjson.String && schema.IsObject() {
+					appendStringSpan(spans, tool.Get("description"), "system", roles)
+					appendJSONSchemaDescriptions(spans, schema, "system", roles)
+				}
+				return true
+			})
+		}
+		format := root.Get("output_config.format")
+		if format.Get("type").Type == gjson.String && format.Get("type").Str == "json_schema" {
+			appendJSONSchemaDescriptions(spans, format.Get("schema"), "system", roles)
+		}
 	}
 
 	if roles.has("system") {
