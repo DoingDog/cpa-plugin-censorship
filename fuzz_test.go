@@ -252,6 +252,31 @@ func TestProtocolOracleCoversDefaultScopeOpenAIDefinitions(t *testing.T) {
 	}
 }
 
+func TestProtocolOracleResponsesFullStripDescription(t *testing.T) {
+	for _, kind := range []string{"function", "custom"} {
+		t.Run(kind, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{"tools":[{"type":%q,"description":"SECRET"}]}`, kind))
+			cfg := mustConfig(t, "words: {strip: [SECRET]}\n")
+			got, err := transformRequest(body, "openai-response", cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []byte(fmt.Sprintf(`{"tools":[{"type":%q,"description":""}]}`, kind))
+			if got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
+				t.Fatalf("full strip = %#v, want body %s", got, want)
+			}
+			before, ok := oracleProtocolSpans("openai-response", body)
+			if !ok || !reflect.DeepEqual(before, []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}}) {
+				t.Fatalf("before spans = %#v, parse ok = %t", before, ok)
+			}
+			after, ok := oracleProtocolSpans("openai-response", got.Body)
+			if !ok || len(after) != 0 {
+				t.Fatalf("after spans = %#v, parse ok = %t, want none", after, ok)
+			}
+		})
+	}
+}
+
 func TestProtocolOraclesAgreeOnProviderDefaultsAndCallerAnnotations(t *testing.T) {
 	for _, tc := range []struct {
 		name, format              string
@@ -259,6 +284,98 @@ func TestProtocolOraclesAgreeOnProviderDefaultsAndCallerAnnotations(t *testing.T
 		want                      []oracleProtocolSpan
 		productionNoEligibleMatch bool
 	}{
+		{
+			name:   "Gemini function response pins missing role to user",
+			format: "gemini",
+			body:   []byte(`{"contents":[{"role":"user","parts":[{"functionCall":{}}]},{"parts":[{"functionResponse":{"response":{"data":"SECRET"}}},{"text":"SECRET"}]},{"parts":[{"text":"assistant SECRET"}]},{"parts":[{"text":"SECRET"}]}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "user"}, {Text: "SECRET", Role: "user"}},
+		},
+		{
+			name:   "Gemini null role and null snake function response pin user",
+			format: "gemini",
+			body:   []byte(`{"contents":[{"role":"user","parts":[{"functionCall":{}}]},{"role":null,"parts":[{"function_response":null},{"text":"SECRET"}]},{"parts":[{"text":"assistant SECRET"}]},{"parts":[{"text":"SECRET"}]}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "user"}, {Text: "SECRET", Role: "user"}},
+		},
+		{
+			name:   "Gemini invalid function response role updates subsequent alternation",
+			format: "gemini",
+			body:   []byte(`{"contents":[{"role":"user","parts":[{"functionCall":{}}]},{"role":"tool","parts":[{"functionResponse":null},{"text":"machine SECRET"}]},{"parts":[{"text":"assistant SECRET"}]},{"parts":[{"text":"SECRET"}]}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "user"}},
+		},
+		{
+			name:   "Gemini generationConfig responseSchema nested description",
+			format: "gemini",
+			body:   []byte(`{"generationConfig":{"responseSchema":{"properties":{"label":{"description":"SECRET","default":"SECRET"}}}}}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:   "Gemini generationConfig responseJsonSchema description",
+			format: "gemini",
+			body:   []byte(`{"generationConfig":{"responseJsonSchema":{"description":"SECRET","example":"SECRET"}}}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:   "Gemini generationConfig responseFormat text schema description",
+			format: "gemini",
+			body:   []byte(`{"generationConfig":{"responseFormat":{"text":{"schema":{"description":"SECRET","enum":["SECRET"]}}}}}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:   "Responses named function with nested description and parameters",
+			format: "openai-response",
+			body:   []byte(`{"tools":[{"name":"SECRET","function":{"name":"lookup","description":"SECRET","parameters":{"description":"SECRET","default":"SECRET"}}}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}, {Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:   "Responses empty type falls back and parametersJsonSchema wins",
+			format: "openai-response",
+			body:   []byte(`{"tools":[{"type":"","name":"lookup","description":"","function":{"description":"SECRET"},"parametersJsonSchema":{"properties":{"field":{"description":"SECRET"}}},"input_schema":{"description":"SECRET shadow"},"output_schema":{"description":"SECRET"}}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}, {Text: "SECRET", Role: "developer"}, {Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:                      "Responses null parameters masks later schemas",
+			format:                    "openai-response",
+			body:                      []byte(`{"tools":[{"type":"function","parameters":null,"parametersJsonSchema":{"description":"SECRET"}}]}`),
+			want:                      nil,
+			productionNoEligibleMatch: true,
+		},
+		{
+			name:   "Responses nonstring direct description suppresses nested fallback",
+			format: "openai-response",
+			body:   []byte(`{"tools":[{"type":"function","description":123,"function":{"description":"SECRET"},"parameters":{"description":"SECRET"}}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:   "Responses custom only selects nested description",
+			format: "openai-response",
+			body:   []byte(`{"tools":[{"type":"custom","description":null,"function":{"description":"SECRET","parameters":{"description":"SECRET"}},"output_schema":{"description":"SECRET"}}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:   "Responses additional user tools use nested function schema",
+			format: "openai-response",
+			body:   []byte(`{"input":[{"type":"additional_tools","role":"user","tools":[{"type":"","name":"lookup","function":{"description":"SECRET","parametersJsonSchema":{"description":"SECRET"}}}]}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "user"}, {Text: "SECRET", Role: "user"}},
+		},
+		{
+			name:   "Responses input_schema wins over nested function parameters",
+			format: "openai-response",
+			body:   []byte(`{"tools":[{"type":"function","input_schema":{"description":"SECRET"},"function":{"parameters":{"description":"SECRET shadow"}}}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}},
+		},
+		{
+			name:                      "Responses null type does not infer named function",
+			format:                    "openai-response",
+			body:                      []byte(`{"tools":[{"type":null,"name":"lookup","description":"SECRET","parameters":{"description":"SECRET"}}]}`),
+			want:                      nil,
+			productionNoEligibleMatch: true,
+		},
+		{
+			name:   "Responses output_schema survives null parameters",
+			format: "openai-response",
+			body:   []byte(`{"tools":[{"type":"function","parameters":null,"parametersJsonSchema":{"description":"SECRET shadow"},"output_schema":{"description":"SECRET"}}]}`),
+			want:   []oracleProtocolSpan{{Text: "SECRET", Role: "developer"}},
+		},
 		{
 			name:   "OpenAI local developer skill and approval reason",
 			format: "openai-response",
@@ -623,13 +740,17 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"},{"type":"thinking","thinking":"SECRET"}]}]}`)},
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"secret","content":[{"type":"text","text":"search SECRET tail"},{"type":"image","source":{"data":"SECRET"}}],"id":"SECRET","url":"https://SECRET","cache_metadata":{"SECRET":"SECRET"}},{"type":"document","title":"document SECRET tail","context":"context SECRET tail","source":{"type":"text","data":"data SECRET tail","text":"SECRET","media":"SECRET"},"id":"SECRET","citations":[{"url":"https://SECRET"}]},{"type":"document","source":{"type":"content","content":"scalar SECRET tail","data":"SECRET"}},{"type":"document","source":{"type":"content","content":[{"type":"text","text":"typed SECRET tail"},{"type":"image","source":{"data":"SECRET"}}]}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET"},{"text":"SECRET","inlineData":{"data":"SECRET"}}]}]}`)},
+		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"functionCall":{}}]},{"parts":[{"functionResponse":null},{"text":"SECRET"}]},{"parts":[{"text":"assistant SECRET"}]}]}`)},
+		{format: "gemini", body: []byte(`{"generationConfig":{"responseSchema":{"properties":{"field":{"description":"SECRET","default":"SECRET"}}},"responseJsonSchema":{"description":"SECRET"},"responseFormat":{"text":{"schema":{"description":"SECRET"}}}}}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thoughtSignature":"signature"}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thought_signature":"signature"}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","extra_content":{"google":{"thought_signature":"signature"}}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET","thought":false,"thought":true}]}]}`)},
 		{format: "openai", body: []byte(`{"functions":[{"description":"SECRET"}],"response_format":{"type":"json_schema","json_schema":{"schema":{"type":"object","description":"SECRET"}}}}`)},
-		{format: "openai-response", body: []byte(`{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}},"tools":[{"type":"function","description":"SECRET"}]}`)},
-		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"SECRET"}]}]}`)},
+		{format: "openai-response", body: []byte(`{"prompt":{"variables":{"name":[{"type":"input_text","text":"SECRET"}]}},"tools":[{"type":"function","description":"tool SECRET tail"}]}`)},
+		{format: "openai-response", body: []byte(`{"tools":[{"name":"lookup","function":{"description":"SECRET","parameters":{"description":"SECRET"}}},{"type":"custom","description":null,"function":{"description":"SECRET","parameters":{"description":"SECRET"}}}]}`)},
+		{format: "openai-response", body: []byte(`{"tools":[{"type":"function","parameters":null,"parametersJsonSchema":{"description":"SECRET"},"output_schema":{"description":"SECRET"}}],"input":[{"type":"additional_tools","role":"user","tools":[{"type":"","name":"lookup","function":{"parametersJsonSchema":{"description":"SECRET"}}}]}]}`)},
+		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","description":"custom SECRET tail"}]}]}`)},
 		{format: "openai-response", body: []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"shell","environment":{"type":"local","skills":[{"description":"SECRET"}]}}]},{"type":"mcp_approval_response","approve":true,"approval_request_id":"id","reason":"SECRET"}]}`)},
 		{format: "claude", body: []byte(`{"context_management":{"edits":[{"type":"compact_20260112","instructions":"SECRET"}]},"messages":[{"role":"user","content":[{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`)},
 		{format: "interactions", body: []byte(`{"tools":[{"type":"function","description":"SECRET","parameters":{"description":"SECRET"}}],"response_format":{"type":"text","schema":{"description":"SECRET"}},"input":[{"type":"function_result","result":"SECRET"},{"type":"mcp_server_tool_result","result":[{"type":"text","text":"SECRET"}]},{"type":"code_execution_result","result":"SECRET","signature":"sig"}]}`)},
@@ -1375,10 +1496,19 @@ func oracleJSONHasType(object json.RawMessage, want string) bool {
 	return ok && value == want
 }
 
+func oracleJSONValueHasText(raw json.RawMessage) bool {
+	if text, ok := oracleStrictJSONString(raw); ok {
+		return text != ""
+	}
+	return len(raw) != 0 && !bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
 func oracleAppendOpenAIResponsesTool(spans *[]oracleProtocolSpan, tool json.RawMessage, role string) {
 	typeName, ok := oracleStringField(tool, "type")
 	if !ok {
-		return
+		if _, exists := oracleFirstField(tool, "type"); exists {
+			return
+		}
 	}
 	if typeName == "shell" {
 		environment, ok := oracleFirstField(tool, "environment")
@@ -1396,19 +1526,41 @@ func oracleAppendOpenAIResponsesTool(spans *[]oracleProtocolSpan, tool json.RawM
 		})
 		return
 	}
-	switch typeName {
-	case "function":
-		if description, ok := oracleFirstField(tool, "description"); ok {
-			oracleAppendString(spans, description, role)
+	function, _ := oracleFirstField(tool, "function")
+	if typeName == "" {
+		name, _ := oracleFirstField(tool, "name")
+		functionName, _ := oracleFirstField(function, "name")
+		if oracleJSONValueHasText(name) || oracleJSONValueHasText(functionName) {
+			typeName = "function"
 		}
-		for _, key := range []string{"parameters", "output_schema"} {
-			if schema, ok := oracleFirstField(tool, key); ok {
+	}
+	switch typeName {
+	case "function", "custom":
+		description, _ := oracleFirstField(tool, "description")
+		if !oracleJSONValueHasText(description) {
+			description, _ = oracleFirstField(function, "description")
+		}
+		oracleAppendString(spans, description, role)
+		if typeName == "function" {
+			schema, exists := oracleFirstField(tool, "parameters")
+			if !exists {
+				schema, exists = oracleFirstField(tool, "parametersJsonSchema")
+			}
+			if !exists {
+				schema, exists = oracleFirstField(tool, "input_schema")
+			}
+			if !exists {
+				schema, exists = oracleFirstField(function, "parameters")
+			}
+			if !exists {
+				schema, exists = oracleFirstField(function, "parametersJsonSchema")
+			}
+			if exists {
 				oracleAppendJSONSchemaDescriptions(spans, schema, role)
 			}
-		}
-	case "custom":
-		if description, ok := oracleFirstField(tool, "description"); ok {
-			oracleAppendString(spans, description, role)
+			if schema, ok := oracleFirstField(tool, "output_schema"); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, role)
+			}
 		}
 	case "namespace":
 		if description, ok := oracleFirstField(tool, "description"); ok {
@@ -1665,6 +1817,20 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 }
 
 func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
+	if config, ok := oracleFirstField(root, "generationConfig"); ok {
+		for _, key := range []string{"responseSchema", "responseJsonSchema"} {
+			if schema, ok := oracleFirstField(config, key); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+		if format, ok := oracleFirstField(config, "responseFormat"); ok {
+			if text, ok := oracleFirstField(format, "text"); ok {
+				if schema, ok := oracleFirstField(text, "schema"); ok {
+					oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+				}
+			}
+		}
+	}
 	for _, name := range []string{"systemInstruction", "system_instruction"} {
 		if instruction, ok := oracleFirstField(root, name); ok {
 			oracleGeminiParts(instruction, "system", spans)
@@ -1677,12 +1843,23 @@ func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 	previousRole := ""
 	oracleForEachArray(contents, func(content json.RawMessage) {
 		role := ""
+		nextRole := oracleNextGeminiRole(previousRole)
+		if parts, ok := oracleFirstField(content, "parts"); ok {
+			oracleForEachArray(parts, func(part json.RawMessage) {
+				if _, ok := oracleFirstField(part, "functionResponse"); ok {
+					nextRole = "user"
+				}
+				if _, ok := oracleFirstField(part, "function_response"); ok {
+					nextRole = "user"
+				}
+			})
+		}
 		rawRole, exists := oracleFirstField(content, "role")
 		missingRole := !exists || bytes.Equal(bytes.TrimSpace(rawRole), []byte("null"))
 		if !missingRole {
 			var value string
 			if json.Unmarshal(rawRole, &value) != nil {
-				previousRole = oracleNextGeminiRole(previousRole)
+				previousRole = nextRole
 				return
 			}
 			if value == "" {
@@ -1696,13 +1873,13 @@ func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 					role = "assistant"
 					previousRole = value
 				default:
-					previousRole = oracleNextGeminiRole(previousRole)
+					previousRole = nextRole
 					return
 				}
 			}
 		}
 		if missingRole {
-			previousRole = oracleNextGeminiRole(previousRole)
+			previousRole = nextRole
 			if previousRole == "user" {
 				role = "user"
 			} else {
@@ -2081,10 +2258,16 @@ func oracleRawOpenAISpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	}
 }
 
+func oracleRawValueHasText(value *oracleRawValue) bool {
+	return value != nil && (value.kind != 's' || value.text != "") && (value.kind != 'p' || value.text != "null")
+}
+
 func oracleRawAppendOpenAIResponsesTool(spans *[]oracleRawStringToken, tool *oracleRawValue, role string) {
 	typeName, ok := oracleRawStringField(tool, "type")
 	if !ok {
-		return
+		if _, exists := tool.firstField("type"); exists {
+			return
+		}
 	}
 	if typeName == "shell" {
 		environment, ok := tool.firstField("environment")
@@ -2102,19 +2285,41 @@ func oracleRawAppendOpenAIResponsesTool(spans *[]oracleRawStringToken, tool *ora
 		}
 		return
 	}
-	switch typeName {
-	case "function":
-		if description, ok := tool.firstField("description"); ok {
-			oracleRawAppendString(spans, description, role)
+	function, _ := tool.firstField("function")
+	if typeName == "" {
+		name, _ := tool.firstField("name")
+		functionName, _ := function.firstField("name")
+		if oracleRawValueHasText(name) || oracleRawValueHasText(functionName) {
+			typeName = "function"
 		}
-		for _, key := range []string{"parameters", "output_schema"} {
-			if schema, ok := tool.firstField(key); ok {
+	}
+	switch typeName {
+	case "function", "custom":
+		description, _ := tool.firstField("description")
+		if !oracleRawValueHasText(description) {
+			description, _ = function.firstField("description")
+		}
+		oracleRawAppendString(spans, description, role)
+		if typeName == "function" {
+			schema, exists := tool.firstField("parameters")
+			if !exists {
+				schema, exists = tool.firstField("parametersJsonSchema")
+			}
+			if !exists {
+				schema, exists = tool.firstField("input_schema")
+			}
+			if !exists {
+				schema, exists = function.firstField("parameters")
+			}
+			if !exists {
+				schema, exists = function.firstField("parametersJsonSchema")
+			}
+			if exists {
 				oracleRawAppendJSONSchemaDescriptions(spans, schema, role)
 			}
-		}
-	case "custom":
-		if description, ok := tool.firstField("description"); ok {
-			oracleRawAppendString(spans, description, role)
+			if schema, ok := tool.firstField("output_schema"); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, role)
+			}
 		}
 	case "namespace":
 		if description, ok := tool.firstField("description"); ok {
@@ -2392,6 +2597,20 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 }
 
 func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	if config, ok := root.firstField("generationConfig"); ok {
+		for _, key := range []string{"responseSchema", "responseJsonSchema"} {
+			if schema, ok := config.firstField(key); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+			}
+		}
+		if format, ok := config.firstField("responseFormat"); ok {
+			if text, ok := format.firstField("text"); ok {
+				if schema, ok := text.firstField("schema"); ok {
+					oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+				}
+			}
+		}
+	}
 	for _, name := range []string{"systemInstruction", "system_instruction"} {
 		if instruction, ok := root.firstField(name); ok {
 			oracleRawGeminiParts(instruction, "system", spans)
@@ -2404,11 +2623,22 @@ func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	previousRole := ""
 	for _, content := range contents.array {
 		role := ""
+		nextRole := oracleNextGeminiRole(previousRole)
+		if parts, ok := content.firstField("parts"); ok && parts.kind == 'a' {
+			for _, part := range parts.array {
+				if _, ok := part.firstField("functionResponse"); ok {
+					nextRole = "user"
+				}
+				if _, ok := part.firstField("function_response"); ok {
+					nextRole = "user"
+				}
+			}
+		}
 		rawRole, exists := content.firstField("role")
 		missingRole := !exists || (rawRole.kind == 'p' && rawRole.text == "null")
 		if !missingRole {
 			if rawRole.kind != 's' {
-				previousRole = oracleNextGeminiRole(previousRole)
+				previousRole = nextRole
 				continue
 			}
 			if rawRole.text == "" {
@@ -2422,13 +2652,13 @@ func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 					role = "assistant"
 					previousRole = rawRole.text
 				default:
-					previousRole = oracleNextGeminiRole(previousRole)
+					previousRole = nextRole
 					continue
 				}
 			}
 		}
 		if missingRole {
-			previousRole = oracleNextGeminiRole(previousRole)
+			previousRole = nextRole
 			if previousRole == "user" {
 				role = "user"
 			} else {
