@@ -24,6 +24,10 @@ func TestHTTPClaudeDescriptionsBlockBeforeUpstream(t *testing.T) {
 			name: "output schema property description",
 			body: `{"model":"censorship-integration-model","max_tokens":16,"messages":[{"role":"user","content":"safe"}],"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET answer"}}}}}}`,
 		},
+		{
+			name: "legacy output_format schema property description",
+			body: `{"model":"censorship-integration-model","max_tokens":16,"messages":[{"role":"user","content":"safe"}],"output_format":{"type":"json_schema","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET answer"}}}}}`,
+		},
 	}
 
 	for _, tt := range tests {

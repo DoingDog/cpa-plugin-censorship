@@ -395,6 +395,57 @@ func TestHTTPResponsesDeveloperInstructionsBlock(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsesNestedFunctionDescriptionsBlock(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "top-level tools function description",
+			body: `{"model":"censorship-integration-model","input":"safe","tools":[{"type":"function","function":{"name":"lookup","description":"SECRET lookup","parameters":{"type":"object","properties":{"query":{"type":"string","description":"safe"}}}}}]}`,
+		},
+		{
+			name: "developer additional_tools schema description",
+			body: `{"model":"censorship-integration-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"safe"}]},{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","function":{"description":"safe","parameters":{"type":"object","properties":{"query":{"type":"string","description":"SECRET query"}}}}}]}]}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, _, body := postJSON(t, cpa.baseURL+"/v1/responses", []byte(tc.body))
+			response, err := decodeCensorshipError(body)
+			if err != nil || status != 400 || response.Error.Code != "censorship_blocked" || response.Error.Role != "developer" {
+				t.Fatalf("status=%d body=%s error=%v", status, body, err)
+			}
+			if upstream.arrivalCount() != 0 {
+				t.Fatal("blocked Responses function reached upstream")
+			}
+		})
+	}
+}
+
+func TestHTTPResponsesNestedFunctionDescriptionsStrip(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"model":"censorship-integration-model","input":"safe","tools":[{"type":"function","function":{"name":"SECRET_lookup","description":"before SECRET after","parameters":{"type":"object","properties":{"query":{"type":"string","description":"SECRET query","enum":["SECRET"]}}}}}]}`)
+	status, _, response := postJSON(t, cpa.baseURL+"/v1/responses", body)
+	if status != 200 || upstream.arrivalCount() != 1 {
+		t.Fatalf("status=%d body=%s upstream arrivals=%d", status, response, upstream.arrivalCount())
+	}
+	captured := upstream.lastRequest()
+	for path, want := range map[string]string{
+		"tools.0.function.description":                             "before  after",
+		"tools.0.function.parameters.properties.query.description": " query",
+		"tools.0.function.name":                                    "SECRET_lookup",
+		"tools.0.function.parameters.properties.query.type":        "string",
+		"tools.0.function.parameters.properties.query.enum.0":      "SECRET",
+	} {
+		if got := gjson.GetBytes(captured, path).String(); got != want {
+			t.Errorf("upstream %s = %q, want %q; body = %s", path, got, want, captured)
+		}
+	}
+}
+
 func TestHTTPResponsesAnnotatedReplayRejectsRewrite(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
@@ -490,6 +541,20 @@ func TestHTTPGeminiSignedHistoryBlockReturnsLocalError(t *testing.T) {
 	}
 }
 
+func TestHTTPGeminiFunctionResponseUsesUserScope(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  block: [SECRET]\nscope:\n  roles: [user]\n")
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"safe"}]},{"parts":[{"functionResponse":{"name":"lookup","response":{"result":"safe"}}},{"text":"SECRET answer"}]}]}`)
+	status, _, responseBody := postJSON(t, cpa.baseURL+"/v1beta/models/censorship-integration-model:generateContent", body)
+	response, err := decodeCensorshipError(responseBody)
+	if err != nil || status != 400 || response.Error.Code != "censorship_blocked" || response.Error.Role != "user" {
+		t.Fatalf("status=%d body=%s error=%v", status, responseBody, err)
+	}
+	if upstream.arrivalCount() != 0 {
+		t.Fatal("blocked Gemini function response reached upstream")
+	}
+}
+
 func TestHTTPGeminiSnakeFunctionDeclarationBlocks(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
@@ -501,6 +566,39 @@ func TestHTTPGeminiSnakeFunctionDeclarationBlocks(t *testing.T) {
 	}
 	if upstream.arrivalCount() != 0 {
 		t.Fatal("blocked Gemini function declaration reached upstream")
+	}
+}
+
+func TestHTTPGeminiResponseSchemaDescriptionsBlock(t *testing.T) {
+	upstream := newMockUpstream(t)
+	cpa := startCPA(t, upstream.URL, true, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "generationConfig.responseSchema",
+			body: `{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseMimeType":"application/json","responseSchema":{"type":"OBJECT","properties":{"answer":{"type":"STRING","description":"SECRET answer"}}}}}`,
+		},
+		{
+			name: "generationConfig.responseJsonSchema",
+			body: `{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseMimeType":"application/json","responseJsonSchema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET answer"}}}}}`,
+		},
+		{
+			name: "generationConfig.responseFormat.text.schema",
+			body: `{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseFormat":{"text":{"mimeType":"application/json","schema":{"type":"object","properties":{"answer":{"type":"string","description":"SECRET answer"}}}}}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, _, body := postJSON(t, cpa.baseURL+"/v1beta/models/censorship-integration-model:generateContent", []byte(tc.body))
+			response, err := decodeCensorshipError(body)
+			if err != nil || status != 400 || response.Error.Code != "censorship_blocked" || response.Error.Role != "developer" {
+				t.Fatalf("status=%d body=%s error=%v", status, body, err)
+			}
+			if upstream.arrivalCount() != 0 {
+				t.Fatal("blocked Gemini response schema reached upstream")
+			}
+		})
 	}
 }
 
