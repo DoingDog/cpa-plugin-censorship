@@ -2,12 +2,190 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+func openAIStringToken(t *testing.T, text string) string {
+	t.Helper()
+	token, err := json.Marshal(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(token)
+}
+
+func TestOpenAIEncodedMultimodalToolResults(t *testing.T) {
+	for _, entry := range []struct {
+		name, source, body string
+	}{
+		{"chat tool", "openai", `{"messages":[{"role":"tool","tool_call_id":"SECRET call","content":%s}]}`},
+		{"chat function", "openai", `{"messages":[{"role":"function","name":"SECRET name","content":%s}]}`},
+		{"responses function", "openai-response", `{"input":[{"type":"function_call_output","call_id":"SECRET call","output":%s}]}`},
+		{"responses custom", "openai-response", `{"input":[{"type":"custom_tool_call_output","call_id":"SECRET call","output":%s}]}`},
+	} {
+		for _, action := range []struct{ name, replacement string }{
+			{"block", ""}, {"strip", " tail"}, {"obfs", "S​ECRET tail"},
+		} {
+			for _, fixture := range []struct {
+				name, inner string
+				text        bool
+			}{
+				{"text types", `[{"type":"text","text":"SECRET tail"},{"type":"input_text","text":"SECRET tail"},{"type":"output_text","text":"SECRET tail"},{"type":"image_url","image_url":{"url":"https://example.test/SECRET.png"}},{"type":"unknown","text":"SECRET unknown"}]`, true},
+				{"machine only", `[{"type":"text","text":"safe"},{"type":"input_image","image_url":"https://example.test/SECRET.png","file_id":"SECRET file"},{"type":"unknown","text":"SECRET unknown"}]`, false},
+				{"image only", `[{"type":"image_url","image_url":{"url":"https://example.test/SECRET.png"}}]`, false},
+				{"file id only", `[{"type":"input_image","file_id":"SECRET file"}]`, false},
+			} {
+				t.Run(entry.name+"/"+action.name+"/"+fixture.name, func(t *testing.T) {
+					registerConfig(t, "words:\n  "+action.name+": [SECRET]\nscope:\n  roles: [tool]\n")
+					token := openAIStringToken(t, fixture.inner)
+					body := []byte(fmt.Sprintf(entry.body, token))
+					resp := interceptRPC(t, entry.source, body)
+					if !fixture.text {
+						requireNoOpResponse(t, resp)
+						return
+					}
+					if action.name == "block" {
+						if !resp.Terminate || resp.StatusCode != 400 || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "tool" || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "SECRET" {
+							t.Fatalf("response = %#v", resp)
+						}
+						return
+					}
+					inner := strings.ReplaceAll(fixture.inner, `"SECRET tail"`, `"`+action.replacement+`"`)
+					want := []byte(fmt.Sprintf(entry.body, openAIStringToken(t, inner)))
+					if resp.Terminate || !bytes.Equal(resp.Body, want) {
+						t.Fatalf("body = %s, want %s, terminate = %t", resp.Body, want, resp.Terminate)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestOpenAIEncodedMultimodalBoundaries(t *testing.T) {
+	const carrier = `[{"type":"text","text":"SECRET tail"},{"type":"image_url","image_url":{"url":"https://example.test/SECRET.png"}}]`
+	for _, tc := range []struct {
+		name, source, roles, body, inner, wantInner string
+	}{
+		{"tool disabled", "openai", "user", `{"messages":[{"role":"tool","content":%s},{"role":"function","content":%s}]}`, carrier, ""},
+		{"responses disabled", "openai-response", "user", `{"input":[{"type":"function_call_output","output":%s},{"type":"custom_tool_call_output","output":%s}]}`, carrier, ""},
+		{"plain JSON scalar", "openai", "tool", `{"messages":[{"role":"tool","content":%s}]}`, `{"url":"SECRET"}`, `{"url":""}`},
+		{"array without image remains scalar", "openai-response", "tool", `{"input":[{"type":"function_call_output","output":%s}]}`, `[{"type":"unknown","text":"SECRET"}]`, `[{"type":"unknown","text":""}]`},
+		{"user scalar remains ordinary", "openai", "user", `{"messages":[{"role":"user","content":%s}]}`, carrier, `[{"type":"text","text":" tail"},{"type":"image_url","image_url":{"url":"https://example.test/.png"}}]`},
+		{"shell scalar remains ordinary", "openai-response", "tool", `{"input":[{"type":"local_shell_call_output","output":%s}]}`, carrier, `[{"type":"text","text":" tail"},{"type":"image_url","image_url":{"url":"https://example.test/.png"}}]`},
+		{"MCP scalar remains ordinary", "openai-response", "tool", `{"input":[{"type":"mcp_call","output":%s}]}`, carrier, `[{"type":"text","text":" tail"},{"type":"image_url","image_url":{"url":"https://example.test/.png"}}]`},
+		{"no cross-node match", "openai", "tool", `{"messages":[{"role":"tool","content":%s}]}`, `[{"type":"text","text":"SEC"},{"type":"text","text":"RET"},{"type":"input_image","file_id":"SECRET"}]`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: ["+tc.roles+"]\n")
+			token := openAIStringToken(t, tc.inner)
+			body := []byte(strings.ReplaceAll(tc.body, "%s", token))
+			resp := interceptRPC(t, tc.source, body)
+			if tc.wantInner == "" {
+				requireNoOpResponse(t, resp)
+				return
+			}
+			want := []byte(strings.ReplaceAll(tc.body, "%s", openAIStringToken(t, tc.wantInner)))
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body = %s, want %s", resp.Body, want)
+			}
+		})
+	}
+
+	t.Run("actual arrays keep existing text selection", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [tool]\n")
+		for _, tc := range []struct{ source, body, selected string }{
+			{"openai", `{"messages":[{"role":"tool","content":[{"type":"text","text":"SECRET chat"},{"type":"input_text","text":"SECRET excluded"},{"type":"output_text","text":"SECRET output"},{"type":"input_image","file_id":"SECRET file"}]}]}`, "chat"},
+			{"openai-response", `{"input":[{"type":"function_call_output","output":[{"type":"input_text","text":"SECRET input"},{"type":"text","text":"SECRET excluded"},{"type":"output_text","text":"SECRET output"},{"type":"input_image","file_id":"SECRET file"}]}]}`, "input"},
+		} {
+			body := []byte(tc.body)
+			resp := interceptRPC(t, tc.source, body)
+			want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET ` + tc.selected + `"`, After: `" ` + tc.selected + `"`})
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("%s body = %s, want %s", tc.source, resp.Body, want)
+			}
+		}
+	})
+}
+
+func TestOpenAIEncodedMultimodalGlobalOrderAndCancellation(t *testing.T) {
+	makeInner := func(text string) string {
+		return `[{"type":"text","text":` + openAIStringToken(t, text) + `},{"type":"input_image","file_id":"SECRET file"}]`
+	}
+	t.Run("global rule-major and earliest outer token", func(t *testing.T) {
+		body := []byte(`{"messages":[{"role":"tool","content":` + openAIStringToken(t, makeInner("EARLY")) + `},{"role":"user","content":"LATE"},{"role":"tool","content":` + openAIStringToken(t, makeInner("LATE")) + `}]}`)
+		registerConfig(t, "words:\n  block: [LATE, EARLY]\nscope:\n  roles: [user, tool]\n")
+		resp := interceptRPC(t, "openai", body)
+		if !resp.Terminate || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "LATE" || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "user" {
+			t.Fatalf("response = %#v", resp)
+		}
+	})
+	t.Run("multiple parents and strip cascade", func(t *testing.T) {
+		first, second := makeInner("aXb"), makeInner("cc")
+		body := []byte(`{"input":[{"type":"function_call_output","output":` + openAIStringToken(t, first) + `},{"type":"custom_tool_call_output","output":` + openAIStringToken(t, second) + `},{"type":"program_output","result":"CHANGE"}]}`)
+		registerConfig(t, "words:\n  strip: [X, ab, CHANGE]\n  obfs: [cc, cc]\nscope:\n  roles: [tool]\n")
+		resp := interceptRPC(t, "openai-response", body)
+		want := replaceRawTokens(t, body,
+			rawReplacement{Before: openAIStringToken(t, first), After: openAIStringToken(t, makeInner(""))},
+			rawReplacement{Before: openAIStringToken(t, second), After: openAIStringToken(t, makeInner("c​c"))},
+			rawReplacement{Before: `"CHANGE"`, After: `""`},
+		)
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("body = %s, want %s", resp.Body, want)
+		}
+	})
+	t.Run("cancelled parent keeps original escaped token", func(t *testing.T) {
+		inner := `[{"type":"text","text":"a​b"},{"type":"input_image","file_id":"SECRET"}]`
+		token := strings.Replace(openAIStringToken(t, inner), "[", "\\u005b", 1)
+		body := []byte(`{"input":[{"type":"function_call_output","output":` + token + `},{"type":"custom_tool_call_output","output":"CHANGE"}]}`)
+		registerConfig(t, "words:\n  strip: ['​', CHANGE]\n  obfs: [ab]\nscope:\n  roles: [tool]\n")
+		resp := interceptRPC(t, "openai-response", body)
+		want := replaceRawTokens(t, body, rawReplacement{Before: `"CHANGE"`, After: `""`})
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("body = %s, want %s", resp.Body, want)
+		}
+	})
+}
+
+func TestOpenAIEncodedMultimodalPreservesValidPNG(t *testing.T) {
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewNRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+	inner := `[{"type":"input_text","text":"SECRET tail"},{"type":"input_image","image_url":` + openAIStringToken(t, url) + `}]`
+	for _, action := range []struct{ name, replacement string }{{"strip", " tail"}, {"obfs", "S​ECRET tail"}} {
+		t.Run(action.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  "+action.name+": [iVBOR, SECRET]\nscope:\n  roles: [tool]\n")
+			body := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + openAIStringToken(t, inner) + `}]}`)
+			resp := interceptRPC(t, "openai-response", body)
+			wantInner := strings.Replace(inner, `"SECRET tail"`, openAIStringToken(t, action.replacement), 1)
+			want := replaceRawTokens(t, body, rawReplacement{Before: openAIStringToken(t, inner), After: openAIStringToken(t, wantInner)})
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body = %s, want %s", resp.Body, want)
+			}
+			gotURL := gjson.Parse(gjson.GetBytes(resp.Body, "input.0.output").Str).Get("1.image_url").Str
+			if gotURL != url {
+				t.Fatalf("image URL changed: %s", gotURL)
+			}
+			data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(gotURL, "data:image/png;base64,"))
+			if err != nil || !bytes.Equal(data, encoded.Bytes()) {
+				t.Fatalf("PNG bytes changed, decode error = %v", err)
+			}
+			decoded, err := png.Decode(bytes.NewReader(data))
+			if err != nil || decoded.Bounds() != image.Rect(0, 0, 2, 2) {
+				t.Fatalf("PNG decode error = %v", err)
+			}
+		})
+	}
+}
 
 func TestOpenAISelectorChangesOnlyContractedStringTokens(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, developer, user, assistant, tool]\n")

@@ -69,7 +69,11 @@ func collectOpenAI(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				return true
 			}
 			content := message.Get("content")
-			appendStringSpan(spans, content, roleName, roles)
+			if roleName == "tool" {
+				appendToolResultStringSpan(spans, content, roleName, roles)
+			} else {
+				appendStringSpan(spans, content, roleName, roles)
+			}
 			if roleName == "assistant" {
 				appendStringSpan(spans, message.Get("refusal"), roleName, roles)
 			}
@@ -150,7 +154,7 @@ func openAIResponsesRole(item gjson.Result) (string, bool) {
 }
 
 func appendOpenAIResponsesInputTextOutput(output gjson.Result, roles scopeSet, spans *[]textSpan) {
-	appendStringSpan(spans, output, "tool", roles)
+	appendToolResultStringSpan(spans, output, "tool", roles)
 	if !output.IsArray() {
 		return
 	}
