@@ -13,6 +13,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/tidwall/gjson"
 )
 
 func TestBeforeAuthBenchmarkFixtureResult(t *testing.T) {
@@ -584,6 +585,91 @@ func BenchmarkExactBlockMatcherBuild(b *testing.B) {
 
 func BenchmarkFoldedRewriteStrategies(b *testing.B) {
 	runBenchmarkFoldedRewriteStrategies(b)
+}
+
+func BenchmarkEscapedTextTransform(b *testing.B) {
+	for _, action := range []string{"miss", "strip", "obfs"} {
+		b.Run(action, func(b *testing.B) {
+			phase, term := action, "example"
+			if action == "miss" {
+				phase, term = "strip", "NEVER-MATCH"
+			}
+			cfg := mustBenchmarkConfig(b, "words:\n  "+phase+": ["+term+"]\n")
+			u := string([]byte{92}) + "u"
+			raw := `"` + strings.Repeat(u+"d800"+u+"0065xample"+`\n`, 128) + `"`
+			body := []byte(`{"messages":[{"role":"user","content":` + raw + `}]}`)
+			wantText := strings.Repeat("�example\n", 128)
+			if action == "strip" {
+				wantText = strings.Repeat("�\n", 128)
+			} else if action == "obfs" {
+				wantText = strings.Repeat("�e​xample\n", 128)
+			}
+			got, err := transformRequest(body, "openai", cfg)
+			if err != nil || got.Invalid || got.Blocked != nil {
+				b.Fatalf("result=%#v err=%v", got, err)
+			}
+			if action == "miss" {
+				if got.Body != nil {
+					b.Fatalf("miss replaced body: %q", got.Body)
+				}
+			} else {
+				var text string
+				if err := json.Unmarshal([]byte(gjson.GetBytes(got.Body, "messages.0.content").Raw), &text); err != nil || text != wantText {
+					b.Fatalf("text=%q want=%q err=%v", text, wantText, err)
+				}
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(body)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
+			}
+		})
+	}
+}
+
+func BenchmarkEncodedToolResultTransform(b *testing.B) {
+	for _, action := range []string{"miss", "strip", "obfs"} {
+		b.Run(action, func(b *testing.B) {
+			phase, term := action, "example"
+			if action == "miss" {
+				phase, term = "strip", "NEVER-MATCH"
+			}
+			cfg := mustBenchmarkConfig(b, "words:\n  "+phase+": ["+term+"]\n")
+			u := string([]byte{92}) + "u"
+			inner := `[{"type":"text","text":"` + strings.Repeat(u+"d800"+u+"0065xample"+`\n`, 128) + `"},` + encodedTestImage + `]`
+			body, _ := encodedResultFixture(b, inner)
+			transform := func() (transformResult, error) {
+				var spans []textSpan
+				appendToolResultStringSpan(&spans, gjson.ParseBytes(body).Get("output"), "tool", scopeSet{"tool": {}})
+				return transformSelectedSpans(body, spans, cfg)
+			}
+			got, err := transform()
+			if err != nil || got.Invalid || got.Blocked != nil {
+				b.Fatalf("result=%#v err=%v", got, err)
+			}
+			if action == "miss" {
+				if got.Body != nil {
+					b.Fatalf("miss replaced body: %q", got.Body)
+				}
+			} else {
+				wantText := strings.Repeat("�\n", 128)
+				if action == "obfs" {
+					wantText = strings.Repeat("�e​xample\n", 128)
+				}
+				want := `[{"type":"text","text":` + benchmarkQuote(wantText) + `},` + encodedTestImage + `]`
+				if decodedResultOutput(b, got.Body) != want {
+					b.Fatalf("output=%q want=%q", decodedResultOutput(b, got.Body), want)
+				}
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(body)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchmarkTransformSink, benchmarkErrorSink = transform()
+			}
+		})
+	}
 }
 
 func BenchmarkMixedTransformScenario(b *testing.B) {

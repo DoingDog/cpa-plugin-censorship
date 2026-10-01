@@ -20,6 +20,7 @@ type textSpan struct {
 	UnmodifiedMessage  string
 	NestedDescription  *textSpan
 	NestedNonString    bool
+	EncodedChildren    []textSpan
 }
 
 const (
@@ -71,7 +72,34 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 }
 
 func transformSelectedSpans(body []byte, spans []textSpan, cfg *configSnapshot) (transformResult, error) {
-	blocked, changed := applyMode(spans, cfg)
+	if err := sortAndValidateSpans(spans, len(body)); err != nil {
+		return transformResult{}, err
+	}
+	flat := spans
+	var flatStarts []int
+	for _, span := range spans {
+		if span.EncodedChildren != nil {
+			flatStarts = make([]int, len(spans)+1)
+			flat = make([]textSpan, 0, len(spans))
+			break
+		}
+	}
+	if flatStarts != nil {
+		// 内外层 offset 使用不同坐标，flat 按外层 token 顺序展开后不再排序。
+		for i, span := range spans {
+			flatStarts[i] = len(flat)
+			if span.EncodedChildren == nil {
+				flat = append(flat, span)
+				continue
+			}
+			if err := sortAndValidateSpans(span.EncodedChildren, len(span.Text)); err != nil {
+				return transformResult{}, err
+			}
+			flat = append(flat, span.EncodedChildren...)
+		}
+		flatStarts[len(spans)] = len(flat)
+	}
+	blocked, changed := applyMode(flat, cfg)
 	if blocked != nil {
 		return transformResult{Blocked: blocked}, nil
 	}
@@ -80,7 +108,7 @@ func transformSelectedSpans(body []byte, spans []textSpan, cfg *configSnapshot) 
 	}
 	var activated []textSpan
 	nonStringNested := false
-	for _, span := range spans {
+	for _, span := range flat {
 		if !span.Changed || span.Text != "" {
 			continue
 		}
@@ -99,31 +127,66 @@ func transformSelectedSpans(body []byte, spans []textSpan, cfg *configSnapshot) 
 	if nonStringNested {
 		return transformResult{Invalid: true, InvalidMessage: "censorship cannot rewrite non-string tool description"}, nil
 	}
+	if flatStarts != nil {
+		for i := range spans {
+			selected := flat[flatStarts[i]:flatStarts[i+1]]
+			if spans[i].EncodedChildren == nil {
+				spans[i] = selected[0]
+				continue
+			}
+			spans[i].EncodedChildren = selected
+			spans[i].Changed = false
+			for _, child := range selected {
+				spans[i].Changed = spans[i].Changed || child.Changed
+			}
+			if !spans[i].Changed {
+				continue
+			}
+			inner, err := rebuildBody([]byte(spans[i].Text), selected)
+			if err != nil {
+				return transformResult{}, err
+			}
+			spans[i].Text = string(inner)
+		}
+	}
 	for _, span := range activated {
 		if span.Changed {
 			spans = append(spans, span)
 		}
 	}
 	if len(activated) > 0 {
-		sort.Slice(spans, func(i, j int) bool { return spans[i].RawStart < spans[j].RawStart })
+		if err := sortAndValidateSpans(spans, len(body)); err != nil {
+			return transformResult{}, err
+		}
 	}
 	for _, span := range spans {
-		if span.Changed && span.RequiresUnmodified {
-			message := span.UnmodifiedMessage
-			if message == "" {
-				message = "censorship cannot rewrite signature-bound text"
-			}
+		if message := changedSpanInvalidMessage(span); message != "" {
 			return transformResult{Invalid: true, InvalidMessage: message}, nil
 		}
-		if span.Changed && span.RequiresNonEmpty && span.Text == "" {
-			return transformResult{
-				Invalid:        true,
-				InvalidMessage: "censorship rewrite would make a text field invalid",
-			}, nil
+		for _, child := range span.EncodedChildren {
+			if message := changedSpanInvalidMessage(child); message != "" {
+				return transformResult{Invalid: true, InvalidMessage: message}, nil
+			}
 		}
 	}
 	out, err := rebuildBody(body, spans)
 	return transformResult{Body: out}, err
+}
+
+func changedSpanInvalidMessage(span textSpan) string {
+	if !span.Changed {
+		return ""
+	}
+	if span.RequiresUnmodified {
+		if span.UnmodifiedMessage != "" {
+			return span.UnmodifiedMessage
+		}
+		return "censorship cannot rewrite signature-bound text"
+	}
+	if span.RequiresNonEmpty && span.Text == "" {
+		return "censorship rewrite would make a text field invalid"
+	}
+	return ""
 }
 
 func rulePhaseEnds(cfg *configSnapshot) (int, int) {

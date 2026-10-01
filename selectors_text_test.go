@@ -172,7 +172,7 @@ func TestSelectedTextNoOpPreservesBytes(t *testing.T) {
 			}
 		}
 	}
-	body := []byte(` { "input":"CHANGE", "n":1e+03, "unselected":"\ud800\u0065xample", "pair":"😀", "tools":[{"type":"function","name":"f","description":"keep","function":{"description":"\ud800\u0065xample"}}] } `)
+	body := []byte(` { "input":"CHANGE", "n":1e+03, "unselected":"\ud800\u0065xample", "pair":"\ud83d\ude00", "tools":[{"type":"function","name":"f","description":"keep","function":{"description":"\ud800\u0065xample"}}] } `)
 	want := bytes.Replace(body, []byte(`"CHANGE"`), []byte(`""`), 1)
 	result, err := transformRequest(body, "openai-response", mustConfig(t, "words:\n  strip: [CHANGE]\n"))
 	if err != nil || result.Invalid || result.Blocked != nil || !bytes.Equal(result.Body, want) {

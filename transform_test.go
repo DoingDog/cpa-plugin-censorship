@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -572,5 +575,377 @@ func TestExactBlockAcrossSpans(t *testing.T) {
 				t.Fatalf("matchExactBlock() = (%d, %q, %t), want (%d, %q, %t)", gotRule, gotRole, gotMatched, wantRule, wantRole, wantMatched)
 			}
 		})
+	}
+}
+
+const encodedTestImage = `{"type":"input_image","image_url":"https://example.test/SECRET.png","file_id":"SECRET-id"}`
+
+func encodedResultFixture(t testing.TB, inner string) ([]byte, []textSpan) {
+	t.Helper()
+	token, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := append([]byte(`{"output":`), token...)
+	body = append(body, '}')
+	var spans []textSpan
+	appendToolResultStringSpan(&spans, gjson.ParseBytes(body).Get("output"), "tool", scopeSet{"tool": {}})
+	return body, spans
+}
+
+func decodedResultOutput(t testing.TB, body []byte) string {
+	t.Helper()
+	var got struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("body=%q err=%v", body, err)
+	}
+	return got.Output
+}
+
+func TestEncodedToolResultPreservesImageAndMachineBytes(t *testing.T) {
+	for _, textType := range []string{"text", "input_text", "output_text"} {
+		for _, action := range []string{"block", "strip", "obfs"} {
+			t.Run(textType+"/"+action, func(t *testing.T) {
+				inner := `[ {"type":"` + textType + `","text":"SECRET tail","id":"SECRET"}, ` + encodedTestImage + `, {"type":"future","text":"SECRET machine","number":1e+03} ]`
+				body, spans := encodedResultFixture(t, inner)
+				result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  "+action+": [SECRET]\n"))
+				if err != nil || result.Invalid {
+					t.Fatalf("result=%#v err=%v", result, err)
+				}
+				if action == "block" {
+					if result.Body != nil || result.Blocked == nil || *result.Blocked != (blockMatch{Term: "SECRET", Role: "tool"}) {
+						t.Fatalf("result=%#v want tool block", result)
+					}
+					return
+				}
+				replacement := `" tail"`
+				if action == "obfs" {
+					replacement = `"S​ECRET tail"`
+				}
+				want := strings.Replace(inner, `"SECRET tail"`, replacement, 1)
+				if result.Blocked != nil || decodedResultOutput(t, result.Body) != want {
+					t.Fatalf("output=%q want=%q", decodedResultOutput(t, result.Body), want)
+				}
+			})
+		}
+	}
+}
+
+func TestEncodedToolResultRecognition(t *testing.T) {
+	for _, tc := range []struct {
+		name, inner string
+		carrier     bool
+	}{
+		{"input url", `[{"type":"input_image","image_url":"SECRET"}]`, true},
+		{"input file", `[{"type":"input_image","file_id":"SECRET"}]`, true},
+		{"chat url", `[{"type":"image_url","image_url":{"url":"SECRET"}}]`, true},
+		{"chat file", `[{"type":"image_url","image_url":{"file_id":"SECRET"}}]`, true},
+		{"empty input url", `[{"type":"input_image","image_url":"","id":"SECRET"}]`, false},
+		{"empty chat file", `[{"type":"image_url","image_url":{"file_id":""},"id":"SECRET"}]`, false},
+		{"wrong input url", `[{"type":"input_image","image_url":{"url":"SECRET"}}]`, false},
+		{"wrong chat url", `[{"type":"image_url","image_url":"SECRET"}]`, false},
+		{"wrong file type", `[{"type":"input_image","file_id":123,"id":"SECRET"}]`, false},
+		{"object", `{"type":"input_image","image_url":"SECRET"}`, false},
+		{"primitive", `"SECRET"`, false},
+		{"text array", `[{"type":"text","text":"SECRET"}]`, false},
+		{"plain", `SECRET note`, false},
+		{"invalid inner JSON", `[{"type":"input_image","image_url":"SECRET"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, spans := encodedResultFixture(t, tc.inner)
+			if len(spans) != 1 || (spans[0].EncodedChildren != nil) != tc.carrier {
+				t.Fatalf("spans=%#v want carrier=%t", spans, tc.carrier)
+			}
+			for _, action := range []string{"block", "strip", "obfs"} {
+				_, current := encodedResultFixture(t, tc.inner)
+				result, err := transformSelectedSpans(body, current, mustConfig(t, "words:\n  "+action+": [SECRET]\n"))
+				if err != nil || result.Invalid {
+					t.Fatalf("action=%s result=%#v err=%v", action, result, err)
+				}
+				if tc.carrier {
+					if result.Body != nil || result.Blocked != nil {
+						t.Fatalf("image-only carrier matched: %#v", result)
+					}
+				} else if action == "block" {
+					if result.Blocked == nil || result.Blocked.Term != "SECRET" {
+						t.Fatalf("ordinary string did not block: %#v", result)
+					}
+				} else {
+					replacement := ""
+					if action == "obfs" {
+						replacement = "S​ECRET"
+					}
+					want := strings.ReplaceAll(tc.inner, "SECRET", replacement)
+					if result.Blocked != nil || decodedResultOutput(t, result.Body) != want {
+						t.Fatalf("result=%#v want output=%q", result, want)
+					}
+				}
+			}
+			var disabled []textSpan
+			appendToolResultStringSpan(&disabled, gjson.ParseBytes(body).Get("output"), "tool", scopeSet{"user": {}})
+			if len(disabled) != 0 {
+				t.Fatalf("disabled role selected: %#v", disabled)
+			}
+		})
+	}
+}
+
+func TestEncodedToolResultGlobalRuleOrder(t *testing.T) {
+	for _, fold := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, text, inner, terms, wantTerm, wantRole string
+		}{
+			{"rule-major", "FIRST", `[{"type":"text","text":"SECOND"},` + encodedTestImage + `]`, "FIRST, SECOND", "FIRST", "user"},
+			{"earliest parent", "SECRET", `[{"type":"text","text":"SECRET"},` + encodedTestImage + `]`, "SECRET", "SECRET", "tool"},
+			{"earliest ordinary", "SECRET", `[{"type":"text","text":"SECRET"},` + encodedTestImage + `]`, "SECRET", "SECRET", "user"},
+			{"no cross-node", "RET", `[{"type":"text","text":"SEC"},{"type":"text","text":"RET"},` + encodedTestImage + `]`, "SECRET", "", ""},
+		} {
+			t.Run(fmt.Sprintf("%s/fold=%t", tc.name, fold), func(t *testing.T) {
+				body, _ := encodedResultFixture(t, tc.inner)
+				if tc.name == "earliest ordinary" {
+					body = []byte(`{"machine":"` + strings.Repeat("z", 128) + `","text":"` + tc.text + `","output":` + benchmarkQuote(tc.inner) + `}`)
+				} else {
+					body = append(body[:len(body)-1], []byte(`,"text":"`+tc.text+`"}`)...)
+				}
+				root := gjson.ParseBytes(body)
+				var spans []textSpan
+				appendStringSpan(&spans, root.Get("text"), "user", scopeSet{"user": {}})
+				appendToolResultStringSpan(&spans, root.Get("output"), "tool", scopeSet{"tool": {}})
+				result, err := transformSelectedSpans(body, spans, mustConfig(t, fmt.Sprintf("words:\n  block: [%s]\nignore_case: %t\n", tc.terms, fold)))
+				if err != nil || result.Invalid || result.Body != nil {
+					t.Fatalf("result=%#v err=%v", result, err)
+				}
+				if tc.wantTerm == "" {
+					if result.Blocked != nil {
+						t.Fatalf("cross-node/image match: %#v", result)
+					}
+				} else if result.Blocked == nil || *result.Blocked != (blockMatch{Term: tc.wantTerm, Role: tc.wantRole}) {
+					t.Fatalf("blocked=%#v want=%s/%s", result.Blocked, tc.wantTerm, tc.wantRole)
+				}
+			})
+		}
+	}
+}
+
+func TestEncodedToolResultCancellationPreservesOuterToken(t *testing.T) {
+	inner := `[{"type":"text","text":"a​b"},` + encodedTestImage + `]`
+	body, _ := encodedResultFixture(t, inner)
+	body = bytes.ReplaceAll(body, []byte("a​b"), []byte("a"+string([]byte{92})+"u200bb"))
+	for _, otherChanged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("other=%t", otherChanged), func(t *testing.T) {
+			current := append([]byte(nil), body...)
+			if otherChanged {
+				current = append(current[:len(current)-1], []byte(`,"text":"CHANGE"}`)...)
+			}
+			root := gjson.ParseBytes(current)
+			var spans []textSpan
+			appendToolResultStringSpan(&spans, root.Get("output"), "tool", scopeSet{"tool": {}})
+			appendStringSpan(&spans, root.Get("text"), "user", scopeSet{"user": {}})
+			result, err := transformSelectedSpans(current, spans, mustConfig(t, "words:\n  strip: ['​', CHANGE]\n  obfs: [ab]\n"))
+			if err != nil || result.Invalid || result.Blocked != nil {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if !otherChanged {
+				if result.Body != nil {
+					t.Fatalf("canceled rewrite replaced body: %q", result.Body)
+				}
+			} else if want := bytes.Replace(current, []byte(`"CHANGE"`), []byte(`""`), 1); !bytes.Equal(result.Body, want) {
+				t.Fatalf("body=%q want=%q", result.Body, want)
+			}
+		})
+	}
+}
+
+func TestEncodedToolResultMultipleParentsAndEscapes(t *testing.T) {
+	first := `[ {"type":"text","text":"aXb\n\"中文😀\""}, ` + encodedTestImage + ` ]`
+	second := `[ {"type":"text","text":"cc"}, ` + encodedTestImage + ` ]`
+	body := []byte(`{"first":` + benchmarkQuote(first) + `,"middle":"Xcc","second":` + benchmarkQuote(second) + `,"number":1e+03}`)
+	root := gjson.ParseBytes(body)
+	var spans []textSpan
+	appendToolResultStringSpan(&spans, root.Get("second"), "tool", scopeSet{"tool": {}})
+	appendStringSpan(&spans, root.Get("middle"), "user", scopeSet{"user": {}})
+	appendToolResultStringSpan(&spans, root.Get("first"), "tool", scopeSet{"tool": {}})
+	result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  strip: [X, ab]\n  obfs: [cc, cc]\n"))
+	if err != nil || result.Invalid || result.Blocked != nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	wantFirst := strings.Replace(first, `aXb`, ``, 1)
+	wantSecond := strings.Replace(second, `"cc"`, `"c​c"`, 1)
+	want := []byte(`{"first":` + benchmarkQuote(wantFirst) + `,"middle":"c​c","second":` + benchmarkQuote(wantSecond) + `,"number":1e+03}`)
+	if !bytes.Equal(result.Body, want) {
+		t.Fatalf("body=%q want=%q", result.Body, want)
+	}
+}
+
+func TestEncodedToolResultDormantDescription(t *testing.T) {
+	inner := `[{"type":"text","text":"CHANGE"},` + encodedTestImage + `]`
+	body, _ := encodedResultFixture(t, inner)
+	body = append(body[:len(body)-1], []byte(`,"tools":[{"type":"function","name":"f","description":"FLAT","function":{"description":"BLOCK"}}]}`)...)
+	spans, err := selectTextSpans(body, "openai-response", scopeSet{"developer": {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendToolResultStringSpan(&spans, gjson.ParseBytes(body).Get("output"), "tool", scopeSet{"tool": {}})
+	result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  block: [BLOCK]\n  strip: [FLAT, CHANGE]\n"))
+	if err != nil || result.Invalid || result.Body != nil || result.Blocked == nil || *result.Blocked != (blockMatch{Term: "BLOCK", Role: "developer"}) {
+		t.Fatalf("result=%#v err=%v want activated block", result, err)
+	}
+}
+
+func TestEncodedToolResultMatcherPaths(t *testing.T) {
+	t.Run("exact matcher rule order", func(t *testing.T) {
+		var yaml strings.Builder
+		yaml.WriteString("words:\n  block:\n")
+		for i := 0; i < 256; i++ {
+			fmt.Fprintf(&yaml, "    - TERM%03d\n", i)
+		}
+		inner := `[{"type":"text","text":"` + strings.Repeat("z", 16<<10) + `TERM200"},` + encodedTestImage + `]`
+		body, _ := encodedResultFixture(t, inner)
+		body = append(body[:len(body)-1], []byte(`,"text":"TERM100"}`)...)
+		root := gjson.ParseBytes(body)
+		var spans []textSpan
+		appendToolResultStringSpan(&spans, root.Get("output"), "tool", scopeSet{"tool": {}})
+		appendStringSpan(&spans, root.Get("text"), "user", scopeSet{"user": {}})
+		result, err := transformSelectedSpans(body, spans, mustConfig(t, yaml.String()))
+		if err != nil || result.Invalid || result.Body != nil || result.Blocked == nil || *result.Blocked != (blockMatch{Term: "TERM100", Role: "user"}) {
+			t.Fatalf("result=%#v err=%v", result, err)
+		}
+	})
+	for _, action := range []string{"strip", "obfs"} {
+		for _, preflight := range []bool{false, true} {
+			t.Run(fmt.Sprintf("folded KMP/%s/preflight=%t", action, preflight), func(t *testing.T) {
+				terms := "ABCD"
+				if preflight {
+					terms += ", q0, q1, q2, q3, q4, q5, q6"
+				}
+				padding := strings.Repeat("z", 4<<10)
+				inner := `[{"type":"text","text":"` + padding + `abcd"},{"type":"text","text":"` + padding + `"},` + encodedTestImage + `]`
+				body, spans := encodedResultFixture(t, inner)
+				cfg := mustConfig(t, "ignore_case: true\nwords:\n  "+action+": ["+terms+"]\n")
+				result, err := transformSelectedSpans(body, spans, cfg)
+				if err != nil || result.Invalid || result.Blocked != nil {
+					t.Fatalf("result=%#v err=%v", result, err)
+				}
+				replacement := ""
+				if action == "obfs" {
+					replacement = "a​bcd"
+				}
+				want := strings.Replace(inner, "abcd", replacement, 1)
+				if decodedResultOutput(t, result.Body) != want {
+					t.Fatalf("output=%q want=%q", decodedResultOutput(t, result.Body), want)
+				}
+			})
+		}
+	}
+}
+
+func TestEncodedToolResultValidatesEachCoordinateSpace(t *testing.T) {
+	inner := `[{"type":"text","text":"SECRET"},` + encodedTestImage + `]`
+	for _, mutate := range []struct {
+		name string
+		fn   func([]textSpan)
+	}{
+		{"outer range", func(spans []textSpan) { spans[0].RawEnd += 2 }},
+		{"inner range", func(spans []textSpan) {
+			spans[0].EncodedChildren = []textSpan{{RawStart: -1, RawEnd: 5, Text: "SECRET", Role: "tool"}}
+		}},
+		{"inner overlap", func(spans []textSpan) {
+			spans[0].EncodedChildren = []textSpan{{RawStart: 23, RawEnd: 31, Text: "SECRET", Role: "tool"}, {RawStart: 24, RawEnd: 31, Text: "SECRET", Role: "tool"}}
+		}},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			body, spans := encodedResultFixture(t, inner)
+			mutate.fn(spans)
+			result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  block: [SECRET]\n"))
+			if !errors.Is(err, errInvalidSpan) || result.Body != nil || result.Blocked != nil {
+				t.Fatalf("result=%#v err=%v want invalid span before matching", result, err)
+			}
+		})
+	}
+}
+
+func TestEncodedToolResultLogoRemainsDecodable(t *testing.T) {
+	image, err := os.ReadFile("logo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(image)
+	for _, action := range []string{"block", "strip", "obfs"} {
+		t.Run(action, func(t *testing.T) {
+			inner := `[{"type":"text","text":"SECRET tail"},{"type":"input_image","image_url":` + benchmarkQuote(url) + `}]`
+			body, spans := encodedResultFixture(t, inner)
+			result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  "+action+": [iVBOR, SECRET]\n"))
+			if err != nil || result.Invalid {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if action == "block" {
+				if result.Blocked == nil || result.Blocked.Term != "SECRET" || result.Body != nil {
+					t.Fatalf("image term blocked: %#v", result)
+				}
+				return
+			}
+			output := decodedResultOutput(t, result.Body)
+			var parts []struct {
+				ImageURL string `json:"image_url"`
+			}
+			if err := json.Unmarshal([]byte(output), &parts); err != nil || len(parts) != 2 || parts[1].ImageURL != url {
+				t.Fatalf("image URL changed: err=%v", err)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(parts[1].ImageURL, "data:image/png;base64,"))
+			if err != nil || !bytes.Equal(decoded, image) {
+				t.Fatalf("PNG bytes changed: err=%v", err)
+			}
+			if _, err := png.Decode(bytes.NewReader(decoded)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestEncodedToolResultChildStandardDecoding(t *testing.T) {
+	u := string([]byte{92}) + "u"
+	for _, surrogate := range []string{"d800", "dc00"} {
+		t.Run(surrogate, func(t *testing.T) {
+			raw := `"` + u + surrogate + u + `0065xample note"`
+			var original string
+			if err := json.Unmarshal([]byte(raw), &original); err != nil {
+				t.Fatal(err)
+			}
+			inner := `[{"type":"text","text":` + raw + `},` + encodedTestImage + `]`
+			body, spans := encodedResultFixture(t, inner)
+			if len(spans) != 1 || len(spans[0].EncodedChildren) != 1 || spans[0].EncodedChildren[0].Text != original {
+				t.Fatalf("spans=%#v want child text=%q", spans, original)
+			}
+			result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  strip: [note]\n"))
+			if err != nil || result.Invalid || result.Blocked != nil {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			want := strings.Replace(inner, raw, benchmarkQuote(strings.TrimSuffix(original, "note")), 1)
+			if decodedResultOutput(t, result.Body) != want {
+				t.Fatalf("output=%q want=%q", decodedResultOutput(t, result.Body), want)
+			}
+		})
+	}
+}
+
+func TestEncodedToolResultCanceledParentBesideChangedParent(t *testing.T) {
+	first := `[{"type":"text","text":"a​b"},` + encodedTestImage + `]`
+	second := `[{"type":"text","text":"CHANGE"},` + encodedTestImage + `]`
+	firstToken := strings.Replace(benchmarkQuote(first), "a​b", "a"+string([]byte{92})+"u200bb", 1)
+	body := []byte(`{"first":` + firstToken + `,"second":` + benchmarkQuote(second) + `}`)
+	root := gjson.ParseBytes(body)
+	var spans []textSpan
+	appendToolResultStringSpan(&spans, root.Get("first"), "tool", scopeSet{"tool": {}})
+	appendToolResultStringSpan(&spans, root.Get("second"), "tool", scopeSet{"tool": {}})
+	result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  strip: ['​', CHANGE]\n  obfs: [ab]\n"))
+	if err != nil || result.Invalid || result.Blocked != nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	wantSecond := strings.Replace(second, `"CHANGE"`, `""`, 1)
+	want := []byte(`{"first":` + firstToken + `,"second":` + benchmarkQuote(wantSecond) + `}`)
+	if !bytes.Equal(result.Body, want) {
+		t.Fatalf("body=%q want=%q", result.Body, want)
 	}
 }
