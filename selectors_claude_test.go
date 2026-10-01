@@ -567,6 +567,56 @@ func TestClaudeDescriptionRewrites(t *testing.T) {
 	})
 }
 
+func TestClaudeHistoryAssistantScalarNonEmpty(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [Hello.]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello."},{"role":"user","content":"Continue."}]}`)
+	resp := interceptRPC(t, "claude", body)
+	if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_invalid_request" {
+		t.Fatalf("want local invalid history, terminate=%t status=%d error=%s", resp.Terminate, resp.StatusCode, resp.ResponseBody)
+	}
+}
+
+func TestClaudeHistoryAssistantScalarControls(t *testing.T) {
+	for _, tc := range []struct {
+		name, roles, messages string
+		invalid               bool
+		replacements          []rawReplacement
+	}{
+		{"last scalar", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello."}]`, false, []rawReplacement{{Before: `"Hello."`, After: `""`}}},
+		{"existing empty prefill", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":""}]`, false, nil},
+		{"partial history", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello. tail"},{"role":"user","content":"Continue."}]`, false, []rawReplacement{{Before: `"Hello. tail"`, After: `" tail"`}}},
+		{"adjacent earlier scalar", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello."},{"role":"assistant","content":"Later."}]`, true, nil},
+		{"adjacent last scalar", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Earlier."},{"role":"assistant","content":"Hello."}]`, false, []rawReplacement{{Before: `"Hello."`, After: `""`}}},
+		{"last selected is not last array element", "[assistant]", `[{"role":"assistant","content":"Hello."},null]`, true, nil},
+		{"history typed full strip", "[assistant]", `[{"role":"assistant","content":[{"type":"text","text":"Hello."}]},{"role":"user","content":"Continue."}]`, true, nil},
+		{"last typed full strip", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":[{"type":"text","text":"Hello."}]}]`, true, nil},
+		{"history typed partial strip", "[assistant]", `[{"role":"assistant","content":[{"type":"text","text":"Hello. tail"}]},{"role":"user","content":"Continue."}]`, false, []rawReplacement{{Before: `"Hello. tail"`, After: `" tail"`}}},
+		{"last typed partial strip", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":[{"type":"text","text":"Hello. tail"}]}]`, false, []rawReplacement{{Before: `"Hello. tail"`, After: `" tail"`}}},
+		{"user scalar full strip", "[user]", `[{"role":"user","content":"Hello."}]`, true, nil},
+		{"history own scope disabled", "[tool]", `[{"role":"assistant","content":"Hello."},{"role":"user","content":"Continue."}]`, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [Hello.]\nscope:\n  roles: "+tc.roles+"\n")
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"untouched":"Hello. machine","messages":` + tc.messages + `}`)
+			resp := interceptRPC(t, "claude", body)
+			if tc.invalid {
+				if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_invalid_request" {
+					t.Fatalf("want local invalid text, terminate=%t status=%d error=%s", resp.Terminate, resp.StatusCode, resp.ResponseBody)
+				}
+				return
+			}
+			if tc.replacements == nil {
+				requireNoOpResponse(t, resp)
+				return
+			}
+			want := replaceRawTokens(t, body, tc.replacements...)
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body differs outside expected assistant text token, response=%#v", resp)
+			}
+		})
+	}
+}
+
 func TestClaudeNonUserScalarContentAllowsFullStrip(t *testing.T) {
 	cases := []struct {
 		name, roles string

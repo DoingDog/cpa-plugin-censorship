@@ -55,7 +55,8 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	if !messages.IsArray() {
 		return
 	}
-	messages.ForEach(func(_, message gjson.Result) bool {
+	lastMessageIndex := messages.Get("#").Int() - 1
+	messages.ForEach(func(index, message gjson.Result) bool {
 		if !message.IsObject() {
 			return true
 		}
@@ -77,7 +78,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		}
 
 		content := message.Get("content")
-		if role.Str == "user" {
+		if role.Str == "user" || role.Str == "assistant" && index.Int() != lastMessageIndex {
 			appendNonEmptyStringSpan(spans, content, role.Str, roles)
 		} else {
 			appendStringSpan(spans, content, role.Str, roles)
