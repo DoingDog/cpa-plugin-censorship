@@ -21,7 +21,7 @@
 | Claude 非末尾 assistant scalar | 正常 history 完整 strip 后保留空消息；实际 pinned sanitizer 不删除该消息 | scalar 的实际末尾判定 |
 | OpenAI 兼容 schema | 两个 fallback 的三动作均漏选；实际 pinned converter 保留对应 description，存在字段优先级对照已完成 | Chat tools、Responses text format 的 schema 选择 |
 | Gemini alias | 四个官方拼写三动作漏选；正常单 schema/MIME fixture 和本地 pinned executor 捕获已完成 | `generationConfig` 的明确字段列表 |
-| Windows Unicode 打包路径 | 未创建的 `É.zip`/`é.zip` 或对应父目录组合被接受；真实 CLI 返回成功，checksum 覆盖 ZIP | 独立普通核验后，限定共享输出路径 preflight |
+| Windows Unicode 打包路径 | 默认 Windows 目录中未创建的 `É.zip`/`é.zip` 或对应父目录组合被接受；真实 CLI 返回成功，checksum 覆盖 ZIP；独立核验已确认原生比较方案及合法对照 | 共享输出路径 preflight、相邻平台源码及 Windows CI 回归 |
 
 证据来自已完成的普通功能报告及精确补充核验；表中实验支持问题确认和修改边界，未代表生产修复通过。商业 provider API 未调用，最终集成继续使用实际 pinned CPA、原生插件注册和本地 upstream fixture。
 
@@ -33,7 +33,7 @@
 - 无命中、最终改写取消或 scope/filter bypass 时不返回 replacement body，不改变 entity headers。真正改写仍清除 `Content-Encoding`、`Content-Length`、`Transfer-Encoding`。
 - 保留 signature-bound、annotations、`RequiresNonEmpty`、`RequiresUnmodified`、Responses dormant `NestedDescription` 激活及非字符串备用描述处理。
 - `cliproxyPluginCall` 保留 `C.GoBytes`，不改变指针所有权或 native ABI，不手改 `.integration/` 和 `dist/` 生成文件。
-- 只选择明确自然语言路径。JSON keys、IDs、名称、URL、图片/base64、schema 机器值、签名、未知节点和其他未选字段均保持原样。
+- 只选择明确自然语言路径。request Object 和已识别 carrier 中的 JSON keys、IDs、名称、URL、图片/base64、schema 机器值、签名、未知节点和其他未选字段均保持原样。普通选中字符串的内容维持整串文本规则；字符串中的未识别 Object、原语和纯文本数组不由此获得新的内部字段排除。
 
 ## 1. 共享文本 token 解码
 
@@ -63,7 +63,9 @@ CPA consumer 范围已核实：Chat tool -> Codex 可通过 URL 或 `file_id` �
 
 ### 数据和顺序
 
-在现有 `textSpan` 内保留一个外层 parent span及其内层 children。parent 的 offset 属于外层 request bytes；children 的 offset 属于 parent 解码后的内层 JSON bytes。只增加本功能需要的元数据和 parent 对应的 flat slice 范围，不复制 matcher、不增加通用递归 walker。
+在现有 `textSpan` 内保留一个外层 parent span 及其内层 children。parent 的 offset 属于外层 request bytes；children 的 offset 属于 parent 解码后的内层 JSON bytes。只增加本功能需要的元数据和 parent 对应的 flat slice 范围，不复制 matcher、不增加通用递归 walker。
+
+`transformRequest` 保持现有签名、格式选择和错误检查；选择后的同一生产处理核心提取为 `transformSelectedSpans(body []byte, spans []textSpan, cfg *configSnapshot) (transformResult, error)`。该最小处理入口使 foundation 能在 provider 尚未接入时，用真实 carrier helper 收集的 spans 验证全局匹配、约束和两层重建；测试不复制生产 pipeline 或注入 mock selector。
 
 外层 spans 按原 token 顺序排序和验证，再按每个 parent 的原始位置展开其自然 text children，普通 span 同时保留。对整个 flat slice 调用一次现有 `applyMode`。展开后禁止按 `RawStart` 全局重排，因为内外层 offset 使用不同坐标。内层节点按各自 token 顺序排序和验证。
 
@@ -132,9 +134,19 @@ legacy `functions[].parametersJsonSchema` 的本地漏选断言和 Chat->Claude 
 
 ## 7. 打包产物的 Unicode 输出别名
 
-Windows 默认文件系统上的有效 Unicode 路径组合已实际复现产物错误，根因是尚不存在的路径 suffix 只用 `asciiEqualFold` 比较。已有同一文件检测和事务式输出保留规则继续有效。
+独立普通核验已确认默认 Windows 目录中的有效 Unicode 路径组合会损坏产物，根因是尚不存在的路径 suffix 只用 `asciiEqualFold` 比较。真实 `É.zip`/`é.zip` 及 `Été.zip`/`été.zip` CLI 返回成功后，checksum 替换了同一文件的 ZIP 内容。Windows 大小写敏感目录与 Debian `/tmp` 中的 `É.zip`/`é.zip` 是合法的不同输出，必须保留。
 
-该修正必须由独立普通功能核验确认实现能够保持现有 case-distinct 文件、不同 Unicode 字符、Kelvin sign、ASCII alias 及现有输出保留行为之后实施。需要在写入前拒绝实际 alias，禁止把 Unicode SimpleFold 当作 Windows 文件系统大小写规则，不增加依赖或修改 ZIP/checksum 格式。完成条件是缺失 Unicode basename/父目录的 RED、共享 preflight 修复、真实 CLI 不覆盖输出、现有 packager 全量测试和 Windows/Linux 对照。候选核验未完成前不能把此项写为已修复或据此发布。
+保留 `filepath.Abs/Clean`、`os.SameFile` 祖先身份判断及现有 ASCII suffix 比较。`existingPathAncestor` 额外返回实际祖先路径；仅对既有 ASCII 比较没有判为相同的名称，调用相邻 `package main` 平台源码实现的 `unicodeNamesAlias(ancestorPath, firstName, secondName string) (bool, error)`。Windows 通过目录 handle 的 `GetFileInformationByHandleEx(FileCaseSensitiveInfo)` 查询属性：大小写敏感目录返回 `false, nil`，其他目录使用 `CompareStringOrdinal` 忽略大小写比较；新增缺失父目录按已实测的目录属性继承处理。非 Windows 返回 `false, nil`，不补充 Unicode alias；精确相同及保守 ASCII 比较继续由既有逻辑判定。所有打开、查询、比较及资源清理错误向上传递，不继续写输出，不使用猜测性的 fallback。
+
+已完成的原生 API 与实际文件系统对照确认 `É`/`é` 指向同一文件，而 `K`/`K`、`Σ`/`ς`、`S`/`ſ`、`𐐀`/`𐐨` 指向不同文件。`strings.EqualFold` 和 `strings.ToUpper` 对后四组会产生实际误判，不用于路径判定。保留不同重音字符、普通 Unicode sidecar、既有 case-distinct 文件、ASCII alias 和事务式输出保护；不改变 ZIP、固定时间、SHA-256 或 aggregate 平台集合。
+
+`pathsAlias` 的 direct、aggregate、library/output 和 LICENSE/output caller 一并使用该共享修复。新增同目录 `package-release_windows.go`、`package-release_other.go`，保留 Go 标准库及原生 API，不新增依赖、用户配置或 CGO。run/test 显式传主源码和一个运行平台 helper：Windows 选 windows，其他平台选 other；Go 显式文件列表不按 build constraints 筛选，不能只传主源码或同时传两个 helper。
+
+CLI 的 flags、运行 cwd、相对参数、`LICENSE`/Git version 来源及 stdout/stderr/exit 语义保持。原六个 CLI test 的七处构造改为共享 `packagerCommand`，主源码和 helper 使用绝对路径，caller 的 `cmd.Dir`/`cmd.Env` 原值不变。Makefile 的两处 packaging recipe 在执行时分别查询 `go env GOHOSTOS`、`go env GOHOSTARCH`，查询失败即终止。按 host 选择 helper，最终 packager 命令局部设置 `GOOS="$$host_os" GOARCH="$$host_arch"`；library build 继续使用原目标变量。GNU Make 会导出命令行 GOOS/GOARCH，单独选择 helper 不足以保证 host 编译。不新增 Makefile 解析期 Go 调用，`validate-version` 保持独立。通过真实 Make/aggregate packaging 的 cross-target 环境 RED/GREEN 核验，不能用只打印 helper 的探针替代。
+
+Task P 独占 packager、平台源码和 Windows 原生测试、Makefile、build.yml 中 Ubuntu 三处 run/test 编译文件列表及 Windows amd64 packager 测试步骤；相关 workflow 字符串和 Make dry-run 断言仍归 package-release_test.go。README 调用说明由 Task F 统一修改。CLI 编译/cwd 补核只验证源码选择、路径解析及 native API，未生成 ZIP，不代表生产修复 GREEN；新 Linux 动态探针因边界记录未计入本次合规验收，Linux 仍须完成实际生产回归。
+
+完成条件为默认 Windows 目录中缺失 Unicode basename/父目录的真实断言 RED、共享 preflight GREEN、真实 DLL CLI 拒绝 alias 并保留输入/已有文件、Windows 大小写敏感目录与 Unix 的合法不同输出、完整平台 file-list test/race/vet，以及 GitHub Windows job 实际执行回归。增加无 go.mod 的 cwd 中相对 library/archive/checksum 与本地 LICENSE 的真实成功打包用例；负向 CLI 必须核对预期业务错误，不能把编译失败算作拒绝通过。目录属性设置不可用的环境必须记录其限制，不能把 skip 当作通过。原功能矩阵的实测平台为 Windows 11 本地目录和 Debian `/tmp`；未实际验证其他 Windows 文件系统、旧 Windows 或 macOS。
 
 ## 实施依赖与文件归属
 
@@ -144,12 +156,12 @@ Windows 默认文件系统上的有效 Unicode 路径组合已实际复现产物
 | B，OpenAI 接入 | `selectors_openai.go`、`selectors_openai_test.go` | A 提交后，完成明确载体入口、限制字段、两个 fallback及 legacy 边界对照 |
 | C，Claude 修正 | `selectors_claude.go`、`selectors_claude_test.go` | A 提交后，完成 MCP、非末尾 scalar、title 上限 |
 | D，Gemini alias | `selectors_gemini.go`、`selectors_gemini_test.go` | 与 B/C 并行，完整七路径及 scope/machine 回归 |
-| P，packager | `.github/scripts/package-release.go`、`.github/scripts/package-release_test.go` | 独立普通核验通过后，与 A 或 B/C/D 无冲突并行 |
+| P，packager | `package-release.go`、相邻 windows/other 平台源码、`package-release_test.go`、相邻 Windows 原生测试、`Makefile`、`.github/workflows/build.yml` 的相关编译命令与 Windows 回归步骤 | 普通 Unicode 和 CLI/cwd 补核已完成，文档限定复核完成后与 A 或 B/C/D 无冲突并行 |
 | E，正常 oracle 和注册集成 | `fuzz_test.go`、必要的新普通 regression test、`integration/` 自有测试 | A/B/C/D/P 已完成并整合后，仅一个实施者负责共享 oracle/integration 文件及 `.integration/run` |
-| F，版本文档与全量验收 | `README.md`、`RELEASE_NOTES.md`，必要的新正常验收测试 | E 完成后，更新现状、独占全量验证、规格和代码复审，提交 |
+| F，版本文档与全量验收 | `README.md`、`RELEASE_NOTES.md`、`main_test.go` 中 `TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions` | E 完成后，先更新当前版本断言观察 RED，再更新现状、独占全量验证、规格和代码复审，提交 |
 | G，本地 main 和 GitHub | Git 分支/tag与实际远端状态 | 所有任务完成，检查修改范围无冲突，再合并、推送及核对 release |
 
-A 中嵌套 span 任务使用可用的 Opus[1m]/xhigh；其他独立任务使用 Sonnet[1m]/xhigh。每项在同一 worktree 内完成编码、测试、规格审查、修正、复审和提交；不把未完成步骤留给主会话。主会话只整合已完成无冲突 commit。等待后台结果时要求主动回报并等待通知，不主动轮询；依赖满足且文件不冲突的任务并行执行。
+A 中嵌套 span 任务使用可用的 Opus[1m]/xhigh；其他独立任务使用 Sonnet[1m]/xhigh。A/B/C/E 是完整 worktree task，内部阶段各自完成 RED/GREEN、回归、自查和提交。负责该 task 的 workflow 在整项完成后，对创建 worktree 时记录的 `BASE..HEAD` 组织独立规格及质量审查；所有问题在同一 worktree 连续修正、重测、复审并新建提交，全部完成后才交付。实施者不另行派发重复 reviewer，不把未完成步骤留给主会话。主会话只整合已完成无冲突 commit。等待后台结果时要求主动回报并等待通知，不主动轮询；依赖满足且文件不冲突的任务并行执行。
 
 ## 全局验收与发布
 
@@ -167,4 +179,4 @@ README 和 RELEASE_NOTES 只写实际通过的 v0.3.9 功能及兼容范围。JS
 
 Gemini->Claude 空 text 的跨后端 converter 问题尚无经验证的完整纯插件修复，不修改 CPA，不把 native Gemini 所有 text 强制非空。外部 YAML 在插件收到配置前丢失换行不属于插件内可执行根因修复。现有跨后端 role 冲突、opaque terminal Executor 等公开范围限制保留。
 
-截至本 spec 编写时，scalar function output 的上限和共享解码补充核验均已完成；Unicode packager 的独立普通修复可行性核验仍由协调方执行，结论到达后必须更新本节及对应任务，再开始其生产修复。任何未完成验证均不能作为 release 完成证据。
+scalar function output 的上限、106 请求形态的共享解码补充核验及 Unicode packager 的独立普通修复可行性核验均已完成，已纳入本 spec 的明确实施范围。后续生产修改必须完成各任务的 RED/GREEN、审查、提交和全量发行验收；可行性与基线结果均不能作为 release 完成证据。

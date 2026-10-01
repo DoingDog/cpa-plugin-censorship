@@ -18,7 +18,7 @@
 - 保留 `words` Object、原词条及 bucket 顺序、legacy handwritten YAML、`block` -> `strip` -> `obfs`、rule-major、最早节点、no cross-node、cascade 和取消语义。
 - BeforeAuth/selected-auth AfterAuth、filter、metadata、canonical role、signature/annotations/dormant description 与 `C.GoBytes` 保持现有语义。无变化不得改 body 或 entity headers。
 - 只选明确自然语言字段；复用现有 parser、matcher 和 rebuild helper；禁止泛用 walker、额外依赖、虚假数据、为通过测试的 fallback、额外配置和无必要抽象。
-- 每个行为先观察预期断言失败的 RED，编译错误不算复现；再实现 GREEN、相关测试、规格审查、修正、复审、提交。每个 agent 在自己的 worktree 连续完成这些步骤并主动报告结果。
+- 每个行为先观察预期断言失败的 RED，编译错误不算复现；组内阶段各自完成 GREEN、相关回归、自查和提交。每个完整 worktree task 由负责该任务的 workflow 对完整 `BASE..HEAD` 组织独立规格及质量审查；问题在原 worktree 修正、重测、复审并新建提交，全部完成后主动报告。
 - 主会话只整合已完成且文件范围无冲突的 commit。不能把未完成测试、review 或提交交回主会话。等待后台结果采用主动通知，不轮询日志或状态。
 - 所有命令在负责任务的 worktree 根执行；shell 中需要路径时使用该 worktree 的绝对路径。临时测试、日志和下载资产使用系统临时目录，保留用户已有文件。
 
@@ -38,12 +38,12 @@
 | B，OpenAI | `selectors_openai.go`、`selectors_openai_test.go` | A 完成并整合 | Sonnet[1m]/xhigh |
 | C，Claude | `selectors_claude.go`、`selectors_claude_test.go` | A 完成并整合 | Sonnet[1m]/xhigh |
 | D，Gemini | `selectors_gemini.go`、`selectors_gemini_test.go` | A 完成并整合，与 B/C 并行 | Sonnet[1m]/xhigh |
-| P，packager | `.github/scripts/package-release.go`、`.github/scripts/package-release_test.go` | 独立普通可行性核验完成，与其他源文件任务无冲突并行 | Sonnet[1m]/xhigh |
+| P，packager | `.github/scripts/package-release.go`、相邻 windows/other 平台源码、`package-release_test.go`、相邻 Windows 原生测试、`Makefile`、`.github/workflows/build.yml` 的相关编译命令与 Windows 回归步骤 | 普通 Unicode 与 CLI/cwd 补核已完成，限定文档复核完成后与 A 无冲突并行 | Sonnet[1m]/xhigh |
 | E，普通 regression/oracle/native | `fuzz_test.go`、新 `functional_corrections_test.go`、`integration/http_test.go` | A/B/C/D/P 全部完成并整合 | Sonnet[1m]/xhigh |
-| F，版本 docs/全量验收 | `README.md`、`RELEASE_NOTES.md` | E 完成并整合 | Sonnet[1m]/xhigh |
+| F，版本 docs/全量验收 | `README.md`、`RELEASE_NOTES.md`、`main_test.go` 中 `TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions` | E 完成并整合 | Sonnet[1m]/xhigh |
 | G，本地 main/远端发行 | Git ref、tag、实际 GitHub 状态 | F 完成，全部审查无未修正问题 | 主会话负责已完成 commit 的整合和原授权发布 |
 
-A 按 A0/A1/A2/A3 顺序执行，B 按 B1/B2/B3，C 按 C1/C2/C3，E 按 E1/E2；同一组留在同一个 worktree，子项分别验证、review、提交。B/C/D 互不写共享文件，必须并行。P 在自身门槛满足后独立并行，不占用 `.integration/run`。E/F 的 integration、ABI smoke及实际 runner 只允许一个进程负责。
+A/B/C/E 各是表中一个完整的 worktree 编码任务，组内编号仅表示同一实施者连续完成的 TDD 阶段，不单独派发 agent。A 按 A0/A1/A2/A3 顺序执行，B 按 B1/B2/B3，C 按 C1/C2/C3，E 按 E1/E2；阶段分别 RED/GREEN、回归、自查、提交。任务启动时记录实际 BASE，负责该任务的 workflow 在整项完成后对完整 `BASE..HEAD` 组织独立规格和质量审查。发现问题仍由原实施者在同一 worktree 修正、重测、复审并新建提交；全部完成后才交付主会话，不自行额外派发重复 reviewer。D/P/F 也按各自完整 task 执行同一审查门槛。B/C/D 互不写共享文件，必须并行；P 与 A 无源文件冲突，不占用 `.integration/run`。E/F 的 integration、ABI smoke 及实际 runner 只允许一个进程负责。
 
 共享接口约定：
 
@@ -85,7 +85,7 @@ return transformSelectedSpans(body, spans, cfg)
 新增函数接收已选择 spans、原 body 和 snapshot；其初始行为完全等于被移动正文。该提取只服务本次共享数据流和真实单元测试，不增加 runtime interface、mock selector 或重复 pipeline。
 
 - [ ] **Step 3：核对行为不变。** `make test`、`git diff --check`；审查只有上述局部移动，已有 block、nested fallback、取消、签名和 bytes 断言都通过。
-- [ ] **Step 4：完成规格/质量审查并提交。** 使用 `superpowers:requesting-code-review`，修正本任务问题、重跑、复审。只提交 `transform.go`，例如 `refactor: isolate selected span transformation for functional tests`。A1/A2/A3 在同一 worktree 继续。
+- [ ] **Step 4：阶段自查并提交。** 核对局部提取与行为不变证据，修正后重跑；只提交 `transform.go`，例如 `refactor: isolate selected span transformation for functional tests`。A1/A2/A3 在同一 worktree 继续，独立规格/质量审查由 A workflow 在整项完成后覆盖完整 `BASE..HEAD`，本阶段不另行派发 reviewer。
 
 ### Task A1：selected string token 的标准库解码
 
@@ -115,7 +115,7 @@ func TestSelectedTextUsesStandardJSONDecoding(t *testing.T) {
 - [ ] **Step 2：观察 RED。** `go test . -run '^TestSelectedTextUsesStandardJSONDecoding' -count=1 -v`；预期现有 `Text` 丢失 `e` 的断言失败。新增 mode/nested 用例也必须出现符合已完成报告的失败，不以编译失败代替。
 - [ ] **Step 3：最小修复。** 未转义 token 保持快速路径；escaped `value.Raw` 走 `json.Unmarshal`，复用 `canonicalJSONMemberName` 的成熟解码实现方式，保持 key 去重行为。赋给 Text 的是标准库结果。意外解码错误明确显露，不返回错误 Str、不静默跳过、不增加所有 provider 的通用 parser。只在本任务确有必要时调整最小内部 helper 名称/调用。
 - [ ] **Step 4：GREEN和逐字节对照。** 重跑定向测试和 `make test`；`TestSelectedTextNoOpPreservesBytes` 应验证无命中 body=nil，另一字段变化时未选字段、原始空白、`1e+03`、有效pair和 dormant token 原 bytes不变。测试标准库期望与生产解码不能共用新 helper。
-- [ ] **Step 5：审查、修正、复审、提交。** 检查五种格式全部 caller、dormant候选、空字符串和guard无遗漏；只提交本任务自有文件，例如 `fix: preserve selected JSON string characters during decoding`。
+- [ ] **Step 5：阶段自查、修正、提交。** 检查五种格式全部 caller、dormant 候选、空字符串和 guard 无遗漏，重跑受影响回归；只提交自有文件，例如 `fix: preserve selected JSON string characters during decoding`。在同一 A worktree 继续 A2，不另行派发阶段 reviewer。
 
 ### Task A2：carrier parent/children 和一次全局匹配
 
@@ -152,7 +152,7 @@ func TestEncodedToolResultPreservesImageAndMachineBytes(t *testing.T) {
 - [ ] **Step 5：实现 flatten与重建。** 在 `transformSelectedSpans` 按外层token顺序展开 parent，普通spans和children共同调用一次applyMode，不把不同坐标offset全局排序；用局部parent -> flat起止范围取回changed children。保留原nested description激活逻辑。changed carrier用rebuildBody重建内层，再把changed parent与普通/activated replacements按外层位置重建。任何层的rebuild错误都返回，不忽略。
 - [ ] **Step 6：固定全局顺序和取消。** 新增 `TestEncodedToolResultGlobalRuleOrder`：前方tool parent text含SECOND，后方user普通text含FIRST，配置block=[FIRST,SECOND]，期望FIRST/user；同词同时命中期望最早parent/child的role。新增 `TestEncodedToolResultCancellationPreservesOuterToken`：`a`+U+200B+`b` 的inner text，在strip U+200B再obfs ab后无replacement；另一普通span被改时该parent原token仍不变。词条分到两个inner节点时不得命中。同时覆盖cascade、duplicate rule、dormant、quotes/newline/Unicode。
 - [ ] **Step 7：GREEN、分支覆盖和代价。** 重跑suite和 `make test`。使用足量正常rule/text触发现有exact matcher、fold matcher、fold preflight和KMP，断言同一规则结果；不改变threshold或matcher实现。benchmark仅增加本功能escaped文本/载体的真实transform测量，按text长度和span数量测量，不把decode放在计时之外。
-- [ ] **Step 8：审查、修正、复审、提交。** 特别检查image-only的零children、同坐标bounds验证、parent取消、一次全局匹配和未知字段保留，例如 `fix: filter only text inside encoded multimodal tool results`。provider尚未接入，注册验收由B和E实施，不宣称入口已经修复。
+- [ ] **Step 8：阶段自查、修正、提交。** 特别检查 image-only 的零 children、同坐标 bounds 验证、parent 取消、一次全局匹配和未知字段保留，修正并重跑后提交，例如 `fix: filter only text inside encoded multimodal tool results`。在同一 A worktree 继续 A3，不另行派发阶段 reviewer。provider 尚未接入，注册验收由 B 和 E 实施，不宣称入口已经修复。
 
 ### Task A3：最终字符数机制
 
@@ -191,7 +191,7 @@ if span.Changed && span.MaxCodePoints > 0 && utf8.RuneCountInString(span.Text) >
 保持RequiresNonEmpty/RequiresUnmodified的含义和优先级；如child/parent需同一约束判定，复用同一段明确逻辑，不新增可配置validator。
 
 - [ ] **Step 4：GREEN和共享验收。** `go test . -run '^(TestSelectedText|TestEncodedToolResult|TestFinalMaxCodePoints)' -count=1 -v`、`make test`、`make race`、`make vet`；顺序复测A0 benchmark，记录escaped/carrier实际成本。新field默认不附加provider限制，provider字段由B/C设置。
-- [ ] **Step 5：完整foundation审查、修正、复审、提交。** 给协调方报告HEAD、各commit、共享helper签名、真实RED/GREEN和benchmark范围；A所有步骤完成后B/C/D才创建基于该完成提交的独立worktree。
+- [ ] **Step 5：完整 foundation 审查、修正、复审、提交。** 完成 A3 自查和阶段提交后，由负责 A 的 workflow 对全部 A0-A3 的 `BASE..HEAD` 组织独立规格及质量审查。原实施者在同一 worktree 修正、重跑、复审并新建提交，直至全部问题完成。给协调方报告最终 HEAD、各 commit、共享 helper 签名、真实 RED/GREEN、完整 task review 和 benchmark 范围；A 全部完成后 B/C/D 才创建基于该完成提交的独立 worktree。
 
 ### Task B1：OpenAI明确载体入口
 
@@ -219,7 +219,7 @@ if got.Messages[0].Content != strings.Replace(inner, `"SECRET tail"`, `" tail"`,
 - [ ] **Step 2：观察RED。** `go test . -run '^TestOpenAIEncodedMultimodal' -count=1 -v`，应是四入口仍整串改写/错误block。
 - [ ] **Step 3：只接入已有canonical tool。** Chat归一化role为tool时scalarcontent调用新helper；其他role保持appendStringSpan。Responses function/custom scalaroutput调用helper，实际array的input_text.text仍按现有规则。shell/MCP等不新增载体识别。
 - [ ] **Step 4：GREEN和边界。** 四入口验证text/input_text/output_text、image-only、file_id、普通JSON文本、actual array、disabledrole、多parent混合、全局顺序和取消原token。使用真实logo或小型标准库生成有效PNG验证URL未变与可解码，不能用伪base64宣称图片保持有效。
-- [ ] **Step 5：审查、修正、复审、提交。** `go test . -run '^TestOpenAI' -count=1`、`make test`；报告legacy converter反例，不把legacy直转Codex称为图片转换。提交自有文件。
+- [ ] **Step 5：阶段回归、自查、提交。** `go test . -run '^TestOpenAI' -count=1`、`make test`；核对 legacy converter 反例，不把 legacy 直转 Codex 称为图片转换。修正并重跑后提交自有文件，在同一 B worktree 继续 B2；不另行派发阶段 reviewer。
 
 ### Task B2：Responses明确字段上限
 
@@ -248,7 +248,7 @@ if !resp.Terminate || resp.StatusCode != 400 || resp.Body != nil || gjson.GetByt
 - [ ] **Step 2：观察RED。** `go test . -run '^TestOpenAIResponsesOutputMaxCodePoints' -count=1 -v`，应为schema超限输出被接受。
 - [ ] **Step 3：标记精确span。** helper只标记本次真正追加的function scalar parent或实际typedtext；custom保持0。拆分local_shell/apply_patch共同case中的长度标记，不改变选择语义。stdout/stderr、program标记10485760。不要给function编码carrier的所有text type另加独立typed约束，scalarparent约束检查其完整Text。
 - [ ] **Step 4：parent边界回归。** 新增 `TestOpenAIResponsesEncodedOutputParentMaxCodePoints`：合规的整个编码数组在最终rewriting后整体超过limit，虽子text远小于limit仍拒绝。使用正常的未知 metadata 字段填充到边界，图片URL不改；同形custom输出继续允许。未改变已超限function输出且另一字段发生改写时原token保留；Unicode、escape、strip->obfs、取消和block优先保持。
-- [ ] **Step 5：GREEN、审查、修正、复审、提交。** 聚焦suite、全部OpenAI及 `make test`；RPC确认invalid无替换body、无请求header修改、响应Content-Type=application/json。提交自有文件。
+- [ ] **Step 5：GREEN、阶段自查、提交。** 聚焦 suite、全部 OpenAI 及 `make test`；RPC 确认 invalid 无替换 body、无请求 header 修改、响应 Content-Type=application/json。自查修正并重跑后提交自有文件，在同一 B worktree 继续 B3；不另行派发阶段 reviewer。
 
 ### Task B3：Chat/Responses兼容schema fallback
 
@@ -256,7 +256,7 @@ if !resp.Terminate || resp.StatusCode != 400 || resp.Body != nil || gjson.GetByt
 
 **Interfaces:** 复用 `appendJSONSchemaDescriptions`；只新增Chat tools `parametersJsonSchema` 和Responses format `json_schema.schema`，保留canonical-first存在性。
 
-- [ ] **Step 1：三动作RED。** `TestOpenAICompatibleSchemaFallbacks`用spec两个最小fixture、developer-only分别测block/strip/obfs，根与propertiesdescription都命中：
+- [ ] **Step 1：三动作 RED。** `TestOpenAICompatibleSchemaFallbacks` 用下面 Chat fixture，以及 Responses `{"input":"safe","text":{"format":{"type":"json_schema","json_schema":{"schema":{"type":"object","description":"SECRET tail","properties":{}}}}}}`，developer-only 分别测 block/strip/obfs，根与 properties description 都命中：
 
 ```go
 body := []byte(`{"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"function","function":{"name":"lookup","parametersJsonSchema":{"type":"object","description":"SECRET tail","properties":{}}}}]}`)
@@ -279,7 +279,7 @@ appendJSONSchemaDescriptions(spans, schema, "developer", roles)
 现有Responses function五项链保持原样。legacy functions现有description/parameters/output_schema保留，不新增alias；不为了helper复用自动扩大其选择范围。
 
 - [ ] **Step 4：GREEN和优先级。** `TestOpenAICompatibleSchemaPrecedence`表覆盖主字段missing、null、{}、安全object，alias含词条；只有missing回退。root/propertydescription变化外，name、keys、enum、const、default、extensions、metadata原bytes保留。developer关闭、unknown type和machine-only no-op。legacyalias-only维持未选，legacycanonical继续三动作正常；明确记录Chat->Claude不消费legacy的对照。
-- [ ] **Step 5：审查、修正、复审、提交。** 全部OpenAI、`make test`；B三子项完成后主动交付全部commit和明确限制，不修改oracle文件，留给E单一归属任务。
+- [ ] **Step 5：完整 B task 审查、修正、复审、提交。** 全部 OpenAI、`make test`，先完成 B3 阶段自查和提交；负责 B 的 workflow 对 B1-B3 完整 `BASE..HEAD` 组织独立规格及质量审查。原实施者在同一 worktree 修正、重跑、复审并新建提交，全部完成后主动交付最终 HEAD、全部 commit、审查结果和明确限制。不修改 oracle 文件，留给 E 单一归属任务。
 
 ### Task C1：Claude assistant MCP history
 
@@ -301,7 +301,7 @@ if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody
 - [ ] **Step 2：观察RED。** `go test . -run '^TestClaudeAssistantMCPHistory' -count=1 -v`；预期12个漏选断言失败。
 - [ ] **Step 3：修复两处gate。** system维持独立gate；user/assistant自身或tool启用时遍历content。mcp_tool_result只允许user/assistant且tool已启用。保留scalar appendStringSpan、typed appendNonEmptyStringSpan、ordinarytext own scope和ordinarytool_result user-only。
 - [ ] **Step 4：GREEN及保留。** 同矩阵全部通过；typed全strip本地invalid、scalar全strip允许空、userMCP兼容、tool关闭、普通assistant tool-only不选和ordinarytool_result assistant不选均测。用replaceRawTokens/bytes.Equal只替换预期文字，保留ID/名称/input/cachecontrol/is_error/unknown。不新增fuzz、不改变默认oracle角色。
-- [ ] **Step 5：全部Claude、规格review、修正、复审、提交。** `go test . -run '^TestClaude' -count=1`、`make test`；主动报告scalar/typed的不同非空边界。
+- [ ] **Step 5：全部 Claude、阶段自查、提交。** `go test . -run '^TestClaude' -count=1`、`make test`；核对 scalar/typed 的不同非空边界，修正并重跑后提交，在同一 C worktree 继续 C2，不另行派发阶段 reviewer。
 
 ### Task C2：非末尾assistant scalar非空
 
@@ -323,7 +323,7 @@ if !resp.Terminate || resp.StatusCode != 400 || resp.Body != nil || gjson.GetByt
 - [ ] **Step 2：运行观察。** `go test . -run '^TestClaudeHistoryAssistantScalarNonEmpty' -count=1 -v`，当前仍放行空history的断言失败。
 - [ ] **Step 3：精确标记。** user或实际非末尾assistant scalar走appendNonEmptyStringSpan，实际最后assistant走appendStringSpan；其他role、typed块和top-levelsystem保持原行为。不要把最后一个“被选中的消息”当作真正末尾。
 - [ ] **Step 4：GREEN和相邻message对照。** 最后assistant全strip允许空、已有空prefill无改写、历史部分strip正常；相邻assistant中前一个/非末尾元素全strip拒绝，仅最后元素清空允许。历史和最后typedtext全strip仍拒绝，部分strip正常；user非空和scope-disabled no-op不变。
-- [ ] **Step 5：审查、修正、复审、提交。** 全部Claude与 `make test`；明确本地400/允许空结果，不声称商业API实测。
+- [ ] **Step 5：阶段回归、自查、提交。** 全部 Claude 与 `make test`；明确本地 400/允许空结果，不声称商业 API 实测。修正并重跑后提交，在同一 C worktree 继续 C3，不另行派发阶段 reviewer。
 
 ### Task C3：Claude document.title上限
 
@@ -342,7 +342,7 @@ if !resp.Terminate || resp.StatusCode != 400 || resp.Body != nil || gjson.GetByt
 - [ ] **Step 2：观察RED。** `go test . -run '^TestClaudeDocumentTitleMaxCodePoints' -count=1 -v`，原500title扩张为501仍放行。
 - [ ] **Step 3：只标记title。** 使用before/len模式仅对成功追加的document.title span设500，context/search_result.title不加上限。
 - [ ] **Step 4：GREEN和边界。** direct/nested每条最终500接受、501拒绝；中文、emoji、escape/pair按codepoints；strip->obfs最终合法/超限、取消、block优先、未变化title bytes、disabledrole、title全strip非空拒绝。context/search_resulttitle正常扩张不受500限制。
-- [ ] **Step 5：全部Claude、review、修正、复审、提交。** C全部子项连续完成，报告三个commit，不修改shared/oracle/integration/docs。
+- [ ] **Step 5：完整 C task 审查、修正、复审、提交。** C3 全部测试、自查和阶段提交完成后，由负责 C 的 workflow 对 C1-C3 完整 `BASE..HEAD` 组织独立规格及质量审查。原实施者在同一 worktree 修正、重跑、复审并新建提交，全部完成后报告所有阶段及修正 commit。不得限定为恰好三个 commit，不修改 shared/oracle/integration/docs。
 
 ### Task D：Gemini四个generationConfig alias
 
@@ -366,14 +366,28 @@ if !resp.Terminate || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "de
 - [ ] **Step 4：GREEN。** 七路径三动作、user-only、machine-only、keys/enum/default/required/metadata逐bytes保留；既有function_declarations、role推断和signatureguard通过。
 - [ ] **Step 5：审查、修正、复审、提交。** `go test . -run '^TestGemini' -count=1`、`make test`；给E报告确切字段列表。禁止同时编辑fuzz_test.go。
 
-### Task P：Windows Unicode打包产物路径
+### Task P：Windows Unicode 打包产物路径
 
-**Files:** `.github/scripts/package-release.go:394-435`、`.github/scripts/package-release_test.go:1212-1269`。不改Makefile、release workflow、ZIP格式或请求处理。
+**Files:** Modify `.github/scripts/package-release.go:394-453`、`.github/scripts/package-release_test.go` 的 Unicode/CLI/Make/workflow 断言、`Makefile:50,56`、`.github/workflows/build.yml:25,58-66,135,182`；Create `.github/scripts/package-release_windows.go`、`.github/scripts/package-release_other.go`、`.github/scripts/package-release_windows_test.go`。所有新源码均为相邻 `package main`；README 统一由 F 修改。其他 task 不修改 Makefile/build.yml；发布资产格式、release job 和请求处理保持。
 
-**Interfaces:** 现有pathsAlias/validateDirectPackagePaths preflight；实际输出写入前判定alias。此项等待协调方独立普通修复可行性报告；不得预判结果。报告若发现无法无回归修复，更新spec/plan和最终unresolved，不能把候选当作完成。
+**Interfaces:** 所有既有 `pathsAlias(firstPath, secondPath string) (bool, error)` caller 保持；`existingPathAncestor(path string) (os.FileInfo, string, []string, error)` 增加实际祖先路径；两个平台源码各实现 `unicodeNamesAlias(ancestorPath, firstName, secondName string) (bool, error)`。测试复用 `packagerCommand(t *testing.T, args ...string) *exec.Cmd` 选择当前运行平台的 helper 并构造绝对源码的双文件 Go 命令；caller 原 `Dir`/`Env` 和参数不变。ASCII 比较仍由当前 `asciiEqualFold` 负责，平台函数只补充其没有判为相同的名称。
 
-- [ ] **Step 1：核对完成报告。** 读取独立报告的实际方法、Windows/Linux/Kelvin/case-distinct结果及限制，确认根因修改可执行后才继续。
-- [ ] **Step 2：Unicode basename/父目录RED。** `TestPathsAliasAbsentUnicodeOutputs`覆盖É.zip/é.zip和缺失É/é父目录内同basename。只在实际测试文件系统确认É/é属于同文件的环境要求拒绝，使用t.TempDir的临时fixture确认，不猜测系统规则。CLI测试先以未存在的输出路径运行packager，期望非零exit、库/已有输出不改变。关键preflight断言：
+- [ ] **Step 1：核对基线并准备可编译的文件列表。** 普通核验已确认 `pluginOnlyFix=true`，使用 spec 第 7 节的实测对照。先记录现有 packager suite 结果，再新增相邻 windows/other 源码，初始 `unicodeNamesAlias` 仅返回 `false, nil`，尚不接入 `pathsAlias`，保持原行为以观察真正 RED。公共 CLI 的七个构造点 `710、838、880、944、963、1006、1182` 改用以下 helper，删掉由此未使用的原局部 `script`/`err`；原 `cmd.Dir`/`cmd.Env` 和参数不动，Git/validate-version caller 不修改：
+
+```go
+func packagerCommand(t *testing.T, args ...string) *exec.Cmd {
+    t.Helper()
+    script, err := filepath.Abs("package-release.go")
+    if err != nil { t.Fatal(err) }
+    helper := "package-release_other.go"
+    if runtime.GOOS == "windows" { helper = "package-release_windows.go" }
+    sources := []string{"run", script, filepath.Join(filepath.Dir(script), helper)}
+    return exec.Command("go", append(sources, args...)...)
+}
+```
+
+此时 Windows 用主源码、windows helper、公共 test 三文件，Linux 用主源码、other helper、公共 test 三文件重跑既有 suite，必须仍通过。负向 CLI 用例的非零返回不足以证明业务拒绝，保留全部正常成功用例。根因修改始终位于共享 `pathsAlias`，覆盖 direct 与 aggregate 的全部 library/output、output/output 和 LICENSE/output caller。
+- [ ] **Step 2：Unicode basename/父目录 RED。** 新增 `TestPathsAliasAbsentUnicodeOutputs` 和 `TestDirectPackageRejectsAbsentUnicodeOutputAliases`，使用 `t.TempDir` 中正常库、保留文件、未存在的 `É.zip`/`é.zip`，以及未存在的 `É`/`é` 父目录内同 basename。测试在自有另一探测目录用 `os.Stat`/`os.SameFile` 确认当前目录属性和实际名称身份，不能创建目标输出后再测 preflight。默认 Windows 不敏感目录必须拒绝；Unix 或敏感目录中的合法不同输出按相应成功用例测试。最小 preflight 断言：
 
 ```go
 if _, _, _, err := validateDirectPackagePaths(library, archive, checksum); err == nil {
@@ -381,10 +395,84 @@ if _, _, _, err := validateDirectPackagePaths(library, archive, checksum); err =
 }
 ```
 
-- [ ] **Step 3：观察RED。** `go test .github/scripts/package-release.go .github/scripts/package-release_test.go -run '^TestPathsAliasAbsentUnicodeOutputs' -count=1 -v`；应是实际alias被接受。保持fixture正常，不运行网络安全相关输入研究。
-- [ ] **Step 4：实施经核验的共享preflight方法。** 完成报告中的方法须正确表示目标文件系统的Unicode大小写，不使用strings.EqualFold冒充Windows规则。已有SameFile、ASCII、case-distinct和Kelvin规则保留；普通非alias输入不得被拒绝，不增加依赖。写入之前拒绝alias，任何临时探测资源按原输出保留要求清理；错误明确返回。
-- [ ] **Step 5：GREEN和真实CLI。** 以实际DLL调用正常packager确认不产出被checksum覆盖的ZIP；使用archive/zip和crypto/sha256检查正常输出。Windows/Linux单独全量packager test/race/vet，保留不同Unicode字符、Kelvin、已有case-distinct、ASCIIalias、既有输出保护和事务回滚测试。
-- [ ] **Step 6：审查、修正、复审、提交。** 只提交两个packager文件，报告实际平台与文件系统，不声称所有filesystem已动态验证。独立报告尚未到达时保持本任务未完成，不创建虚假GREEN。
+CLI 使用 `packagerCommand(t, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)`，保留原 caller cwd。要求非零 exit 且错误包含 `archive and checksum must refer to different files`，库及保留文件 bytes 不变，目标 archive/checksum 不出现，无 `.tmp-`/`.backup-` 残留。禁止把 `undefined`、源码不存在或 module 导入错误记作业务拒绝。
+- [ ] **Step 3：观察 RED。** Windows 运行 `go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go -run '^(TestPathsAliasAbsentUnicodeOutputs|TestDirectPackageRejectsAbsentUnicodeOutputAliases)$' -count=1 -v`；必须是实际 Unicode alias 被接受的断言失败，不能是 fixture、导入或平台编译错误。
+- [ ] **Step 4：实现平台 helper 与原生测试。** Windows 使用 Go 标准库 `syscall` 调用 `kernel32.dll`：通过目录 handle 的 `GetFileInformationByHandleEx(FileCaseSensitiveInfo)` 查询属性，敏感目录返回 `false, nil`，不敏感目录用 `CompareStringOrdinal` 忽略大小写比较；字符串到 UTF-16 使用标准库转换。区分 API 的相等、不等与失败，关闭 handle 并传递资源清理错误。缺失父目录沿用已核验的属性继承；错误不得改用 Unicode folding 或继续生成输出。非 Windows 不补充 Unicode alias：
+
+```go
+func unicodeNamesAlias(ancestorPath, firstName, secondName string) (bool, error) {
+    return false, nil
+}
+```
+
+`package-release_other.go` 使用 `//go:build !windows`；显式命令仍须只列一个平台 helper。新增 Windows test 文件，`TestUnicodeNamesAliasWindowsCaseRules` 对照真实文件身份：不敏感目录 `É`/`é` 相同，`K`/`K`、`Σ`/`ς`、`S`/`ſ`、`𐐀`/`𐐨` 不同；敏感目录 `É`/`é` 不同。不得用 `strings.EqualFold`/`strings.ToUpper` 实现预期或生产比较。
+- [ ] **Step 5：接入共享 preflight。** `existingPathAncestor` 成功返回 `info, path, suffix, nil`，错误返回四项，同步其两个 caller。保留相同路径判定、SameFile 和 suffix 长度判断；局部比较循环为：
+
+```go
+for i := range firstSuffix {
+    if asciiEqualFold(firstSuffix[i], secondSuffix[i]) {
+        continue
+    }
+    same, err := unicodeNamesAlias(firstAncestor, firstSuffix[i], secondSuffix[i])
+    if err != nil { return false, err }
+    if !same { return false, nil }
+}
+```
+
+`firstAncestor` 来自新返回项，第二个祖先路径可丢弃，因为已确认 SameFile。Windows `TestUnicodeNamesAliasDirectoryError` 用已不存在的自有目录和 Unicode 不同名称确认 API 错误；原 caller 必须传递错误而不写输出。不增加可配置 facade 或 fallback。
+- [ ] **Step 6：Make host 编译条件的 RED。** 新增 `TestMakePackagerUsesHostCompilation` 与 source-selection dry-run 断言。把当前真实 Makefile 和三个 packager 生产源码原 bytes 复制到 `t.TempDir` 的原目录结构，放入相对 dist 中的正常库和 LICENSE；不改写 recipe，不读写用户 dist。为选定实际 aggregate recipe，用 `GOOS= GOARCH=` 解析原 Makefile，再通过第二个只设环境的临时 Makefile，使用 GNU Make 自身 parser 在之后导出 cross tuple。Windows host 的该文件内容为：
+
+```makefile
+override GOOS := linux
+override GOARCH := arm64
+export GOOS GOARCH
+```
+
+Linux host 的目标设 windows/arm64。执行 `make -f Makefile -f target-env.mk package GOOS= GOARCH= VERSION=1.2.3`，cwd 为自有复制目录；实际执行原 aggregate recipe 和 `packageExistingArtifacts`，无需跨目标 library build。期望真实 ZIP/checksum 成功，库 bytes、CRC、固定时间和 SHA-256 正确；修复前应因 recipe 继承 cross target 导致 host 工具无法编译/运行而 RED，不能只 printf helper 或复制一个不同的 recipe。另用当前真实 Makefile 的 `make -n package-platform VERSION=1.2.3 GOOS=linux GOARCH=arm64` 断言 library build 保留原目标、packager 单独使用 host；`validate-version` 在不存在 Go 命令时仍维持原行为。
+- [ ] **Step 7：只在 packaging recipe 内选择及强制 host。** 两个 recipe 分别查询 GOHOSTOS、GOHOSTARCH，任何查询失败终止；主文件和一个 helper 由 host 选择。保持 library build 的 GOOS/GOARCH，仅给最终 packager Go 命令加 host 环境。direct 的完整后续 recipe 为：
+
+```makefile
+host_os="$$( $(GO) env GOHOSTOS)" || exit $$?; \
+host_arch="$$( $(GO) env GOHOSTARCH)" || exit $$?; \
+helper=./.github/scripts/package-release_other.go; \
+if [ "$$host_os" = windows ]; then helper=./.github/scripts/package-release_windows.go; fi; \
+GOOS="$$host_os" GOARCH="$$host_arch" $(GO) run ./.github/scripts/package-release.go "$$helper" -version "$$PACKAGER_VERSION" -library "$(LIBRARY)" -archive "$(ARCHIVE)" -checksum "$(CHECKSUM)"
+```
+
+aggregate 保持相同前四行，最后一行为：
+
+```makefile
+GOOS="$$host_os" GOARCH="$$host_arch" $(GO) run ./.github/scripts/package-release.go "$$helper" -dist dist -out dist -version "$$PACKAGER_VERSION"
+```
+
+不新增解析期 Go 调用或全局改变 GOOS/GOARCH。重跑真实 cross-target 环境测试确认 GREEN，dry-run 断言 host/target 分离，不能以环境观测 marker 代替产物。
+- [ ] **Step 8：GREEN、合法 Unicode 与 cwd/相对参数。** 重跑 alias RED suite，用当前真实 DLL 的双源码 CLI 确认拒绝及输入保留。默认目录不同重音、Unicode sidecar、四组原生不等名称应成功；Windows 敏感目录的 `É.zip`/`é.zip` 与未存在共同父目录中的同组输出、Unix 同形输出应成功。另新增 `TestPackagerRelativePathsOutsideModule`，无 go.mod 的 cwd 中放 library/LICENSE，传相对 archive/checksum，实际核验 ZIP 中库与 LICENSE bytes、CRC、固定时间和 SHA-256。原六个 CLI test 均须通过，Dir/Env 与 Git version 来源不变。特殊目录属性准备不可用时明确 skip，不计为通过；默认 Windows alias 用例不得跳过。保留 ASCII alias、已存在 case-distinct/SameFile、输出保护和 aggregate 集合。
+- [ ] **Step 9：平台完整 file-list test/race/vet。** Windows 使用四个文件，Linux 使用三个文件，均在同一完成源码根内顺序执行：
+
+```bash
+go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1 -v
+go test -race .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
+go vet .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
+```
+
+```bash
+go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go -count=1 -v
+go test -race .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
+go vet .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
+```
+
+当前补核没有计入合规的新 Linux runtime 验收，P 须在自身获允许的工作区完成实际 Linux 生产回归。其他 Windows 文件系统、旧 Windows、macOS 未动态核验的限制保留。
+- [ ] **Step 10：同步三个 Ubuntu 命令和 Windows CI。** `build.yml:25` 改为 `go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go`；`:135/:182` 的 run 在主文件后加入 `./.github/scripts/package-release_other.go`，其余 version/library/archive/checksum 参数原样保留。公共 test 的 `1901/1962/1982` 同步断言完整源码列表；Windows amd64 matrix 的 MSYS2 setup 后、package 前新增：
+
+```yaml
+- name: Test Windows packager path comparison
+  if: "${{ matrix.GOOS == 'windows' && matrix.GOARCH == 'amd64' }}"
+  shell: msys2 {0}
+  run: go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1 -v
+```
+
+先更新命令及新 step 的 workflow 断言观察旧 YAML RED，再改 YAML 并 GREEN。其他 matrix/触发条件/release job 保持。G 必须确认该 Windows step 实际 success；不能用交叉编译/Ubuntu tests 或 skip 代替。
+- [ ] **Step 11：完整 P task 审查、修正、复审、提交。** 阶段自查和提交后，由 P workflow 对完整 `BASE..HEAD` 组织独立规格及质量审查，原实施者在同一 worktree 修正、重测、复审并新建提交。只提交 packager/平台源码及测试、Makefile、build.yml；向 F 提供准确的双源码/cwd/host 编译/Unicode 说明，主动报告全部真实 RED/GREEN、最终 HEAD、commit 和平台限制。补核 API/cwd marker 不作为生产 ZIP/sidecar GREEN。
 
 ### Task E1：两个正常oracle和普通seed同步
 
@@ -418,7 +506,7 @@ func TestProtocolOracleCompatibleSchemaAliases(t *testing.T) {
 - [ ] **Step 2：运行RED。** `go test . -run '^TestProtocolOracleCompatibleSchemaAliases' -count=1 -v`；生产已修复而oracle尚未识别新字段。
 - [ ] **Step 3：同步精确路径。** 两个oracle仅加Chat tools参数fallback、Responsesformatfallback和Gemini四路径；主字段存在含null/{}仍优先。legacyalias不扩展。默认roles保持system/developer/user，不把tool/assistant矩阵强塞入默认oracle，也不加入carrier的泛用递归解析。
 - [ ] **Step 4：GREEN。** 普通 `go test . -run '^TestProtocolOracle' -count=1`、`make test`运行既有和小型正常seed，保留rawtoken/machinebytes断言。不运行 `-fuzz`。
-- [ ] **Step 5：审查、修正、复审、提交。** 验证oracle独立性，逐个fallback的主字段null对照，commit例如 `test: cover normal schema aliases in independent protocol oracles`。
+- [ ] **Step 5：阶段自查、修正、提交。** 验证 oracle 独立性、逐个 fallback 的主字段 null 对照，修正并重跑后提交，例如 `test: cover normal schema aliases in independent protocol oracles`。在同一 E worktree 继续 E2；不另行派发阶段 reviewer。
 
 ### Task E2：阶段回归、实际native注册与HTTP
 
@@ -452,35 +540,53 @@ if upstream.arrivalCount() != 0 { t.Fatal("blocked request reached upstream") }
 carrier需三个实际图片consumer路径：Chattool->Codex、Responsesfunction/custom->Chat；legacyfunction只验证插件语义及原始字段，不能称其converter转换图片。file-ID结构保留不称为商业文件服务验证。MCP/directClaude经过实际CPA本地fixture，不声称商业API接受。
 
 - [ ] **Step 3：integration的RED/GREEN证据。** 在系统临时目录中保存本任务新测试，用Go overlay/独立临时构建让基线v0.3.8运行同样正常assertions确认对应RED，再使用当前集成HEAD确认GREEN；不复制或修改CPA core生产源。若有基线运行条件无法满足，保留B/C/D已有真实RED和精确限制，不能捏造新integration RED。测试本身仍须在当前native注册下实际通过。
-- [ ] **Step 4：独占 runner。** 运行 `make integration`。另执行 `make build VERSION=v0.3.9` 生成当前 Windows DLL，再运行 `go run ./.github/scripts/integration-runner.go -abi-smoke dist/windows_amd64/censorship.dll`；Linux 环境对应执行 `make build VERSION=v0.3.9` 和 `go run ./.github/scripts/integration-runner.go -abi-smoke dist/linux_amd64/censorship.so`。注册/HTTP/ABI 实际日志保存到自有系统临时目录，核对 version=0.3.9；不得使用后续 F 的产物满足前置依赖。避免同时重建同一 `.integration/run`。
+- [ ] **Step 4：独占 runner。** 运行 `make integration`。另执行 `make build VERSION=v0.3.9` 生成当前 Windows DLL，再运行 `go run ./.github/scripts/integration-runner.go -abi-smoke dist/windows_amd64/censorship.dll`；Linux 环境对应执行 `make build VERSION=v0.3.9` 和 `go run ./.github/scripts/integration-runner.go -abi-smoke dist/linux_amd64/censorship.so`。注册/HTTP/ABI 实际日志保存到自有系统临时目录。现有 `make integration` 的 `buildPlugin` 不注入版本，其功能验证库保持 `0.0.0-dev`；版本 `0.3.9` 由本步骤另行构建的正式库和 staged ABI smoke 核对，不修改 runner 或增加第二个版本来源。不得使用后续 F 的产物满足前置依赖。避免同时重建同一 `.integration/run`。
 - [ ] **Step 5：补查覆盖与复审。** 对照已完成86文件ledger和原14域完成记录，只继承完成报告。把新增/改动文件逐项列入本次spec/compliance review；确认未恢复停止方向、未改默认oracle角色、没有漏掉普通功能候选。`make test`、`git diff --check`。
-- [ ] **Step 6：审查、修正、复审、提交。** E所有测试完成并提交，主动报告每类路径/阶段/平台的具体结果和商业API未测试边界，清理本task临时实验，保留需要核验的日志。
+- [ ] **Step 6：完整 E task 审查、修正、复审、提交。** E2 测试、自查和阶段提交完成后，由负责 E 的 workflow 对 E1-E2 完整 `BASE..HEAD` 组织独立规格及质量审查。原实施者在同一 worktree 修正、重跑、复审并新建提交，全部完成后主动报告最终 HEAD、全部 commit、每类路径/阶段/平台的具体结果和商业 API 未测试边界。清理本 task 临时实验，保留需要核验的日志。
 
 ### Task F：v0.3.9文档和最终全量验证
 
-**Files:** `README.md:23,138-162,187,208-214`、`RELEASE_NOTES.md`顶部。不增加version源码或依赖文件修改。
+**Files:** `README.md:23,138-162,187,208-214`、`RELEASE_NOTES.md` 顶部；`main_test.go:1184-1227` 中 `TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions` 的当前与历史版本断言。不增加 version 源码或依赖文件修改，不改其他 main_test.go 测试。
 
-**Interfaces:** 版本通过 `-X main.pluginVersion`，bare source仍0.0.0-dev；Makefile的VERSION=v0.3.9生成0.3.9。release含七个平台。
+**Interfaces:** 版本通过 `-X main.pluginVersion`，bare source 仍 `0.0.0-dev`；Makefile 的 `VERSION=v0.3.9` 生成 `0.3.9`。release 含七个平台；现有文档测试同步当前 v0.3.9，保留 v0.3.8 及更早历史。
 
-- [ ] **Step 1：更新当前说明。** README现状写v0.3.9/固定CPA；明确carrier例外、texttoken标准库语义、所有上限字段、MCPassistant、historyprefill、两个schemafallback、四Geminialias和已通过packager行为。JSON字符串通常仍整串自然文本，只有explicit识别载体按内层text处理。RELEASE_NOTES顶部新增实际GREEN修复，不重写旧版本历史；不留下撤销结论、虚假性能保证或商业API声称。
-- [ ] **Step 2：全量Windows验收。** 顺序执行并核对真实输出，任何失败诊断、修正、重跑之后才继续：
+- [ ] **Step 1：版本断言 RED。** 先只修改既有 `TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions`：当前 header 和错误信息更新为 v0.3.9，结束边界指向原 v0.3.8 section，当前 compatibility 使用以下确切文本：
+
+```go
+const currentHeader = "# Censorship v0.3.9\n\n## v0.3.9 fixes\n"
+currentEnd := bytes.Index(raw, []byte("\n# Censorship v0.3.8\n"))
+const currentCompatibility = "v0.3.9 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+."
+```
+
+历史 compatibility sentence 列表新增原 v0.3.8 的完整句子，其余旧版本和 superseded notice 断言全部保留：
+
+```go
+"v0.3.8 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.",
+```
+
+运行 `go test . -run '^TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions$' -count=1 -v`，旧文档必须因当前标题仍为 v0.3.8 产生预期 RED。不要改 `pluginVersion`、注入方式或降低断言。
+- [ ] **Step 2：更新当前说明并 GREEN。** README 现状写 v0.3.9/固定 CPA；明确 carrier 例外、text token 标准库语义、所有上限字段、MCP assistant、history prefill、两个 schema fallback、四 Gemini alias 和已通过 packager 行为，采用 P 返回的准确 Unicode/ASCII/目录属性、双源码 CLI、原 cwd/相对参数和 host 编译说明。README 的 Windows CLI 使用主文件加 `package-release_windows.go`，Unix 使用主文件加 `package-release_other.go`；从仓库外 cwd 运行时两个源码使用绝对路径，flags/输出路径仍相对 caller cwd。历史审计命令原文保留。JSON 字符串通常仍整串自然文本，只有明确识别载体按内层 text 处理。RELEASE_NOTES 顶部新增 `# Censorship v0.3.9`、`## v0.3.9 fixes`、实际 GREEN 修复及上述兼容句；原 v0.3.8 和全部更早 section 原文保留。重跑同一文档 test 确认 GREEN；不留下撤销结论、虚假性能保证或商业 API 声称。
+- [ ] **Step 3：全量 Windows 验收。** 顺序执行并核对真实输出，任何失败诊断、修正、重跑之后才继续：
 
 ```bash
 make test
 make race
 make vet
-go test .github/scripts/package-release.go .github/scripts/package-release_test.go
+go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1 -v
+go test -race .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
+go vet .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
 make build VERSION=v0.3.9
 make package VERSION=v0.3.9 GOOS=windows GOARCH=amd64
+make package VERSION=v0.3.9
 make integration
 go run ./.github/scripts/integration-runner.go -abi-smoke dist/windows_amd64/censorship.dll
 git diff --check
 ```
 
-- [ ] **Step 3：全量Linux验收。** 在可用Linux目录使用同一完成HEAD；不要直接读取指向Windows绝对.git路径的worktree。沿用可核实Linux工作目录/干净pinnedCPA checkout，执行test/race/vet、packager、build/package VERSION=v0.3.9 GOOS=linux GOARCH=amd64、integration/.so注册smoke；host生产源保持固定commit和未修改。把实际命令和目录报告，不声称执行未运行的平台。
-- [ ] **Step 4：代价核验与资产。** A基线与当前same-environment benchmark顺序比较textdecoding、常规transform、escaped规模、carrier数量/文本长度及rebuild，记录差异和采样限制。核对本地ZIP内容、library版本0.3.9、lowercaseSHA-256 sidecar和aggregatechecksums。无必要的新优化不开发。
-- [ ] **Step 5：完整spec/compliance review。** 全部改动对照spec逐项核对、代码质量审查、修正、复审至无问题。每个task的RED/GREEN、阶段/机器bytes/no-op/图片/约束/注册证据均已完成，候选已明确判定；不能把待办留在发布门槛之后。
-- [ ] **Step 6：提交文档及最终可核验结果。** 只提交README/RELEASE_NOTES及已批准与本task相关测试，不提交生成产物或临时日志。报告所有完成commit供主会话整合。
+- [ ] **Step 4：全量 Linux 验收。** 在可用 Linux 目录使用同一完成 HEAD；不要直接读取指向 Windows 绝对 .git 路径的 worktree。沿用可核实 Linux 工作目录/干净 pinned CPA checkout，执行 test/race/vet；packager test/race/vet 显式使用 `package-release.go`、`package-release_other.go`、`package-release_test.go` 三文件，命令与 P9 的 Linux block 完全相同。继续 build/package VERSION=v0.3.9 GOOS=linux GOARCH=amd64、integration/.so 注册 smoke；host 生产源保持固定 commit 和未修改。报告实际命令和目录，不声称执行未运行的平台。
+- [ ] **Step 5：代价核验与资产。** A 基线与当前同环境 benchmark 顺序比较 text decoding、常规 transform、escaped 规模、carrier 数量/文本长度及 rebuild，记录差异和采样限制。核对本地 ZIP 内容、library 版本 0.3.9、lowercase SHA-256 sidecar 和 aggregate checksums。无必要的新优化不开发。
+- [ ] **Step 6：完整 spec/compliance review。** 全部改动对照 spec 逐项核对、代码质量审查、修正、复审至无问题。每个 task 的 RED/GREEN、阶段/机器 bytes/no-op/图片/约束/注册证据均已完成；版本文档 test 已在旧文档观察 RED，并在当前文档 GREEN，历史记录保留。不能把待办留在发布门槛之后。
+- [ ] **Step 7：提交文档及最终可核验结果。** 只提交 README.md、RELEASE_NOTES.md 和 main_test.go 中明确归属的版本文档断言，不提交生成产物、临时日志或其他测试改动。报告所有完成 commit 供主会话整合。
 
 ### Task G：本地main合并和GitHub构建/发行
 
@@ -503,7 +609,7 @@ git push origin v0.3.9
 
 命令只能在前置检查与原发布授权范围内执行；现有同tag时核对实际对象，不重复创建或移动tag。
 
-- [ ] **Step 4：等待实际CI结果。** 在后台完成通知到达后核查与目标commit/tag匹配的GitHubrun，而非反复轮询。确认test、linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64、windows/arm64、freebsd/amd64和release全部conclusion=success。CI失败在相应task worktree内定位、修正、验证、review和提交，再按原发布流程处理，不隐藏失败或改写公共asset。
+- [ ] **Step 4：等待实际 CI 结果。** 一次读取由该次 main/tag push 产生的 Build run，核对实际 `headSha`、`headBranch` 和 event；使用已经核对的 `RELEASE_RUN_ID` 在后台执行 `gh run watch "$RELEASE_RUN_ID" --exit-status`，由工具完成通知唤回，再运行 `gh run view "$RELEASE_RUN_ID" --json conclusion,jobs,headSha,headBranch,url`。主会话不轮询后台任务日志或状态。确认 test、linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64、windows/arm64、freebsd/amd64 和 release 全部 conclusion=success；Windows amd64 job 的 `Test Windows packager path comparison` step 必须实际 success。终态后一次读取该 step 日志，核对默认 Unicode alias 拒绝用例实际通过，特殊目录模式的 skip 不计为通过。main push 的独立 run 也要核对 test/build 结论。CI 失败在相应任务 worktree 内定位、修正、验证、review 和提交，再按原发布流程处理，不隐藏失败或改写公共 asset。
 - [ ] **Step 5：发行资产验收。** 下载v0.3.9实际remoteassets到新系统temp，核对恰好七个ZIP、七个sidecar和checksums.txt。用archive/zip、crypto/sha256或平台标准工具验证CRC/库/版本、64位小写hex加两个空格加basename、七条aggregatechecksums；核对isDraft=false。已有release workflow自身验证仍保留，独立下载检验不能仅用job成功代替。
 - [ ] **Step 6：终结。** 返回实际commit/tag/run、每项修复及验证限制；未调用商业API，未实际加载的平台清楚说明。清理本次无需保留临时下载，仅在真实完整结果核实后宣称发布完成。
 
@@ -513,4 +619,4 @@ git push origin v0.3.9
 - Review Focus五项各有明确失败/保留断言，parent offset不混坐标，parent 的 MaxCodePoints 和 custom 边界单独检验，MCP不用默认oracle代替确定性矩阵。
 - A0的最小处理入口保持原行为，A1/A2/A3针对同一生产核心测试；不由测试复制matcher、pipeline或provider转换逻辑。
 - 所有实现agent自有worktree内完成RED/GREEN、review、修正、复审和commit后主动返回；后续只在依赖完成commit上开始，不轮询后台任务。
-- scalarfunction上限及106路径解码补充报告已完成，不再作为阻塞。当前唯一文档阶段待核验项是Unicode打包修复可行性报告；到达后更新TaskP和spec，不预判未完成结果。
+- scalar function 上限、106 路径解码补充及 Unicode packager 普通修复可行性报告均已完成并纳入明确任务；P 拥有相邻平台源码、Makefile 的 host 编译条件、全部 CLI/workflow caller 和 Windows CI 步骤，F 拥有双源码调用说明及当前与历史版本断言。可行性与基线测试均不作为生产修复 GREEN 或发布完成证据。
