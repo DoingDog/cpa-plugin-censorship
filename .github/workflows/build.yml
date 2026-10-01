@@ -22,7 +22,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make test
-      - run: go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
+      - run: go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go -race -count=1
+      - run: go vet .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
       - run: make race
       - run: make vet
       - run: make integration
