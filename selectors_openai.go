@@ -38,7 +38,11 @@ func appendOpenAIChatTool(spans *[]textSpan, tool gjson.Result, roles scopeSet) 
 	case "function":
 		function := tool.Get("function")
 		appendStringSpan(spans, function.Get("description"), "developer", roles)
-		appendJSONSchemaDescriptions(spans, function.Get("parameters"), "developer", roles)
+		schema := function.Get("parameters")
+		if !schema.Exists() {
+			schema = function.Get("parametersJsonSchema")
+		}
+		appendJSONSchemaDescriptions(spans, schema, "developer", roles)
 		appendJSONSchemaDescriptions(spans, function.Get("output_schema"), "developer", roles)
 	case "custom":
 		appendStringSpan(spans, tool.Get("custom.description"), "developer", roles)
@@ -432,7 +436,11 @@ func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan
 		format := root.Get("text.format")
 		if format.Get("type").Str == "json_schema" {
 			appendStringSpan(spans, format.Get("description"), "developer", roles)
-			appendJSONSchemaDescriptions(spans, format.Get("schema"), "developer", roles)
+			schema := format.Get("schema")
+			if !schema.Exists() {
+				schema = format.Get("json_schema.schema")
+			}
+			appendJSONSchemaDescriptions(spans, schema, "developer", roles)
 		}
 	}
 	if roles.has("developer") || roles.has("user") {

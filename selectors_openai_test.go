@@ -342,6 +342,124 @@ func TestOpenAIResponsesUntouchedOverlimitOutputKeepsToken(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleSchemaFallbacks(t *testing.T) {
+	for _, entry := range []struct{ name, source, body string }{
+		{"Chat parametersJsonSchema", "openai", `{"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"function","function":{"name":"SECRET name","parametersJsonSchema":%s}}],"metadata":{"note":"SECRET metadata"}}`},
+		{"Responses json_schema.schema", "openai-response", `{"input":"safe","text":{"format":{"type":"json_schema","name":"SECRET name","json_schema":{"schema":%s}}},"metadata":{"note":"SECRET metadata"}}`},
+	} {
+		for _, location := range []struct{ name, schema, text string }{
+			{"root", `{"type":"object","description":"SECRET root","properties":{"SECRET key":{"type":"string","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"x-extension":{"description":"SECRET extension"}}`, "SECRET root"},
+			{"property", `{"type":"object","properties":{"SECRET key":{"type":"string","description":"SECRET property","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"x-extension":{"description":"SECRET extension"}}`, "SECRET property"},
+		} {
+			for _, action := range []struct{ name, replacement string }{{"block", ""}, {"strip", ""}, {"obfs", "S​ECRET"}} {
+				t.Run(entry.name+"/"+location.name+"/"+action.name, func(t *testing.T) {
+					registerConfig(t, "words:\n  "+action.name+": [SECRET]\nscope:\n  roles: [developer]\n")
+					body := []byte(fmt.Sprintf(entry.body, location.schema))
+					resp := interceptRPC(t, entry.source, body)
+					if action.name == "block" {
+						if !resp.Terminate || resp.StatusCode != 400 || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "SECRET" {
+							t.Fatalf("terminate = %t, status = %d, error = %s", resp.Terminate, resp.StatusCode, resp.ResponseBody)
+						}
+						return
+					}
+					wantText := strings.Replace(location.text, "SECRET", action.replacement, 1)
+					want := replaceRawTokens(t, body, rawReplacement{Before: openAIStringToken(t, location.text), After: openAIStringToken(t, wantText)})
+					if resp.Terminate || !bytes.Equal(resp.Body, want) {
+						t.Fatalf("body = %s, want %s", resp.Body, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestOpenAICompatibleSchemaPrecedence(t *testing.T) {
+	const alias = `{"type":"object","description":"SECRET root","properties":{"SECRET key":{"type":"string","description":"SECRET property","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"x-extension":{"description":"SECRET extension"}}`
+	for _, entry := range []struct{ name, source, canonical, body string }{
+		{"Chat", "openai", "parameters", `{"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"function","function":{"name":"SECRET name",%s"parametersJsonSchema":` + alias + `}}],"metadata":{"note":"SECRET metadata"}}`},
+		{"Responses", "openai-response", "schema", `{"input":"safe","text":{"format":{"type":"json_schema","name":"SECRET name",%s"json_schema":{"schema":` + alias + `}}},"metadata":{"note":"SECRET metadata"}}`},
+	} {
+		for _, canonical := range []struct{ name, value string }{
+			{"missing", ""}, {"null", "null"}, {"empty object", "{}"}, {"safe object", `{"type":"object","description":"safe","properties":{}}`},
+		} {
+			for _, action := range []struct{ name, replacement string }{{"block", ""}, {"strip", ""}, {"obfs", "S​ECRET"}} {
+				t.Run(entry.name+"/"+canonical.name+"/"+action.name, func(t *testing.T) {
+					registerConfig(t, "words:\n  "+action.name+": [SECRET]\nscope:\n  roles: [developer]\n")
+					field := ""
+					if canonical.value != "" {
+						field = `"` + entry.canonical + `":` + canonical.value + `,`
+					}
+					body := []byte(fmt.Sprintf(entry.body, field))
+					resp := interceptRPC(t, entry.source, body)
+					if canonical.value != "" {
+						requireNoOpResponse(t, resp)
+						return
+					}
+					if action.name == "block" {
+						if !resp.Terminate || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" {
+							t.Fatalf("response = %#v", resp)
+						}
+						return
+					}
+					want := replaceRawTokens(t, body,
+						rawReplacement{Before: `"SECRET root"`, After: openAIStringToken(t, action.replacement+" root")},
+						rawReplacement{Before: `"SECRET property"`, After: openAIStringToken(t, action.replacement+" property")},
+					)
+					if resp.Terminate || !bytes.Equal(resp.Body, want) {
+						t.Fatalf("body = %s, want %s", resp.Body, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestOpenAICompatibleSchemaExclusions(t *testing.T) {
+	for _, tc := range []struct{ name, source, roles, body string }{
+		{"Chat developer disabled", "openai", "user", `{"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"function","function":{"parametersJsonSchema":{"description":"SECRET"}}}]}`},
+		{"Responses developer disabled", "openai-response", "user", `{"input":"safe","text":{"format":{"type":"json_schema","json_schema":{"schema":{"description":"SECRET"}}}}}`},
+		{"Chat unknown type", "openai", "developer", `{"tools":[{"type":"unknown","function":{"parametersJsonSchema":{"description":"SECRET"}}}]}`},
+		{"Responses unknown type", "openai-response", "developer", `{"input":"safe","text":{"format":{"type":"unknown","json_schema":{"schema":{"description":"SECRET"}}}}}`},
+		{"Chat machine only", "openai", "developer", `{"tools":[{"type":"function","function":{"name":"SECRET name","parametersJsonSchema":{"description":"safe","properties":{"SECRET key":{"enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","x-extra":{"description":"SECRET extension"}}}}}}],"metadata":{"note":"SECRET metadata"}}`},
+		{"Responses machine only", "openai-response", "developer", `{"input":"safe","text":{"format":{"type":"json_schema","name":"SECRET name","json_schema":{"schema":{"description":"safe","properties":{"SECRET key":{"enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default","x-extra":{"description":"SECRET extension"}}}}}}},"metadata":{"note":"SECRET metadata"}}`},
+		{"legacy alias only", "openai", "developer", `{"functions":[{"name":"SECRET name","parametersJsonSchema":{"description":"SECRET alias"}}]}`},
+	} {
+		for _, action := range []string{"block", "strip", "obfs"} {
+			t.Run(tc.name+"/"+action, func(t *testing.T) {
+				registerConfig(t, "words:\n  "+action+": [SECRET]\nscope:\n  roles: ["+tc.roles+"]\n")
+				requireNoOpResponse(t, interceptRPC(t, tc.source, []byte(tc.body)))
+			})
+		}
+	}
+}
+
+func TestOpenAICompatibleSchemaLegacyCanonical(t *testing.T) {
+	for _, field := range []struct{ name, json, text string }{
+		{"description", `"description":"SECRET description"`, "SECRET description"},
+		{"parameters", `"parameters":{"description":"SECRET parameters","properties":{"SECRET key":{"enum":["SECRET enum"]}}}`, "SECRET parameters"},
+		{"output_schema", `"output_schema":{"description":"SECRET output","default":"SECRET default"}`, "SECRET output"},
+	} {
+		for _, action := range []struct{ name, replacement string }{{"block", ""}, {"strip", ""}, {"obfs", "S​ECRET"}} {
+			t.Run(field.name+"/"+action.name, func(t *testing.T) {
+				registerConfig(t, "words:\n  "+action.name+": [SECRET]\nscope:\n  roles: [developer]\n")
+				body := []byte(`{"messages":[{"role":"user","content":"safe"}],"functions":[{"name":"SECRET name",` + field.json + `,"parametersJsonSchema":{"description":"SECRET dormant alias"}}]}`)
+				resp := interceptRPC(t, "openai", body)
+				if action.name == "block" {
+					if !resp.Terminate || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" {
+						t.Fatalf("response = %#v", resp)
+					}
+					return
+				}
+				wantText := strings.Replace(field.text, "SECRET", action.replacement, 1)
+				want := replaceRawTokens(t, body, rawReplacement{Before: openAIStringToken(t, field.text), After: openAIStringToken(t, wantText)})
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("body = %s, want %s", resp.Body, want)
+				}
+			})
+		}
+	}
+}
+
 func TestOpenAISelectorChangesOnlyContractedStringTokens(t *testing.T) {
 	registerConfig(t, "mode: strip\nwords: [SECRET]\nscope:\n  roles: [system, developer, user, assistant, tool]\n")
 	base64Payload := strings.Repeat("SECRET", (20<<20)/len("SECRET")+1)[:20<<20]
