@@ -98,29 +98,93 @@ func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSp
 	case "interactions":
 		collectInteractions(root, roles, &spans)
 	}
-	sort.Slice(spans, func(i, j int) bool {
-		return spans[i].RawStart < spans[j].RawStart
-	})
-	for i, span := range spans {
-		if span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > len(body) {
-			return nil, errInvalidSpan
-		}
-		if i > 0 && spans[i-1].RawEnd > span.RawStart {
-			return nil, errInvalidSpan
-		}
+	if err := sortAndValidateSpans(spans, len(body)); err != nil {
+		return nil, err
 	}
 	return spans, nil
+}
+
+func sortAndValidateSpans(spans []textSpan, bodyLen int) error {
+	if len(spans) > 1 {
+		sort.Slice(spans, func(i, j int) bool {
+			return spans[i].RawStart < spans[j].RawStart
+		})
+	}
+	for i, span := range spans {
+		if span.RawStart < 0 || span.RawStart >= span.RawEnd || span.RawEnd > bodyLen {
+			return errInvalidSpan
+		}
+		if i > 0 && spans[i-1].RawEnd > span.RawStart {
+			return errInvalidSpan
+		}
+	}
+	return nil
 }
 
 func appendStringSpan(spans *[]textSpan, value gjson.Result, role string, roles scopeSet) {
 	if value.Type != gjson.String || value.Str == "" || !roles.has(role) || len(value.Raw) == 0 || value.Index < 0 || value.Index > int(^uint(0)>>1)-len(value.Raw) {
 		return
 	}
+	text := value.Str
+	if strings.ContainsRune(value.Raw, '\\') {
+		var decoded string
+		if err := json.Unmarshal([]byte(value.Raw), &decoded); err != nil {
+			panic(err)
+		}
+		text = decoded
+	}
 	*spans = append(*spans, textSpan{
 		RawStart: value.Index,
 		RawEnd:   value.Index + len(value.Raw),
-		Text:     value.Str,
+		Text:     text,
 		Role:     role,
+	})
+}
+
+func appendToolResultStringSpan(spans *[]textSpan, value gjson.Result, role string, roles scopeSet) {
+	before := len(*spans)
+	appendStringSpan(spans, value, role, roles)
+	if len(*spans) == before {
+		return
+	}
+	parent := &(*spans)[before]
+	if !gjson.Valid(parent.Text) {
+		return
+	}
+	root := gjson.Parse(parent.Text)
+	if !root.IsArray() {
+		return
+	}
+	hasImage := false
+	root.ForEach(func(_, part gjson.Result) bool {
+		if !part.IsObject() {
+			return true
+		}
+		switch part.Get("type").Str {
+		case "image_url":
+			image := part.Get("image_url")
+			if image.IsObject() {
+				url, file := image.Get("url"), image.Get("file_id")
+				hasImage = url.Type == gjson.String && url.Str != "" || file.Type == gjson.String && file.Str != ""
+			}
+		case "input_image":
+			url, file := part.Get("image_url"), part.Get("file_id")
+			hasImage = url.Type == gjson.String && url.Str != "" || file.Type == gjson.String && file.Str != ""
+		}
+		return !hasImage
+	})
+	if !hasImage {
+		return
+	}
+	parent.EncodedChildren = make([]textSpan, 0)
+	root.ForEach(func(_, part gjson.Result) bool {
+		if part.IsObject() {
+			switch part.Get("type").Str {
+			case "text", "input_text", "output_text":
+				appendStringSpan(&parent.EncodedChildren, part.Get("text"), role, roles)
+			}
+		}
+		return true
 	})
 }
 
