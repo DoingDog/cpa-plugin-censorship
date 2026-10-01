@@ -169,6 +169,108 @@ func TestProtocolOracleAcceptsOnlyGeminiSignatureBoundRewrites(t *testing.T) {
 	}
 }
 
+func TestProtocolOracleCompatibleSchemaAliases(t *testing.T) {
+	paths := []struct {
+		name, format, template, canonical string
+	}{
+		{"Chat_parametersJsonSchema", "openai", `{"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"function","function":{"name":"SECRET name","parametersJsonSchema":%s}}],"metadata":{"note":"SECRET metadata"}}`, "parameters"},
+		{"Responses_json_schema.schema", "openai-response", `{"input":"safe","text":{"format":{"type":"json_schema","name":"SECRET name","json_schema":{"schema":%s}}},"metadata":{"note":"SECRET metadata"}}`, "schema"},
+		{"Gemini_response_schema", "gemini", `{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseMimeType":"application/json","response_schema":%s}}`, ""},
+		{"Gemini__responseJsonSchema", "gemini", `{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseMimeType":"application/json","_responseJsonSchema":%s}}`, ""},
+		{"Gemini_response_json_schema", "gemini", `{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseMimeType":"application/json","response_json_schema":%s}}`, ""},
+		{"Gemini_response_json_schema_ordered", "gemini", `{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseMimeType":"application/json","response_json_schema_ordered":%s}}`, ""},
+	}
+	check := func(t *testing.T, format string, body []byte, want []oracleProtocolSpan) {
+		t.Helper()
+		spans, ok := oracleProtocolSpans(format, body)
+		if !ok {
+			t.Fatal("oracle rejected normal body")
+		}
+		var selected []oracleProtocolSpan
+		for _, span := range spans {
+			if strings.Contains(span.Text, "SECRET") {
+				selected = append(selected, span)
+			}
+		}
+		if !reflect.DeepEqual(selected, want) {
+			t.Errorf("oracle selected %v, want %v", selected, want)
+		}
+		raw, ok := oracleRawProtocolSpans(format, body)
+		if !ok {
+			t.Fatal("raw oracle rejected normal body")
+		}
+		selected = nil
+		for _, span := range raw {
+			var text string
+			if err := json.Unmarshal(body[span.Start:span.End], &text); err != nil || text != span.Text {
+				t.Fatalf("raw token [%d:%d] = %q, text=%q error=%v", span.Start, span.End, body[span.Start:span.End], span.Text, err)
+			}
+			if strings.Contains(span.Text, "SECRET") {
+				selected = append(selected, oracleProtocolSpan{Text: span.Text, Role: span.Role})
+			}
+		}
+		if !reflect.DeepEqual(selected, want) {
+			t.Errorf("raw oracle selected %v, want %v", selected, want)
+		}
+	}
+	for _, path := range paths {
+		for _, tc := range []struct {
+			name, schema string
+			want         []oracleProtocolSpan
+		}{
+			{"root", `{"type":"object","description":"SECRET tail","properties":{"SECRET key":{"type":"string","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"x-extension":{"description":"SECRET extension"}}`, []oracleProtocolSpan{{Text: "SECRET tail", Role: "developer"}}},
+			{"property", `{"type":"object","properties":{"SECRET key":{"type":"string","description":"SECRET tail","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"x-extension":{"description":"SECRET extension"}}`, []oracleProtocolSpan{{Text: "SECRET tail", Role: "developer"}}},
+			{"machine_only", `{"type":"object","properties":{"SECRET key":{"type":"string","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"x-extension":{"description":"SECRET extension"}}`, nil},
+		} {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				body := []byte(fmt.Sprintf(path.template, tc.schema))
+				check(t, path.format, body, tc.want)
+				if len(tc.want) == 0 {
+					return
+				}
+				for _, action := range []mode{modeStrip, modeObfs} {
+					cfg := mustConfig(t, fmt.Sprintf("mode: %s\nwords: [SECRET]\n", action))
+					got, err := transformRequest(body, path.format, cfg)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := checkProtocolResult(path.format, body, action, false, got); err != nil {
+						t.Fatal(err)
+					}
+					forged := transformResult{Body: bytes.Replace(got.Body, []byte("SECRET enum"), []byte("changed enum"), 1)}
+					if err := checkProtocolResult(path.format, body, action, false, forged); err == nil {
+						t.Fatal("oracle accepted a changed machine enum")
+					}
+				}
+			})
+		}
+		if path.canonical == "" {
+			continue
+		}
+		for _, canonical := range []string{"null", "{}", `{"description":"safe canonical"}`} {
+			t.Run(path.name+"/canonical_"+canonical, func(t *testing.T) {
+				body := fmt.Sprintf(path.template, `{"description":"SECRET alias"}`)
+				marker := `"parametersJsonSchema":`
+				if path.format == "openai-response" {
+					marker = `"json_schema":`
+				}
+				body = strings.Replace(body, marker, fmt.Sprintf(`%q:%s,`, path.canonical, canonical)+marker, 1)
+				check(t, path.format, []byte(body), nil)
+			})
+		}
+	}
+	for _, tc := range []struct{ format, body string }{
+		{"openai", `{"functions":[{"name":"lookup","parametersJsonSchema":{"description":"SECRET legacy"}}]}`},
+		{"gemini", `{"generation_config":{"response_schema":{"description":"SECRET legacy"}}}`},
+		{"gemini", `{"generationConfig":{"response_format":{"text":{"schema":{"description":"SECRET legacy"}}}}}`},
+		{"openai", `{"messages":[{"role":"assistant","content":"SECRET assistant"},{"role":"tool","content":"SECRET tool"},{"role":"function","content":"SECRET function"}]}`},
+	} {
+		t.Run("excluded/"+tc.format+"/"+tc.body, func(t *testing.T) {
+			check(t, tc.format, []byte(tc.body), nil)
+		})
+	}
+}
+
 func TestProtocolOracleCoversDefaultScopeOpenAIDefinitions(t *testing.T) {
 	for _, tc := range []struct {
 		name, format, body, role string
@@ -868,6 +970,14 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "interactions", body: []byte(`{"input":[{"type":"model_output","content":[{"type":"text","text":"SECRET","annotations":[{"type":"url_citation","start_index":0,"end_index":6,"url":"https://example.com"}]}]}]}`)},
 		{format: "interactions", body: []byte(`{"input":{"type":"user_input","content":[{"type":"text","text":"SECRET","inlineData":{"data":"SECRET"}}]}}`)},
 		{format: "interactions", body: []byte(`{"input":[{"type":"function_result","content":"SECRET"}]}`)},
+		{format: "openai", body: []byte(`{"tools":[{"type":"function","function":{"name":"SECRET name","parametersJsonSchema":{"description":"SECRET root","properties":{"SECRET key":{"description":"SECRET property","enum":["SECRET machine"]}}}}}]}`)},
+		{format: "openai-response", body: []byte(`{"text":{"format":{"type":"json_schema","json_schema":{"schema":{"description":"SECRET root","properties":{"SECRET key":{"description":"SECRET property","enum":["SECRET machine"]}}}}}}}`)},
+		{format: "gemini", body: []byte(`{"generationConfig":{"response_schema":{"description":"SECRET root","properties":{"SECRET key":{"description":"SECRET property","default":"SECRET machine"}}}}}`)},
+		{format: "gemini", body: []byte(`{"generationConfig":{"_responseJsonSchema":{"description":"SECRET root","properties":{"SECRET key":{"description":"SECRET property","default":"SECRET machine"}}}}}`)},
+		{format: "gemini", body: []byte(`{"generationConfig":{"response_json_schema":{"description":"SECRET root","properties":{"SECRET key":{"description":"SECRET property","default":"SECRET machine"}}}}}`)},
+		{format: "gemini", body: []byte(`{"generationConfig":{"response_json_schema_ordered":{"description":"SECRET root","properties":{"SECRET key":{"description":"SECRET property","default":"SECRET machine"}}}}}`)},
+		{format: "openai", body: []byte(`{"tools":[{"type":"function","function":{"parameters":null,"parametersJsonSchema":{"description":"SECRET shadow"}}}],"functions":[{"parametersJsonSchema":{"description":"SECRET legacy"}}]}`)},
+		{format: "openai-response", body: []byte(`{"text":{"format":{"type":"json_schema","schema":{},"json_schema":{"schema":{"description":"SECRET shadow"}}}}}`)},
 		{format: "openai", body: []byte(`not-json`)},
 	}
 	for _, seed := range seeds {
@@ -1593,10 +1703,15 @@ func oracleAppendOpenAIChatTool(spans *[]oracleProtocolSpan, tool json.RawMessag
 		if description, ok := oracleFirstField(function, "description"); ok {
 			oracleAppendString(spans, description, "developer")
 		}
-		for _, key := range []string{"parameters", "output_schema"} {
-			if schema, ok := oracleFirstField(function, key); ok {
-				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
-			}
+		schema, exists := oracleFirstField(function, "parameters")
+		if !exists {
+			schema, exists = oracleFirstField(function, "parametersJsonSchema")
+		}
+		if exists {
+			oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+		}
+		if schema, ok := oracleFirstField(function, "output_schema"); ok {
+			oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
 		}
 	case "custom":
 		custom, ok := oracleFirstField(tool, "custom")
@@ -1789,7 +1904,12 @@ func oracleOpenAIResponseSpans(root []byte, spans *[]oracleProtocolSpan) {
 			if description, ok := oracleFirstField(format, "description"); ok {
 				oracleAppendString(spans, description, "developer")
 			}
-			if schema, ok := oracleFirstField(format, "schema"); ok {
+			schema, exists := oracleFirstField(format, "schema")
+			if !exists {
+				jsonSchema, _ := oracleFirstField(format, "json_schema")
+				schema, exists = oracleFirstField(jsonSchema, "schema")
+			}
+			if exists {
 				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
 			}
 		}
@@ -1986,7 +2106,7 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 
 func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 	if config, ok := oracleFirstField(root, "generationConfig"); ok {
-		for _, key := range []string{"responseSchema", "responseJsonSchema"} {
+		for _, key := range []string{"responseSchema", "responseJsonSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "response_json_schema_ordered"} {
 			if schema, ok := oracleFirstField(config, key); ok {
 				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
 			}
@@ -2357,10 +2477,15 @@ func oracleRawAppendOpenAIChatTool(spans *[]oracleRawStringToken, tool *oracleRa
 		if description, ok := function.firstField("description"); ok {
 			oracleRawAppendString(spans, description, "developer")
 		}
-		for _, key := range []string{"parameters", "output_schema"} {
-			if schema, ok := function.firstField(key); ok {
-				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
-			}
+		schema, exists := function.firstField("parameters")
+		if !exists {
+			schema, exists = function.firstField("parametersJsonSchema")
+		}
+		if exists {
+			oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+		}
+		if schema, ok := function.firstField("output_schema"); ok {
+			oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
 		}
 	case "custom":
 		custom, ok := tool.firstField("custom")
@@ -2564,7 +2689,12 @@ func oracleRawOpenAIResponseSpans(root *oracleRawValue, spans *[]oracleRawString
 			if description, ok := format.firstField("description"); ok {
 				oracleRawAppendString(spans, description, "developer")
 			}
-			if schema, ok := format.firstField("schema"); ok {
+			schema, exists := format.firstField("schema")
+			if !exists {
+				jsonSchema, _ := format.firstField("json_schema")
+				schema, exists = jsonSchema.firstField("schema")
+			}
+			if exists {
 				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
 			}
 		}
@@ -2779,7 +2909,7 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 
 func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	if config, ok := root.firstField("generationConfig"); ok {
-		for _, key := range []string{"responseSchema", "responseJsonSchema"} {
+		for _, key := range []string{"responseSchema", "responseJsonSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "response_json_schema_ordered"} {
 			if schema, ok := config.firstField(key); ok {
 				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
 			}
@@ -3467,7 +3597,11 @@ func oracleExcludedTokens(format string, body []byte) [][]byte {
 		case "openai":
 			if key == "tools" {
 				oracleForEachArray(value, func(item json.RawMessage) {
-					appendOracleToken(&tokens, item)
+					var spans []oracleProtocolSpan
+					oracleAppendOpenAIChatTool(&spans, item)
+					if len(spans) == 0 {
+						appendOracleToken(&tokens, item)
+					}
 				})
 			}
 		case "openai-response":
