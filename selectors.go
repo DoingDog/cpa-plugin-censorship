@@ -116,10 +116,16 @@ func appendStringSpan(spans *[]textSpan, value gjson.Result, role string, roles 
 	if value.Type != gjson.String || value.Str == "" || !roles.has(role) || len(value.Raw) == 0 || value.Index < 0 || value.Index > int(^uint(0)>>1)-len(value.Raw) {
 		return
 	}
+	text := value.Str
+	if strings.ContainsRune(value.Raw, '\\') {
+		if err := json.Unmarshal([]byte(value.Raw), &text); err != nil {
+			panic(err)
+		}
+	}
 	*spans = append(*spans, textSpan{
 		RawStart: value.Index,
 		RawEnd:   value.Index + len(value.Raw),
-		Text:     value.Str,
+		Text:     text,
 		Role:     role,
 	})
 }
