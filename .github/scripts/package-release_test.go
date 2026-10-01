@@ -2165,6 +2165,7 @@ type workflowPush struct {
 type workflowJob struct {
 	Needs    any    `yaml:"needs"`
 	If       string `yaml:"if"`
+	RunsOn   string `yaml:"runs-on"`
 	Strategy struct {
 		Matrix struct {
 			Include []workflowPlatform `yaml:"include"`
@@ -2214,10 +2215,20 @@ func TestBuildWorkflowContract(t *testing.T) {
 	if workflow.Env["PLUGIN_NAME"] != "censorship" {
 		t.Fatalf("workflow env = %#v", workflow.Env)
 	}
-	testRuns := nonemptyRuns(workflow.Jobs["test"].Steps)
+	test := workflow.Jobs["test"]
+	if test.RunsOn != "ubuntu-24.04" || test.If != "" {
+		t.Fatalf("test job must run unconditionally on Ubuntu: %#v", test)
+	}
+	for _, step := range test.Steps {
+		if step.If != "" {
+			t.Fatalf("test step must run unconditionally: %#v", step)
+		}
+	}
+	testRuns := nonemptyRuns(test.Steps)
 	wantTestRuns := []string{
 		"make test",
-		"go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go",
+		"go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go -race -count=1",
+		"go vet .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go",
 		"make race",
 		"make vet",
 		"make integration",

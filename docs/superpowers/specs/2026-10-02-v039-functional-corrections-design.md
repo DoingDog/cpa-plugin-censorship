@@ -148,6 +148,8 @@ Task P 独占 packager、平台源码和 Windows 原生测试、Makefile、build
 
 完成条件为默认 Windows 目录中缺失 Unicode basename/父目录的真实断言 RED、共享 preflight GREEN、真实 DLL CLI 拒绝 alias 并保留输入/已有文件、Windows 大小写敏感目录与 Unix 的合法不同输出、完整平台 file-list test/race/vet，以及 GitHub Windows job 实际执行回归。增加无 go.mod 的 cwd 中相对 library/archive/checksum 与本地 LICENSE 的真实成功打包用例；负向 CLI 必须核对预期业务错误，不能把编译失败算作拒绝通过。目录属性设置不可用的环境必须记录其限制，不能把 skip 当作通过。原功能矩阵的实测平台为 Windows 11 本地目录和 Debian `/tmp`；未实际验证其他 Windows 文件系统、旧 Windows 或 macOS。
 
+Task P-CI 补齐 Linux packager 的实际验收。原 P 修复已通过独立规格和质量审查，Windows 完整 suite 已通过；本地 WSL 执行被拒，后续不重试 WSL 或其他本地 Linux 替代执行。Linux 的完整生产回归由原授权 `build.yml` 的 Ubuntu `test` job 执行：三文件 `package-release.go`、`package-release_other.go`、`package-release_test.go` 的 `go test ... -race -count=1` 同时运行完整功能 suite 和 race 检查，独立 `go vet ...` 检查同一文件列表，包含 Unix Unicode 合法不同输出用例。根 `make race/vet` 的 `./...` 不覆盖 `.github/scripts`，不能代替这些命令。现有 YAML 的普通 packager test 增加上述 flags，并新增 vet step，无需重复普通 test step。测试使用既有 `yaml.v3` 检查 Ubuntu `test` job 的真实 `run`，要求实际命令和无条件执行；注释或其他 job 的命令不满足断言。先修订并提交 spec/plan，再新增断言观察旧 YAML 缺少 race/vet 的真实 RED，最小 CI 修改后 GREEN；保留全部原断言、root test/race/vet/integration、Windows step、交叉构建源码列表、trigger、matrix 和 release job。P-CI 只修改本 spec、plan、`build.yml` 和 `package-release_test.go`，完整 Windows file-list test/race/vet、根 make test/race/vet、自查、提交后无缓存复验及完整 `BASE..HEAD` 独立审查均须完成。新增 Linux/Windows CI 的实际 success 保留为 G 的未完成验收，不能用本地 Windows 结果代替。
+
 ## 实施依赖与文件归属
 
 | 任务 | 独立 worktree 的自有文件 | 依赖与完成条件 |
@@ -165,7 +167,7 @@ A 中嵌套 span 任务使用可用的 Opus[1m]/xhigh；其他独立任务使用
 
 ## 全局验收与发布
 
-完整运行 `make test`、`make race`、`make vet`、packager 独立 `go test`、`make build`、`make package`、`make integration` 和真实 DLL/.so native 注册 smoke。Windows/Linux 的可用环境均验收；其他平台由对应 GitHub 构建及资产检查覆盖，不声称本地实际加载了全部平台。WSL 中不能直接使用指向 Windows 绝对路径的 worktree Git metadata，沿用可核验的 Linux 工作目录/生成 checkout，不手改 Git metadata 或 CPA 源文件。
+完整验收包含 `make test`、`make race`、`make vet`、packager 独立 file-list test/race/vet、`make build`、`make package`、`make integration` 和真实 DLL/.so native 注册 smoke。F 的本地完成条件为全部编码及独立审查完成、Windows 全量验收和真实 DLL 注册通过、版本文档和本地产物检查完成并提交；本地 WSL 执行被拒，不重试，不使用本地 Linux 替代执行，不修改 Git metadata 或 CPA 源文件。Linux packager 完整功能/race/vet 和 Unix Unicode 用例、根 test/race/vet/integration、Linux build/package 与 .so 注册由原授权 Ubuntu CI 实际执行，在 G 核查对应提交的结果。没有实际执行的 CI 项目保持未完成，真实失败必须修正并重新验收；本地编码完成不能作为 release 完成证据。其他平台由对应 GitHub 构建及资产检查覆盖，不声称本地实际加载了全部平台。
 
 正常新增路径覆盖三动作、BeforeAuth 与 selected-auth AfterAuth、role/format/filter bypass、metadata、机器字段、header、取消和 priority。block/invalid 的本地注册 HTTP fixture 检查零 upstream；strip/obfs 检查实际接收文本和保留字段。使用已有正确 parser 验证输出 JSON 和图片，不降低断言。
 
@@ -173,7 +175,7 @@ A 中嵌套 span 任务使用可用的 Opus[1m]/xhigh；其他独立任务使用
 
 README 和 RELEASE_NOTES 只写实际通过的 v0.3.9 功能及兼容范围。JSON 字符串通常保持整串文本语义，明确列出识别的多模态工具载体例外、parent 字符数限制和 Claude prefill 边界。保留现有公开限制、配置与 ABI 说明。版本仍通过 `-X main.pluginVersion` 注入，不增加第二个版本来源。
 
-合并后的 `main` 创建 `v0.3.9` 并推送触发原有 Build workflow。核对相应 commit/tag 的 test、七个平台构建和 release conclusion；下载七个 ZIP、七个 `.zip.sha256` 和 `checksums.txt`，检查文件集合、每条小写 SHA-256、ZIP 完整性/库平台/版本、aggregate 七条记录及非 draft 发布状态。未通过不得宣称任务完成或重复创建既有 release。
+全部编码、独立审查、Windows 全量/native 注册和版本文档完成后，合并并推送 `main`。先确认对应 `main` Build 的 Linux packager file-list race/vet、Unix Unicode 用例、根 integration/.so 注册和 Windows 新回归 step 实际 success，并确认 test 和七个平台构建全部 success；任何未执行、skip 或失败项目均不满足验收。main CI 完整通过后才创建并推送 `v0.3.9`，核查最终 tag Build 的 test、七个平台构建和 release conclusion。下载七个 ZIP、七个 `.zip.sha256` 和 `checksums.txt`，检查文件集合、每条小写 SHA-256、ZIP 完整性/库平台/版本、aggregate 七条记录及非 draft 发布状态。真实失败必须在对应任务 worktree 修正、重测、审查和新提交，再按此顺序核查新的 main/tag 结果；未通过不得宣称任务或 release 完成，不重复创建既有 release。
 
 ## 保留边界
 

@@ -447,22 +447,23 @@ GOOS="$$host_os" GOARCH="$$host_arch" $(GO) run ./.github/scripts/package-releas
 
 不新增解析期 Go 调用或全局改变 GOOS/GOARCH。重跑真实 cross-target 环境测试确认 GREEN，dry-run 断言 host/target 分离，不能以环境观测 marker 代替产物。
 - [ ] **Step 8：GREEN、合法 Unicode 与 cwd/相对参数。** 重跑 alias RED suite，用当前真实 DLL 的双源码 CLI 确认拒绝及输入保留。默认目录不同重音、Unicode sidecar、四组原生不等名称应成功；Windows 敏感目录的 `É.zip`/`é.zip` 与未存在共同父目录中的同组输出、Unix 同形输出应成功。另新增 `TestPackagerRelativePathsOutsideModule`，无 go.mod 的 cwd 中放 library/LICENSE，传相对 archive/checksum，实际核验 ZIP 中库与 LICENSE bytes、CRC、固定时间和 SHA-256。原六个 CLI test 均须通过，Dir/Env 与 Git version 来源不变。特殊目录属性准备不可用时明确 skip，不计为通过；默认 Windows alias 用例不得跳过。保留 ASCII alias、已存在 case-distinct/SameFile、输出保护和 aggregate 集合。
-- [ ] **Step 9：平台完整 file-list test/race/vet。** Windows 使用四个文件，Linux 使用三个文件，均在同一完成源码根内顺序执行：
+- [ ] **Step 9：平台完整 file-list test/race/vet。** Windows 本地使用四个文件，在同一完成源码根内顺序执行；test/race 均禁用测试结果缓存：
 
 ```bash
 go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1 -v
-go test -race .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
+go test -race .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1
 go vet .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
 ```
 
+本地 WSL 执行被拒，不重试 WSL 或其他本地 Linux 替代执行。Linux 使用三个文件，由原授权 Ubuntu `test` job 顺序执行以下命令，race 同时运行完整功能 suite（含 Unix Unicode 合法不同输出），不需要额外普通 test step：
+
 ```bash
-go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go -count=1 -v
-go test -race .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
+go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go -race -count=1
 go vet .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
 ```
 
-当前补核没有计入合规的新 Linux runtime 验收，P 须在自身获允许的工作区完成实际 Linux 生产回归。其他 Windows 文件系统、旧 Windows、macOS 未动态核验的限制保留。
-- [ ] **Step 10：同步三个 Ubuntu 命令和 Windows CI。** `build.yml:25` 改为 `go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go`；`:135/:182` 的 run 在主文件后加入 `./.github/scripts/package-release_other.go`，其余 version/library/archive/checksum 参数原样保留。公共 test 的 `1901/1962/1982` 同步断言完整源码列表；Windows amd64 matrix 的 MSYS2 setup 后、package 前新增：
+根 `make race/vet` 的 `./...` 不覆盖 `.github/scripts`，不能代替 Linux file-list 验收。P-CI 本地完成后，Linux 完整 runtime 与新增 Windows CI success 保持 G 的未完成项；G 必须检查对应提交的真实 CI 输出，Windows 测试或编译不记为 Linux 通过。其他 Windows 文件系统、旧 Windows、macOS 未动态核验的限制保留。
+- [ ] **Step 10：同步 Ubuntu 命令和 Windows CI。** Ubuntu `test` job 的 packager run 使用 P9 的三文件 `go test ... -race -count=1`，并独立执行三文件 `go vet`。两个交叉构建 job 的 packager run 在主文件后使用 `./.github/scripts/package-release_other.go`，其余 version/library/archive/checksum 参数原样保留。公共 `TestBuildWorkflowContract` 精确断言 Ubuntu `test` job 的完整实际 run 序列，其他源码列表断言保持；Windows amd64 matrix 的 MSYS2 setup 后、package 前新增：
 
 ```yaml
 - name: Test Windows packager path comparison
@@ -473,6 +474,43 @@ go vet .github/scripts/package-release.go .github/scripts/package-release_other.
 
 先更新命令及新 step 的 workflow 断言观察旧 YAML RED，再改 YAML 并 GREEN。其他 matrix/触发条件/release job 保持。G 必须确认该 Windows step 实际 success；不能用交叉编译/Ubuntu tests 或 skip 代替。
 - [ ] **Step 11：完整 P task 审查、修正、复审、提交。** 阶段自查和提交后，由 P workflow 对完整 `BASE..HEAD` 组织独立规格及质量审查，原实施者在同一 worktree 修正、重测、复审并新建提交。只提交 packager/平台源码及测试、Makefile、build.yml；向 F 提供准确的双源码/cwd/host 编译/Unicode 说明，主动报告全部真实 RED/GREEN、最终 HEAD、commit 和平台限制。补核 API/cwd marker 不作为生产 ZIP/sidecar GREEN。
+
+### Task P-CI：补全 Linux packager 验收
+
+**Files:** 仅本 spec、plan、`.github/workflows/build.yml`、`.github/scripts/package-release_test.go`。不改 packager 算法/helper、其他测试或 workflow trigger/matrix/release job。
+
+**Interfaces:** BASE 为 `a229caef63b9bccd8e5c24c18f5b4b213f329706`，包含已通过独立规格/质量审查的 P 修复。复用 `workflowFile`/`workflowJob`/`workflowStep`、`yaml.v3` 与 `nonemptyRuns`，只检查真实 Ubuntu `test` job 的命令及无条件执行。packager CLI 保持 stdlib-only。
+
+- [ ] **Step 1：文档修订、自查、提交。** 核查自己的 native worktree root/HEAD/branch/clean 状态；依据本地 WSL 拒绝和现有 CI 覆盖缺口，修订 spec 第 7 节/全局验收、P9/P10、F4 和 G 的实际顺序。Linux 完整验收保留在原授权 Ubuntu CI，F 本地完成与 G 实际 success 分别记录。逐项对照 brief 自查并执行 `git diff --check`，只提交两个文档，再进入测试阶段。所有命令使用当前 native 根的普通独立 PowerShell，日志用专用文件工具保存，不重试被拒操作。
+- [ ] **Step 2：基线和真实 CI 断言 RED。** 在当前根运行 P9 Windows 四文件 `go test ... -count=1` 的完整 suite，记录结果。扩展既有 `TestBuildWorkflowContract` 的 `wantTestRuns`，保留 root 命令与其他全部原断言，新序列为：
+
+```go
+wantTestRuns := []string{
+    "make test",
+    "go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go -race -count=1",
+    "go vet .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go",
+    "make race",
+    "make vet",
+    "make integration",
+}
+```
+
+同时断言 `test` job 的 `runs-on` 为 `ubuntu-24.04`，job/step 无 `if` 条件。YAML 注释或其他 job 不能满足真实 `run` 的精确序列断言。运行以下聚焦测试，旧 YAML 必须因缺少 race/vet 而 RED，编译失败或错误源码列表不计入 RED：
+
+```bash
+go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -run '^TestBuildWorkflowContract$' -count=1 -v
+```
+
+- [ ] **Step 3：最小 CI 修改 GREEN。** 只在 Ubuntu packager test 增加 `-race -count=1`，紧接新增同一三文件 vet run，再运行同一聚焦测试并记录 GREEN：
+
+```yaml
+- run: go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go -race -count=1
+- run: go vet .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
+```
+
+根 make test/race/vet/integration、Windows 新 step、两个交叉构建 source 列表、trigger/matrix/release job 和原断言均保持。
+- [ ] **Step 4：完整本地验收、自查、提交。** 实际运行完整 P9 Windows file-list test/race/vet、root `make test/race/vet`、`git diff --check`，按 brief 逐项检查规格和质量，失败修正后重验。只提交允许文件，不 amend；提交后再以 `-count=1` 重跑完整 Windows file-list test/race 和 root Go test/race，复跑 vet，核查完整 HEAD、commit/四文件及 clean 状态。自己的自我忽略 `task-9-evidence.log` 保留全部命令实际输出、RED/GREEN、平台限制及自查；生成完整 `BASE..HEAD` review `.diff`，不创建额外报告 `.md`。
+- [ ] **Step 5：完整 task 独立审查与交付。** 负责 workflow 在 P-CI 结束后组织完整 `BASE..HEAD` 独立规格和质量审查，有确认问题仍回到该 worktree 修正、重测、新提交和复审，实施者不另派 reviewer。Linux/Windows CI 实际 success 与所有发布操作仍是 G 的未完成项，不以本地编码完成宣称任务或 release 全部完成。
 
 ### Task E1：两个正常oracle和普通seed同步
 
@@ -573,7 +611,7 @@ make test
 make race
 make vet
 go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1 -v
-go test -race .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
+go test -race .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1
 go vet .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go
 make build VERSION=v0.3.9
 make package VERSION=v0.3.9 GOOS=windows GOARCH=amd64
@@ -583,9 +621,9 @@ go run ./.github/scripts/integration-runner.go -abi-smoke dist/windows_amd64/cen
 git diff --check
 ```
 
-- [ ] **Step 4：全量 Linux 验收。** 在可用 Linux 目录使用同一完成 HEAD；不要直接读取指向 Windows 绝对 .git 路径的 worktree。沿用可核实 Linux 工作目录/干净 pinned CPA checkout，执行 test/race/vet；packager test/race/vet 显式使用 `package-release.go`、`package-release_other.go`、`package-release_test.go` 三文件，命令与 P9 的 Linux block 完全相同。继续 build/package VERSION=v0.3.9 GOOS=linux GOARCH=amd64、integration/.so 注册 smoke；host 生产源保持固定 commit 和未修改。报告实际命令和目录，不声称执行未运行的平台。
+- [ ] **Step 4：保留完整 Linux CI 验收。** 本地 WSL 执行已被拒，不重试，不执行本地 Linux 替代方式。由 G 核查同一完成 main HEAD 的原授权 Ubuntu CI：packager 使用 P9 的三文件 race（含完整功能/Unix Unicode suite、`-count=1`）和独立 vet；根 make test/race/vet/integration、Linux build/package 与 .so native 注册须实际 success。main build injection 保持 `0.0.0-dev`，最终 tag build/package 的版本为 `0.3.9`；host 生产源保持固定 commit 和未修改。未实际运行的 Linux/Windows CI 均保留未完成，真实失败修正并重新验收。F 本地完成条件为 Windows 全量/native 注册、版本文档和本地产物检查完成、全部本地自查与独立审查及提交完成；G 的 CI success 尚待核查时，不宣称 Linux 或 release 已通过。
 - [ ] **Step 5：代价核验与资产。** A 基线与当前同环境 benchmark 顺序比较 text decoding、常规 transform、escaped 规模、carrier 数量/文本长度及 rebuild，记录差异和采样限制。核对本地 ZIP 内容、library 版本 0.3.9、lowercase SHA-256 sidecar 和 aggregate checksums。无必要的新优化不开发。
-- [ ] **Step 6：完整 spec/compliance review。** 全部改动对照 spec 逐项核对、代码质量审查、修正、复审至无问题。每个 task 的 RED/GREEN、阶段/机器 bytes/no-op/图片/约束/注册证据均已完成；版本文档 test 已在旧文档观察 RED，并在当前文档 GREEN，历史记录保留。不能把待办留在发布门槛之后。
+- [ ] **Step 6：完整 spec/compliance review。** 全部改动对照 spec 逐项核对、代码质量审查、修正、复审至无问题。每个编码 task 的 RED/GREEN、阶段/机器 bytes/no-op/图片/约束及本地注册证据均已完成；版本文档 test 已在旧文档观察 RED，并在当前文档 GREEN，历史记录保留。逐项标记 G 尚未实际执行的 Linux/Windows CI 验收，在 main CI 完整 success 后才允许创建 tag；不能把这些验收留在发布门槛之后。
 - [ ] **Step 7：提交文档及最终可核验结果。** 只提交 README.md、RELEASE_NOTES.md 和 main_test.go 中明确归属的版本文档断言，不提交生成产物、临时日志或其他测试改动。报告所有完成 commit 供主会话整合。
 
 ### Task G：本地main合并和GitHub构建/发行
@@ -596,22 +634,31 @@ git diff --check
 
 - [ ] **Step 1：核对整合范围。** 检查每个worktree完成HEAD、允许文件和clean状态，确认无重叠未完成修改，再将完成commits非破坏性整合到集成branch。跨文件review和全量验收通过后，按既有worktree流程回到本地main；不得主动删除用户worktree或重置其他修改。
 - [ ] **Step 2：合并本地main。** 检查main/ref/workingtree、remote与tag，正常merge完成branch；有冲突先真实解决、重跑受影响及全量门槛，不发布冲突未验证的代码。保护用户现有修改，不用reset --hard或forcepush。
-- [ ] **Step 3：最终HEAD验收与版本。** 确认main为已验收HEAD，tag不存在且当前源仍只有buildinjection版本来源。创建v0.3.9并pushmain/tag：
+- [ ] **Step 3：推送已完成的 main。** 确认全部编码与独立审查、Windows 全量/native 注册、版本文档和 F 本地验收已完成，main 为相同 HEAD，当前源仍只有 build injection 版本来源。先推送 main，不在此步创建 tag：
 
 ```bash
 git status --short
 git remote -v
 git tag --list v0.3.9
-git tag v0.3.9
 git push origin main
+```
+
+命令只能在前置检查与原发布授权范围内执行；现有同 tag 时核对实际对象，不重复创建或移动 tag。
+- [ ] **Step 4：main Build 实际成功后通过 CI 门槛。** 一次读取该次 main push 的 Build run，核对实际 `headSha`、`headBranch=main` 和 event；使用已核对的 `MAIN_RUN_ID` 在后台执行 `gh run watch "$MAIN_RUN_ID" --exit-status`，工具完成后主动通知，再运行 `gh run view "$MAIN_RUN_ID" --json conclusion,jobs,headSha,headBranch,url`。主会话不轮询后台日志或状态。确认 test 和七个平台 build 全部 conclusion=success，main 的 release job 按原条件不发布。终态后读取相关实际 step 日志：Ubuntu test job 的三文件 packager `go test ... -race -count=1` 完整 suite（含 Unix Unicode 合法不同输出）和独立 `go vet ...`、根 make test/race/vet/integration/.so 注册，以及 Windows amd64 的 `Test Windows packager path comparison` 均必须实际 success。核对 Windows 默认 Unicode alias 拒绝和特殊目录模式用例，skip 不计为通过；未执行、失败或无日志证据的项目保持未完成，不允许创建 tag。CI 失败在相应任务 worktree 定位、修正、验证、独立 review 和新提交，重新整合并推送 main，核查新的对应 main Build success。
+- [ ] **Step 5：创建并推送 tag。** main Build 完整门槛通过后，重新核查 main HEAD 与已通过 CI 的 SHA 相同、工作区干净、tag 状态和唯一 build injection 来源，再创建并推送：
+
+```bash
+git status --short
+git rev-parse HEAD
+git tag --list v0.3.9
+git tag v0.3.9
 git push origin v0.3.9
 ```
 
-命令只能在前置检查与原发布授权范围内执行；现有同tag时核对实际对象，不重复创建或移动tag。
-
-- [ ] **Step 4：等待实际 CI 结果。** 一次读取由该次 main/tag push 产生的 Build run，核对实际 `headSha`、`headBranch` 和 event；使用已经核对的 `RELEASE_RUN_ID` 在后台执行 `gh run watch "$RELEASE_RUN_ID" --exit-status`，由工具完成通知唤回，再运行 `gh run view "$RELEASE_RUN_ID" --json conclusion,jobs,headSha,headBranch,url`。主会话不轮询后台任务日志或状态。确认 test、linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64、windows/arm64、freebsd/amd64 和 release 全部 conclusion=success；Windows amd64 job 的 `Test Windows packager path comparison` step 必须实际 success。终态后一次读取该 step 日志，核对默认 Unicode alias 拒绝用例实际通过，特殊目录模式的 skip 不计为通过。main push 的独立 run 也要核对 test/build 结论。CI 失败在相应任务 worktree 内定位、修正、验证、review 和提交，再按原发布流程处理，不隐藏失败或改写公共 asset。
-- [ ] **Step 5：发行资产验收。** 下载v0.3.9实际remoteassets到新系统temp，核对恰好七个ZIP、七个sidecar和checksums.txt。用archive/zip、crypto/sha256或平台标准工具验证CRC/库/版本、64位小写hex加两个空格加basename、七条aggregatechecksums；核对isDraft=false。已有release workflow自身验证仍保留，独立下载检验不能仅用job成功代替。
-- [ ] **Step 6：终结。** 返回实际commit/tag/run、每项修复及验证限制；未调用商业API，未实际加载的平台清楚说明。清理本次无需保留临时下载，仅在真实完整结果核实后宣称发布完成。
+已有同 tag 不重复创建或移动；实际对象不符时停下核查。
+- [ ] **Step 6：最终 tag Build 和 release 实际验收。** 一次读取该次 tag push 的 Build run，核对 tag、`headSha` 和 event；使用已核对的 `RELEASE_RUN_ID` 在后台执行 `gh run watch "$RELEASE_RUN_ID" --exit-status`，完成通知后运行 `gh run view "$RELEASE_RUN_ID" --json conclusion,jobs,headSha,headBranch,url`。确认 test、linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64、windows/arm64、freebsd/amd64 和 release 全部 conclusion=success，复核 Linux packager/root integration 与 Windows step 实际成功。tag build/package 必须使用注入版本 `0.3.9`。真实失败按对应任务 worktree 修正、重测、review、新提交及原授权流程处理，不隐藏失败、移动既有 tag 或改写公共 asset；未完成项不记为通过。
+- [ ] **Step 7：发行资产验收。** 下载 v0.3.9 实际 remote assets 到新系统 temp，核对恰好七个 ZIP、七个 sidecar 和 checksums.txt。用 archive/zip、crypto/sha256 或平台标准工具验证 CRC/库/版本、64 位小写 hex 加两个空格加 basename、七条 aggregate checksums；核对 isDraft=false。已有 release workflow 自身验证仍保留，独立下载检验不能仅用 job 成功代替。
+- [ ] **Step 8：终结。** 返回实际 commit/tag/run、每项修复及验证限制；未调用商业 API，未实际加载的平台清楚说明。清理本次无需保留临时下载，仅在真实完整结果核实后宣称发布完成。
 
 ## 计划自查与证据交付
 
