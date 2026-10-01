@@ -55,7 +55,8 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	if !messages.IsArray() {
 		return
 	}
-	messages.ForEach(func(_, message gjson.Result) bool {
+	lastMessageIndex := messages.Get("#").Int() - 1
+	messages.ForEach(func(index, message gjson.Result) bool {
 		if !message.IsObject() {
 			return true
 		}
@@ -64,12 +65,12 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			return true
 		}
 		switch role.Str {
-		case "system", "assistant":
-			if !roles.has(role.Str) {
+		case "system":
+			if !roles.has("system") {
 				return true
 			}
-		case "user":
-			if !roles.has("user") && !roles.has("tool") {
+		case "user", "assistant":
+			if !roles.has(role.Str) && !roles.has("tool") {
 				return true
 			}
 		default:
@@ -77,7 +78,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		}
 
 		content := message.Get("content")
-		if role.Str == "user" {
+		if role.Str == "user" || role.Str == "assistant" && index.Int() != lastMessageIndex {
 			appendNonEmptyStringSpan(spans, content, role.Str, roles)
 		} else {
 			appendStringSpan(spans, content, role.Str, roles)
@@ -122,7 +123,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 					return true
 				})
 			case "mcp_tool_result":
-				if role.Str != "user" || !roles.has("tool") {
+				if role.Str != "user" && role.Str != "assistant" || !roles.has("tool") {
 					return true
 				}
 				toolContent := block.Get("content")
@@ -168,7 +169,11 @@ func appendClaudeResultText(spans *[]textSpan, block gjson.Result, role string, 
 			return true
 		})
 	case "document":
+		before := len(*spans)
 		appendNonEmptyStringSpan(spans, block.Get("title"), role, roles)
+		if len(*spans) > before {
+			(*spans)[before].MaxCodePoints = 500
+		}
 		appendNonEmptyStringSpan(spans, block.Get("context"), role, roles)
 		source := block.Get("source")
 		if !source.IsObject() {

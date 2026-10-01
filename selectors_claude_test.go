@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -81,6 +83,105 @@ func TestClaudeCompactionInstructionsUseSystemScope(t *testing.T) {
 	if resp.Terminate || resp.Body != nil {
 		t.Fatalf("user-only response = %#v", resp)
 	}
+}
+
+func TestClaudeAssistantMCPHistory(t *testing.T) {
+	for _, shape := range []struct {
+		name, content string
+	}{
+		{"scalar", `"SECRET tail"`},
+		{"typed", `[{"type":"text","text":"SECRET tail","cache_control":{"type":"ephemeral"}},{"type":"image","source":{"type":"base64","data":"SECRET image"}},{"type":"unknown","text":"SECRET unknown"}]`},
+	} {
+		for _, action := range []struct {
+			name, after string
+		}{
+			{"block", ""},
+			{"strip", `" tail"`},
+			{"obfs", "\"S​ECRET tail\""},
+		} {
+			for _, scope := range []struct {
+				name, roles string
+			}{
+				{"tool", "[tool]"},
+				{"assistant_tool", "[assistant, tool]"},
+			} {
+				t.Run(shape.name+"/"+action.name+"/"+scope.name, func(t *testing.T) {
+					registerConfig(t, "words:\n  "+action.name+": [SECRET]\nscope:\n  roles: "+scope.roles+"\n")
+					body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"safe"},{"role":"assistant","content":[{"type":"mcp_tool_use","id":"SECRET id","name":"SECRET name","server_name":"SECRET server","input":{"query":"SECRET input"}},{"type":"mcp_tool_result","tool_use_id":"SECRET id","name":"SECRET name","server_name":"SECRET server","is_error":false,"cache_control":{"type":"ephemeral"},"unknown":"SECRET unknown","content":` + shape.content + `}]},{"role":"user","content":"continue"}]}`)
+					resp := interceptRPC(t, "claude", body)
+					if action.name == "block" {
+						if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "SECRET" || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "tool" {
+							t.Fatalf("want canonical tool block, terminate=%t status=%d error=%s", resp.Terminate, resp.StatusCode, resp.ResponseBody)
+						}
+						return
+					}
+					want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET tail"`, After: action.after})
+					if resp.Terminate || !bytes.Equal(resp.Body, want) {
+						t.Fatalf("body differs from the single expected MCP text rewrite, terminate=%t", resp.Terminate)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestClaudeAssistantMCPHistoryNonEmpty(t *testing.T) {
+	for _, role := range []string{"user", "assistant"} {
+		for _, shape := range []struct {
+			name, content string
+			invalid       bool
+		}{
+			{"scalar", `"SECRET"`, false},
+			{"typed", `[{"type":"text","text":"SECRET"}]`, true},
+		} {
+			t.Run(role+"/"+shape.name, func(t *testing.T) {
+				registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [tool]\n")
+				body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"safe"},{"role":"` + role + `","content":[{"type":"mcp_tool_result","tool_use_id":"call-1","content":` + shape.content + `}]},{"role":"user","content":"continue"}]}`)
+				resp := interceptRPC(t, "claude", body)
+				if shape.invalid {
+					if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_invalid_request" {
+						t.Fatalf("want local invalid typed text, response=%#v", resp)
+					}
+					return
+				}
+				want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET"`, After: `""`})
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("want empty scalar MCP result, response=%#v", resp)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeAssistantMCPHistoryScopeControls(t *testing.T) {
+	for _, tc := range []struct {
+		name, roles, message string
+	}{
+		{"tool disabled scalar", "[assistant]", `{"role":"assistant","content":[{"type":"mcp_tool_result","tool_use_id":"call-1","content":"SECRET"}]}`},
+		{"tool disabled typed", "[assistant]", `{"role":"assistant","content":[{"type":"mcp_tool_result","tool_use_id":"call-1","content":[{"type":"text","text":"SECRET"}]}]}`},
+		{"ordinary assistant scalar tool-only", "[tool]", `{"role":"assistant","content":"SECRET"}`},
+		{"ordinary assistant typed tool-only", "[tool]", `{"role":"assistant","content":[{"type":"text","text":"SECRET"}]}`},
+		{"ordinary assistant tool_result tool-only", "[tool]", `{"role":"assistant","content":[{"type":"tool_result","tool_use_id":"call-1","content":"SECRET"},{"type":"tool_result","content":[{"type":"text","text":"SECRET"}]}]}`},
+		{"ordinary assistant tool_result own and tool", "[assistant, tool]", `{"role":"assistant","content":[{"type":"tool_result","tool_use_id":"call-1","content":"SECRET"},{"type":"tool_result","content":[{"type":"text","text":"SECRET"}]}]}`},
+		{"system MCP excluded", "[system, tool]", `{"role":"system","content":[{"type":"mcp_tool_result","content":"SECRET"}]}`},
+		{"system own scope disabled", "[tool]", `{"role":"system","content":"SECRET"}`},
+		{"unsupported role MCP excluded", "[tool]", `{"role":"developer","content":[{"type":"mcp_tool_result","content":"SECRET"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: "+tc.roles+"\n")
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"safe"},` + tc.message + `,{"role":"user","content":"continue"}]}`)
+			requireNoOpResponse(t, interceptRPC(t, "claude", body))
+		})
+	}
+	t.Run("ordinary assistant text keeps own scope", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
+		body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":"SECRET own"},{"type":"mcp_tool_result","tool_use_id":"SECRET id","content":"SECRET MCP"}]}]}`)
+		want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET own"`, After: `" own"`})
+		resp := interceptRPC(t, "claude", body)
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("ordinary assistant own scope changed MCP text, response=%#v", resp)
+		}
+	})
 }
 
 func TestClaudeBetaMCPToolResult(t *testing.T) {
@@ -307,6 +408,146 @@ func TestClaudeResultTextPreservesMachineFields(t *testing.T) {
 	}
 }
 
+func TestClaudeDocumentTitleMaxCodePoints(t *testing.T) {
+	const unicodeEscape = "\\u"
+	for _, path := range []struct {
+		name, role, prefix, suffix string
+	}{
+		{"direct user", "user", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[`, `]}]}`},
+		{"nested tool", "tool", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"ab id","is_error":false,"content":[`, `]}]}]}`},
+	} {
+		for _, tc := range []struct {
+			name, title, rawTitle, rules, want, wantCode string
+			noOp, disabled                               bool
+		}{
+			{name: "ASCII final 500", title: strings.Repeat("x", 497) + "ab", want: strings.Repeat("x", 497) + "a​b"},
+			{name: "ASCII final 501", title: strings.Repeat("x", 498) + "ab", wantCode: "censorship_invalid_request"},
+			{name: "Chinese final 500", title: strings.Repeat("中", 497) + "ab", want: strings.Repeat("中", 497) + "a​b"},
+			{name: "Chinese final 501", title: strings.Repeat("中", 498) + "ab", wantCode: "censorship_invalid_request"},
+			{name: "emoji final 500", title: strings.Repeat("😀", 497) + "ab", want: strings.Repeat("😀", 497) + "a​b"},
+			{name: "emoji final 501", title: strings.Repeat("😀", 498) + "ab", wantCode: "censorship_invalid_request"},
+			{name: "escaped ASCII final 500", rawTitle: `"` + strings.Repeat("x", 497) + unicodeEscape + "0061" + unicodeEscape + `0062"`, want: strings.Repeat("x", 497) + "a​b"},
+			{name: "escaped ASCII final 501", rawTitle: `"` + strings.Repeat("x", 498) + unicodeEscape + "0061" + unicodeEscape + `0062"`, wantCode: "censorship_invalid_request"},
+			{name: "escaped Chinese final 500", rawTitle: `"` + strings.Repeat(unicodeEscape+"4e2d", 497) + `ab"`, want: strings.Repeat("中", 497) + "a​b"},
+			{name: "escaped Chinese final 501", rawTitle: `"` + strings.Repeat(unicodeEscape+"4e2d", 498) + `ab"`, wantCode: "censorship_invalid_request"},
+			{name: "surrogate pairs final 500", rawTitle: `"` + strings.Repeat(unicodeEscape+"d83d"+unicodeEscape+"de00", 497) + `ab"`, want: strings.Repeat("😀", 497) + "a​b"},
+			{name: "surrogate pairs final 501", rawTitle: `"` + strings.Repeat(unicodeEscape+"d83d"+unicodeEscape+"de00", 498) + `ab"`, wantCode: "censorship_invalid_request"},
+			{name: "strip then obfs final 500", title: strings.Repeat("x", 494) + "zzabab", rules: "  strip: [zz]\n  obfs: [ab]\n", want: strings.Repeat("x", 494) + "a​ba​b"},
+			{name: "strip then obfs final 501", title: strings.Repeat("x", 495) + "zabab", rules: "  strip: [z]\n  obfs: [ab]\n", wantCode: "censorship_invalid_request"},
+			{name: "cancellation preserves escaped token", rawTitle: `"` + strings.Repeat("x", 497) + "a" + unicodeEscape + `200bb"`, rules: "  strip: ['​']\n  obfs: [ab]\n", noOp: true},
+			{name: "block precedes invalid expansion", title: strings.Repeat("x", 498) + "ab", rules: "  block: [ab]\n  strip: [ab]\n  obfs: [ab]\n", wantCode: "censorship_blocked"},
+			{name: "scope disabled", title: strings.Repeat("x", 498) + "ab", noOp: true, disabled: true},
+			{name: "title retains nonempty constraint", title: "ab", rules: "  strip: [ab]\n", wantCode: "censorship_invalid_request"},
+		} {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				rules := tc.rules
+				if rules == "" {
+					rules = "  obfs: [ab]\n"
+				}
+				role := path.role
+				if tc.disabled {
+					role = "assistant"
+				}
+				registerConfig(t, "words:\n"+rules+"scope:\n  roles: ["+role+"]\n")
+				title, err := json.Marshal(tc.title)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.rawTitle != "" {
+					title = []byte(tc.rawTitle)
+				}
+				body := []byte(path.prefix + `{"type":"document","title":` + string(title) + `,"context":"clean context","source":{"type":"text","data":"clean"},"cache_control":{"type":"ephemeral","unknown":"ab"},"unknown":"ab"}` + path.suffix)
+				resp := interceptRPC(t, "claude", body)
+				if tc.wantCode != "" {
+					if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != tc.wantCode {
+						t.Fatalf("want %s, terminate=%t status=%d body bytes=%d error=%s", tc.wantCode, resp.Terminate, resp.StatusCode, len(resp.Body), resp.ResponseBody)
+					}
+					if tc.wantCode == "censorship_blocked" && (gjson.GetBytes(resp.ResponseBody, "error.role").Str != path.role || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "ab") {
+						t.Fatalf("want canonical %s block for ab, error=%s", path.role, resp.ResponseBody)
+					}
+					return
+				}
+				if tc.noOp {
+					requireNoOpResponse(t, resp)
+					return
+				}
+				wantTitle, err := json.Marshal(tc.want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := replaceRawTokens(t, body, rawReplacement{Before: string(title), After: string(wantTitle)})
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("body differs from expected title rewrite, terminate=%t error=%s", resp.Terminate, resp.ResponseBody)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeDocumentTitleDoesNotLimitOtherResultText(t *testing.T) {
+	value, err := json.Marshal(strings.Repeat("x", 498) + "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantValue, err := json.Marshal(strings.Repeat("x", 498) + "a​b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []struct {
+		name, role, prefix, suffix string
+	}{
+		{"direct user", "user", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[`, `]}]}`},
+		{"nested tool", "tool", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"ab id","content":[`, `]}]}]}`},
+	} {
+		for _, tc := range []struct {
+			name, prefix, suffix string
+		}{
+			{"document context", `{"type":"document","title":"clean","context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"document context absent title", `{"type":"document","context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"document context empty title", `{"type":"document","title":"","context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"document context nonstring title", `{"type":"document","title":42,"context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"search_result title", `{"type":"search_result","title":`, `,"source":"ab machine","content":[{"type":"text","text":"clean"}]}`},
+		} {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				registerConfig(t, "words:\n  obfs: [ab]\nscope:\n  roles: ["+path.role+"]\n")
+				body := []byte(path.prefix + tc.prefix + string(value) + tc.suffix + path.suffix)
+				want := replaceRawTokens(t, body, rawReplacement{Before: string(value), After: string(wantValue)})
+				resp := interceptRPC(t, "claude", body)
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("want unbounded 501-codepoint result text, terminate=%t error=%s", resp.Terminate, resp.ResponseBody)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeDocumentTitlePreservesUnchangedToken(t *testing.T) {
+	const unicodeEscape = "\\u"
+	for _, path := range []struct {
+		name, role, prefix, suffix string
+	}{
+		{"direct user", "user", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[`, `]}]}`},
+		{"nested tool", "tool", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"CHANGE id","is_error":false,"content":[`, `]}]}]}`},
+	} {
+		for _, tc := range []struct {
+			name, title, rules string
+		}{
+			{"unmatched escaped title", `"` + strings.Repeat(unicodeEscape+"0078", 498) + `ab"`, "  strip: [CHANGE]\n"},
+			{"cancelled escaped title", `"` + strings.Repeat("x", 497) + "a" + unicodeEscape + `200bb"`, "  strip: ['​', CHANGE]\n  obfs: [ab]\n"},
+		} {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				registerConfig(t, "words:\n"+tc.rules+"scope:\n  roles: ["+path.role+"]\n")
+				body := []byte(path.prefix + `{"type":"document","title":` + tc.title + `,"context":"CHANGE context","source":{"type":"url","url":"CHANGE machine"},"unknown":"CHANGE metadata"}` + path.suffix)
+				want := replaceRawTokens(t, body, rawReplacement{Before: `"CHANGE context"`, After: `" context"`})
+				resp := interceptRPC(t, "claude", body)
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("unchanged title or machine token was rewritten, terminate=%t error=%s", resp.Terminate, resp.ResponseBody)
+				}
+			})
+		}
+	}
+}
+
 func TestClaudeMinimumLengthFieldsRejectFullStrip(t *testing.T) {
 	cases := []struct {
 		name string
@@ -466,6 +707,56 @@ func TestClaudeDescriptionRewrites(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestClaudeHistoryAssistantScalarNonEmpty(t *testing.T) {
+	registerConfig(t, "words:\n  strip: [Hello.]\nscope:\n  roles: [assistant]\n")
+	body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello."},{"role":"user","content":"Continue."}]}`)
+	resp := interceptRPC(t, "claude", body)
+	if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_invalid_request" {
+		t.Fatalf("want local invalid history, terminate=%t status=%d error=%s", resp.Terminate, resp.StatusCode, resp.ResponseBody)
+	}
+}
+
+func TestClaudeHistoryAssistantScalarControls(t *testing.T) {
+	for _, tc := range []struct {
+		name, roles, messages string
+		invalid               bool
+		replacements          []rawReplacement
+	}{
+		{"last scalar", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello."}]`, false, []rawReplacement{{Before: `"Hello."`, After: `""`}}},
+		{"existing empty prefill", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":""}]`, false, nil},
+		{"partial history", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello. tail"},{"role":"user","content":"Continue."}]`, false, []rawReplacement{{Before: `"Hello. tail"`, After: `" tail"`}}},
+		{"adjacent earlier scalar", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Hello."},{"role":"assistant","content":"Later."}]`, true, nil},
+		{"adjacent last scalar", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":"Earlier."},{"role":"assistant","content":"Hello."}]`, false, []rawReplacement{{Before: `"Hello."`, After: `""`}}},
+		{"last selected is not last array element", "[assistant]", `[{"role":"assistant","content":"Hello."},null]`, true, nil},
+		{"history typed full strip", "[assistant]", `[{"role":"assistant","content":[{"type":"text","text":"Hello."}]},{"role":"user","content":"Continue."}]`, true, nil},
+		{"last typed full strip", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":[{"type":"text","text":"Hello."}]}]`, true, nil},
+		{"history typed partial strip", "[assistant]", `[{"role":"assistant","content":[{"type":"text","text":"Hello. tail"}]},{"role":"user","content":"Continue."}]`, false, []rawReplacement{{Before: `"Hello. tail"`, After: `" tail"`}}},
+		{"last typed partial strip", "[assistant]", `[{"role":"user","content":"Greet me."},{"role":"assistant","content":[{"type":"text","text":"Hello. tail"}]}]`, false, []rawReplacement{{Before: `"Hello. tail"`, After: `" tail"`}}},
+		{"user scalar full strip", "[user]", `[{"role":"user","content":"Hello."}]`, true, nil},
+		{"history own scope disabled", "[tool]", `[{"role":"assistant","content":"Hello."},{"role":"user","content":"Continue."}]`, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  strip: [Hello.]\nscope:\n  roles: "+tc.roles+"\n")
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"untouched":"Hello. machine","messages":` + tc.messages + `}`)
+			resp := interceptRPC(t, "claude", body)
+			if tc.invalid {
+				if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_invalid_request" {
+					t.Fatalf("want local invalid text, terminate=%t status=%d error=%s", resp.Terminate, resp.StatusCode, resp.ResponseBody)
+				}
+				return
+			}
+			if tc.replacements == nil {
+				requireNoOpResponse(t, resp)
+				return
+			}
+			want := replaceRawTokens(t, body, tc.replacements...)
+			if resp.Terminate || !bytes.Equal(resp.Body, want) {
+				t.Fatalf("body differs outside expected assistant text token, response=%#v", resp)
+			}
+		})
+	}
 }
 
 func TestClaudeNonUserScalarContentAllowsFullStrip(t *testing.T) {
