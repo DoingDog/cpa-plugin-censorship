@@ -64,12 +64,12 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 			return true
 		}
 		switch role.Str {
-		case "system", "assistant":
-			if !roles.has(role.Str) {
+		case "system":
+			if !roles.has("system") {
 				return true
 			}
-		case "user":
-			if !roles.has("user") && !roles.has("tool") {
+		case "user", "assistant":
+			if !roles.has(role.Str) && !roles.has("tool") {
 				return true
 			}
 		default:
@@ -122,7 +122,7 @@ func collectClaude(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 					return true
 				})
 			case "mcp_tool_result":
-				if role.Str != "user" || !roles.has("tool") {
+				if role.Str != "user" && role.Str != "assistant" || !roles.has("tool") {
 					return true
 				}
 				toolContent := block.Get("content")

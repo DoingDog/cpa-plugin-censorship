@@ -83,6 +83,105 @@ func TestClaudeCompactionInstructionsUseSystemScope(t *testing.T) {
 	}
 }
 
+func TestClaudeAssistantMCPHistory(t *testing.T) {
+	for _, shape := range []struct {
+		name, content string
+	}{
+		{"scalar", `"SECRET tail"`},
+		{"typed", `[{"type":"text","text":"SECRET tail","cache_control":{"type":"ephemeral"}},{"type":"image","source":{"type":"base64","data":"SECRET image"}},{"type":"unknown","text":"SECRET unknown"}]`},
+	} {
+		for _, action := range []struct {
+			name, after string
+		}{
+			{"block", ""},
+			{"strip", `" tail"`},
+			{"obfs", "\"S​ECRET tail\""},
+		} {
+			for _, scope := range []struct {
+				name, roles string
+			}{
+				{"tool", "[tool]"},
+				{"assistant_tool", "[assistant, tool]"},
+			} {
+				t.Run(shape.name+"/"+action.name+"/"+scope.name, func(t *testing.T) {
+					registerConfig(t, "words:\n  "+action.name+": [SECRET]\nscope:\n  roles: "+scope.roles+"\n")
+					body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"safe"},{"role":"assistant","content":[{"type":"mcp_tool_use","id":"SECRET id","name":"SECRET name","server_name":"SECRET server","input":{"query":"SECRET input"}},{"type":"mcp_tool_result","tool_use_id":"SECRET id","name":"SECRET name","server_name":"SECRET server","is_error":false,"cache_control":{"type":"ephemeral"},"unknown":"SECRET unknown","content":` + shape.content + `}]},{"role":"user","content":"continue"}]}`)
+					resp := interceptRPC(t, "claude", body)
+					if action.name == "block" {
+						if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "SECRET" || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "tool" {
+							t.Fatalf("want canonical tool block, terminate=%t status=%d error=%s", resp.Terminate, resp.StatusCode, resp.ResponseBody)
+						}
+						return
+					}
+					want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET tail"`, After: action.after})
+					if resp.Terminate || !bytes.Equal(resp.Body, want) {
+						t.Fatalf("body differs from the single expected MCP text rewrite, terminate=%t", resp.Terminate)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestClaudeAssistantMCPHistoryNonEmpty(t *testing.T) {
+	for _, role := range []string{"user", "assistant"} {
+		for _, shape := range []struct {
+			name, content string
+			invalid       bool
+		}{
+			{"scalar", `"SECRET"`, false},
+			{"typed", `[{"type":"text","text":"SECRET"}]`, true},
+		} {
+			t.Run(role+"/"+shape.name, func(t *testing.T) {
+				registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [tool]\n")
+				body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"safe"},{"role":"` + role + `","content":[{"type":"mcp_tool_result","tool_use_id":"call-1","content":` + shape.content + `}]},{"role":"user","content":"continue"}]}`)
+				resp := interceptRPC(t, "claude", body)
+				if shape.invalid {
+					if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_invalid_request" {
+						t.Fatalf("want local invalid typed text, response=%#v", resp)
+					}
+					return
+				}
+				want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET"`, After: `""`})
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("want empty scalar MCP result, response=%#v", resp)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeAssistantMCPHistoryScopeControls(t *testing.T) {
+	for _, tc := range []struct {
+		name, roles, message string
+	}{
+		{"tool disabled scalar", "[assistant]", `{"role":"assistant","content":[{"type":"mcp_tool_result","tool_use_id":"call-1","content":"SECRET"}]}`},
+		{"tool disabled typed", "[assistant]", `{"role":"assistant","content":[{"type":"mcp_tool_result","tool_use_id":"call-1","content":[{"type":"text","text":"SECRET"}]}]}`},
+		{"ordinary assistant scalar tool-only", "[tool]", `{"role":"assistant","content":"SECRET"}`},
+		{"ordinary assistant typed tool-only", "[tool]", `{"role":"assistant","content":[{"type":"text","text":"SECRET"}]}`},
+		{"ordinary assistant tool_result tool-only", "[tool]", `{"role":"assistant","content":[{"type":"tool_result","tool_use_id":"call-1","content":"SECRET"},{"type":"tool_result","content":[{"type":"text","text":"SECRET"}]}]}`},
+		{"ordinary assistant tool_result own and tool", "[assistant, tool]", `{"role":"assistant","content":[{"type":"tool_result","tool_use_id":"call-1","content":"SECRET"},{"type":"tool_result","content":[{"type":"text","text":"SECRET"}]}]}`},
+		{"system MCP excluded", "[system, tool]", `{"role":"system","content":[{"type":"mcp_tool_result","content":"SECRET"}]}`},
+		{"system own scope disabled", "[tool]", `{"role":"system","content":"SECRET"}`},
+		{"unsupported role MCP excluded", "[tool]", `{"role":"developer","content":[{"type":"mcp_tool_result","content":"SECRET"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: "+tc.roles+"\n")
+			body := []byte(`{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":"safe"},` + tc.message + `,{"role":"user","content":"continue"}]}`)
+			requireNoOpResponse(t, interceptRPC(t, "claude", body))
+		})
+	}
+	t.Run("ordinary assistant text keeps own scope", func(t *testing.T) {
+		registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [assistant]\n")
+		body := []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":"SECRET own"},{"type":"mcp_tool_result","tool_use_id":"SECRET id","content":"SECRET MCP"}]}]}`)
+		want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET own"`, After: `" own"`})
+		resp := interceptRPC(t, "claude", body)
+		if resp.Terminate || !bytes.Equal(resp.Body, want) {
+			t.Fatalf("ordinary assistant own scope changed MCP text, response=%#v", resp)
+		}
+	})
+}
+
 func TestClaudeBetaMCPToolResult(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":[{"type":"mcp_tool_result","tool_use_id":"SECRET id","is_error":false,"content":"SECRET scalar","name":"SECRET name"},{"type":"mcp_tool_result","content":[{"type":"text","text":"SECRET typed"},{"type":"image","source":{"data":"SECRET image"}},{"type":"document","title":"SECRET document"},{"type":"unknown","text":"SECRET unknown"},{"text":"SECRET missing type"},{"type":null,"text":"SECRET null type"},{"type":42,"text":"SECRET numeric type"},{"type":"text","text":null},{"type":"text","text":42}]},{"type":"mcp_tool_result","content":{"text":"SECRET object"}},{"type":"mcp_tool_result","content":null},{"type":"mcp_tool_result","content":42}]}]}`)
 	want := replaceRawTokens(t, body,
