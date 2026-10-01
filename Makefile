@@ -47,13 +47,21 @@ build:
 
 package-platform: validate-version
 	$(MAKE) build-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$${PACKAGER_VERSION}" BUILD_CC="$(BUILD_CC)"
-	$(GO) run ./.github/scripts/package-release.go -version "$$PACKAGER_VERSION" -library "$(LIBRARY)" -archive "$(ARCHIVE)" -checksum "$(CHECKSUM)"
+	host_os="$$( $(GO) env GOHOSTOS)" || exit $$?; \
+	host_arch="$$( $(GO) env GOHOSTARCH)" || exit $$?; \
+	helper=./.github/scripts/package-release_other.go; \
+	if [ "$$host_os" = windows ]; then helper=./.github/scripts/package-release_windows.go; fi; \
+	GOOS="$$host_os" GOARCH="$$host_arch" $(GO) run ./.github/scripts/package-release.go "$$helper" -version "$$PACKAGER_VERSION" -library "$(LIBRARY)" -archive "$(ARCHIVE)" -checksum "$(CHECKSUM)"
 
 package: validate-version
 ifeq ($(strip $(GOOS)),)
 ifeq ($(strip $(GOARCH)),)
 package:
-	$(GO) run ./.github/scripts/package-release.go -dist dist -out dist -version "$$PACKAGER_VERSION"
+	host_os="$$( $(GO) env GOHOSTOS)" || exit $$?; \
+	host_arch="$$( $(GO) env GOHOSTARCH)" || exit $$?; \
+	helper=./.github/scripts/package-release_other.go; \
+	if [ "$$host_os" = windows ]; then helper=./.github/scripts/package-release_windows.go; fi; \
+	GOOS="$$host_os" GOARCH="$$host_arch" $(GO) run ./.github/scripts/package-release.go "$$helper" -dist dist -out dist -version "$$PACKAGER_VERSION"
 else
 package:
 	$(MAKE) package-platform GOOS="$(GOOS)" GOARCH="$(GOARCH)" VERSION="$${PACKAGER_VERSION}" BUILD_CC="$(BUILD_CC)"

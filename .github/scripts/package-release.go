@@ -395,11 +395,11 @@ func pathsAlias(firstPath, secondPath string) (bool, error) {
 	if firstPath == secondPath {
 		return true, nil
 	}
-	firstInfo, firstSuffix, err := existingPathAncestor(firstPath)
+	firstInfo, ancestorPath, firstSuffix, err := existingPathAncestor(firstPath)
 	if err != nil {
 		return false, err
 	}
-	secondInfo, secondSuffix, err := existingPathAncestor(secondPath)
+	secondInfo, _, secondSuffix, err := existingPathAncestor(secondPath)
 	if err != nil {
 		return false, err
 	}
@@ -408,7 +408,10 @@ func pathsAlias(firstPath, secondPath string) (bool, error) {
 	}
 	for i := range firstSuffix {
 		if !asciiEqualFold(firstSuffix[i], secondSuffix[i]) {
-			return false, nil
+			same, err := unicodeNamesAlias(ancestorPath, firstSuffix[i], secondSuffix[i])
+			if err != nil || !same {
+				return false, err
+			}
 		}
 	}
 	return true, nil
@@ -434,19 +437,19 @@ func asciiEqualFold(first, second string) bool {
 	return true
 }
 
-func existingPathAncestor(path string) (os.FileInfo, []string, error) {
+func existingPathAncestor(path string) (os.FileInfo, string, []string, error) {
 	var suffix []string
 	for {
 		info, err := os.Stat(path)
 		if err == nil {
-			return info, suffix, nil
+			return info, path, suffix, nil
 		}
 		if !os.IsNotExist(err) {
-			return nil, nil, fmt.Errorf("stat path %s: %w", filepath.ToSlash(path), err)
+			return nil, "", nil, fmt.Errorf("stat path %s: %w", filepath.ToSlash(path), err)
 		}
 		parent := filepath.Dir(path)
 		if parent == path {
-			return nil, nil, fmt.Errorf("find existing ancestor for %s", filepath.ToSlash(path))
+			return nil, "", nil, fmt.Errorf("find existing ancestor for %s", filepath.ToSlash(path))
 		}
 		suffix = append([]string{filepath.Base(path)}, suffix...)
 		path = parent

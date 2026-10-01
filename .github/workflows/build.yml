@@ -22,7 +22,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make test
-      - run: go test .github/scripts/package-release.go .github/scripts/package-release_test.go
+      - run: go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go
       - run: make race
       - run: make vet
       - run: make integration
@@ -76,6 +76,10 @@ jobs:
           echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
           echo "MAKE_VERSION=${MAKE_VERSION}" >> "${GITHUB_ENV}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+      - name: Test Windows packager path comparison
+        if: "${{ matrix.GOOS == 'windows' && matrix.GOARCH == 'amd64' }}"
+        shell: msys2 {0}
+        run: go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1 -v
       - name: Build and package on Unix
         if: "${{ matrix.GOOS != 'windows' }}"
         shell: bash
@@ -132,7 +136,7 @@ jobs:
           x-flags: main.pluginVersion=${{ steps.release_metadata.outputs.version }}
       - name: Package artifact
         run: |
-          go run ./.github/scripts/package-release.go \
+          go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go \
             -version "${MAKE_VERSION}" \
             -library "dist/windows_arm64/censorship.dll" \
             -archive "dist/censorship_${VERSION}_windows_arm64.zip" \
@@ -179,7 +183,7 @@ jobs:
             BUILD_CC="clang --target=x86_64-unknown-freebsd14.4 --sysroot=${RUNNER_TEMP}/freebsd-sysroot"
       - name: Package artifact
         run: |
-          go run ./.github/scripts/package-release.go \
+          go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go \
             -version "${MAKE_VERSION}" \
             -library "dist/freebsd_amd64/censorship.so" \
             -archive "dist/censorship_${VERSION}_freebsd_amd64.zip" \
