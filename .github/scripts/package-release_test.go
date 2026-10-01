@@ -3,8 +3,11 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +21,20 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+func packagerCommand(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	script, err := filepath.Abs("package-release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := "package-release_other.go"
+	if runtime.GOOS == "windows" {
+		helper = "package-release_windows.go"
+	}
+	helper = filepath.Join(filepath.Dir(script), helper)
+	return exec.Command("go", append([]string{"run", script, helper}, args...)...)
+}
 
 func TestArtifactSpecs(t *testing.T) {
 	got := artifactSpecs()
@@ -686,10 +703,6 @@ func assertNoReleaseTemporaryEntries(t *testing.T, dir string) {
 }
 
 func TestPackageLibraryIsDeterministicAcrossSourceMtimes(t *testing.T) {
-	script, err := filepath.Abs("package-release.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	tmp := t.TempDir()
 	library := filepath.Join(tmp, "censorship.so")
 	license := filepath.Join(tmp, "LICENSE")
@@ -707,7 +720,7 @@ func TestPackageLibraryIsDeterministicAcrossSourceMtimes(t *testing.T) {
 	firstModified := time.Date(2024, time.January, 2, 3, 4, 5, 0, time.UTC)
 	secondModified := firstModified.Add(6 * time.Second)
 	runPackager := func() {
-		cmd := exec.Command("go", "run", script, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
+		cmd := packagerCommand(t, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
 		cmd.Dir = tmp
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("packager: %v\n%s", err, output)
@@ -802,10 +815,6 @@ func runGitTest(t *testing.T, dir string, args ...string) {
 }
 
 func TestPackagerCLIVersionSourcesProduceSameBasename(t *testing.T) {
-	script, err := filepath.Abs("package-release.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	tmp := t.TempDir()
 	dist := filepath.Join(tmp, "dist")
 	if err := os.MkdirAll(filepath.Join(dist, "linux_amd64"), 0o755); err != nil {
@@ -833,9 +842,9 @@ func TestPackagerCLIVersionSourcesProduceSameBasename(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(tmp, strings.ReplaceAll(tc.name, " ", "-"))
-			args := append([]string{"run", script}, tc.args...)
+			args := append([]string(nil), tc.args...)
 			args = append(args, "-dist", dist, "-out", out)
-			cmd := exec.Command("go", args...)
+			cmd := packagerCommand(t, args...)
 			cmd.Dir = tc.dir
 			cmd.Env = withEnvironment(os.Environ(), "VERSION", tc.envVersion)
 			if output, err := cmd.CombinedOutput(); err != nil {
@@ -861,10 +870,6 @@ func TestPackagerCLIVersionSourcesProduceSameBasename(t *testing.T) {
 }
 
 func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
-	script, err := filepath.Abs("package-release.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	tmp := t.TempDir()
 	dist := filepath.Join(tmp, "dist")
 	library := filepath.Join(dist, "linux_amd64", "censorship.so")
@@ -877,10 +882,10 @@ func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
 
 	aggregateOut := filepath.Join(tmp, "aggregate")
 	runPackager := func(args ...string) error {
-		cmd := exec.Command("go", append([]string{"run", script}, args...)...)
+		cmd := packagerCommand(t, args...)
 		output, err := cmd.CombinedOutput()
-		if err == nil {
-			t.Errorf("packager unexpectedly succeeded:\n%s", output)
+		if err == nil || !strings.Contains(string(output), "is not a safe filename component") {
+			t.Fatalf("packager must reject unsafe version with business error: %v\n%s", err, output)
 		}
 		return err
 	}
@@ -909,11 +914,6 @@ func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
 }
 
 func TestPackagerRejectsWhitespaceVersionsBeforeChangingOutputs(t *testing.T) {
-	script, err := filepath.Abs("package-release.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	for _, tc := range []struct {
 		name  string
 		value string
@@ -941,9 +941,9 @@ func TestPackagerRejectsWhitespaceVersionsBeforeChangingOutputs(t *testing.T) {
 			}
 			before := snapshotFiles(t, library, archive, checksum)
 
-			cmd := exec.Command("go", "run", script, "-version", tc.value, "-library", library, "-archive", archive, "-checksum", checksum)
-			if output, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("packager accepted %q:\n%s", tc.value, output)
+			cmd := packagerCommand(t, "-version", tc.value, "-library", library, "-archive", archive, "-checksum", checksum)
+			if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "is not a safe filename component") {
+				t.Fatalf("packager must reject %q with business error: %v\n%s", tc.value, err, output)
 			}
 			assertFilesUnchanged(t, before)
 		})
@@ -960,10 +960,10 @@ func TestPackagerRejectsWhitespaceVersionsBeforeChangingOutputs(t *testing.T) {
 			}
 			out := filepath.Join(tmp, "out")
 
-			cmd := exec.Command("go", "run", script, "-dist", dist, "-out", out)
+			cmd := packagerCommand(t, "-dist", dist, "-out", out)
 			cmd.Env = withEnvironment(os.Environ(), "VERSION", tc.value)
-			if output, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("packager accepted %q:\n%s", tc.value, output)
+			if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "is not a safe filename component") {
+				t.Fatalf("packager must reject %q with business error: %v\n%s", tc.value, err, output)
 			}
 			if _, err := os.Stat(out); !os.IsNotExist(err) {
 				t.Fatalf("whitespace VERSION created output %s: %v", out, err)
@@ -973,11 +973,6 @@ func TestPackagerRejectsWhitespaceVersionsBeforeChangingOutputs(t *testing.T) {
 }
 
 func TestPackagerRejectsMissingOrBareVersionBeforeChangingOutputs(t *testing.T) {
-	script, err := filepath.Abs("package-release.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -1001,11 +996,11 @@ func TestPackagerRejectsMissingOrBareVersionBeforeChangingOutputs(t *testing.T) 
 			}
 			before := snapshotFiles(t, library, archive, checksum)
 
-			args := append([]string{"run", script}, tc.args...)
+			args := append([]string(nil), tc.args...)
 			args = append(args, "-library", library, "-archive", archive, "-checksum", checksum)
-			cmd := exec.Command("go", args...)
-			if output, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("packager unexpectedly succeeded:\n%s", output)
+			cmd := packagerCommand(t, args...)
+			if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "release version is empty") {
+				t.Fatalf("packager must reject empty version with business error: %v\n%s", err, output)
 			}
 			assertFilesUnchanged(t, before)
 		})
@@ -1013,11 +1008,6 @@ func TestPackagerRejectsMissingOrBareVersionBeforeChangingOutputs(t *testing.T) 
 }
 
 func TestPackagerRejectsPathCollisionsBeforeChangingFiles(t *testing.T) {
-	script, err := filepath.Abs("package-release.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	for _, tc := range []struct {
 		name  string
 		paths func(t *testing.T, dir string) (string, string, string)
@@ -1179,10 +1169,17 @@ func TestPackagerRejectsPathCollisionsBeforeChangingFiles(t *testing.T) {
 				checksum,
 			)
 
-			cmd := exec.Command("go", "run", script, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
+			cmd := packagerCommand(t, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
 			cmd.Dir = tmp
-			if output, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("packager unexpectedly succeeded:\n%s", output)
+			wantError := "must refer to different files"
+			switch tc.name {
+			case "checksum dangling symlink to archive":
+				wantError = "checksum must not be a symlink"
+			case "LICENSE dangling symlink to archive":
+				wantError = "LICENSE must not be a dangling symlink"
+			}
+			if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), wantError) {
+				t.Fatalf("packager must reject path collision with %q: %v\n%s", wantError, err, output)
 			}
 			assertFilesUnchanged(t, before)
 		})
@@ -1207,6 +1204,226 @@ func TestValidateDirectPackagePathsRejectsAbsentOutputAliasesThroughJunction(t *
 	if _, _, _, err := validateDirectPackagePaths(library, archive, checksum); err == nil {
 		t.Fatal("absent archive and checksum aliases accepted")
 	}
+}
+
+var absentUnicodeOutputPairs = []struct {
+	name, first, second string
+}{
+	{"basename", "É.zip", "é.zip"},
+	{"accented basename", "Été.zip", "été.zip"},
+	{"parents", "É/package.zip", "é/package.zip"},
+	{"missing common parent", "missing/É/package.zip", "missing/é/package.zip"},
+}
+
+func filesystemNamesAlias(t *testing.T, dir, firstName, secondName string) bool {
+	t.Helper()
+	probe, err := os.MkdirTemp(dir, "name-probe-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(probe); err != nil {
+			t.Error(err)
+		}
+	})
+	first := filepath.Join(probe, firstName)
+	if err := os.WriteFile(first, []byte("identity probe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	firstInfo, err := os.Stat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Stat(filepath.Join(probe, secondName))
+	if os.IsNotExist(err) {
+		return false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return os.SameFile(firstInfo, secondInfo)
+}
+
+func TestPathsAliasAbsentUnicodeOutputs(t *testing.T) {
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" && !filesystemNamesAlias(t, dir, "É", "é") {
+		t.Fatal("default Windows temporary directory must alias É/é")
+	}
+	testPathsAliasAbsentUnicodeOutputs(t, dir)
+}
+
+func testPathsAliasAbsentUnicodeOutputs(t *testing.T, dir string) {
+	t.Helper()
+	want := filesystemNamesAlias(t, dir, "É", "é")
+	for _, tc := range absentUnicodeOutputPairs {
+		t.Run(tc.name, func(t *testing.T) {
+			first, second := filepath.Join(dir, tc.first), filepath.Join(dir, tc.second)
+			for _, path := range []string{first, second} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("output %q must be absent before preflight: %v", path, err)
+				}
+			}
+			got, err := pathsAlias(first, second)
+			if err != nil || got != want {
+				t.Fatalf("pathsAlias(%q, %q) = %v, %v; real file identity wants %v", first, second, got, err, want)
+			}
+		})
+	}
+}
+
+func TestDirectPackageRejectsAbsentUnicodeOutputAliases(t *testing.T) {
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" && !filesystemNamesAlias(t, dir, "É", "é") {
+		t.Fatal("default Windows temporary directory must alias É/é")
+	}
+	testDirectPackageAbsentUnicodeOutputs(t, dir)
+}
+
+func testDirectPackageAbsentUnicodeOutputs(t *testing.T, dir string) {
+	t.Helper()
+	wantAlias := filesystemNamesAlias(t, dir, "É", "é")
+	for _, tc := range absentUnicodeOutputPairs {
+		t.Run(tc.name, func(t *testing.T) {
+			root, err := os.MkdirTemp(dir, "package-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			library := filepath.Join(root, "censorship.dll")
+			license := filepath.Join(root, "LICENSE")
+			keep := filepath.Join(root, "keep.txt")
+			for path, contents := range map[string]string{library: "library bytes", license: "license bytes", keep: "preserved bytes"} {
+				if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			archive, checksum := filepath.Join(root, tc.first), filepath.Join(root, tc.second)
+			before := snapshotFiles(t, library, license, keep, archive, checksum)
+			cmd := packagerCommand(t, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
+			cmd.Dir = root
+			output, runErr := cmd.CombinedOutput()
+			if wantAlias {
+				if runErr == nil || !strings.Contains(string(output), "archive and checksum must refer to different files") {
+					t.Fatalf("packager must reject Unicode output alias with business error: %v\n%s", runErr, output)
+				}
+				assertFilesUnchanged(t, before)
+			} else {
+				if runErr != nil {
+					t.Fatalf("packager rejected distinct Unicode outputs: %v\n%s", runErr, output)
+				}
+				assertPackagedFiles(t, archive, checksum, "censorship.dll", []byte("library bytes"), []byte("license bytes"))
+				delete(before, archive)
+				delete(before, checksum)
+				assertFilesUnchanged(t, before)
+			}
+			if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if entry.IsDir() {
+					assertNoReleaseTemporaryEntries(t, path)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func assertPackagedFiles(t *testing.T, archive, checksum, libraryName string, libraryBytes, licenseBytes []byte) {
+	t.Helper()
+	reader, err := zip.OpenReader(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if !reflect.DeepEqual(zipNames(reader.File), []string{libraryName, "LICENSE"}) {
+		t.Fatalf("ZIP entries = %v", zipNames(reader.File))
+	}
+	for i, wantBytes := range [][]byte{libraryBytes, licenseBytes} {
+		file := reader.File[i]
+		if !file.Modified.Equal(time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)) || file.Method != zip.Deflate || file.CRC32 != crc32.ChecksumIEEE(wantBytes) {
+			t.Fatalf("ZIP header %q: time=%s method=%d CRC=%x", file.Name, file.Modified, file.Method, file.CRC32)
+		}
+		entry, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotBytes, readErr := io.ReadAll(entry)
+		closeErr := entry.Close()
+		if readErr != nil || closeErr != nil || !bytes.Equal(gotBytes, wantBytes) {
+			t.Fatalf("ZIP entry %q: bytes=%q read=%v close=%v", file.Name, gotBytes, readErr, closeErr)
+		}
+	}
+	if reader.File[0].Mode().Perm() != 0o755 {
+		t.Fatalf("library mode = %v", reader.File[0].Mode())
+	}
+	archiveBytes, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotChecksum, err := os.ReadFile(checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantChecksum := fmt.Sprintf("%x  %s\n", sha256.Sum256(archiveBytes), filepath.Base(archive))
+	if string(gotChecksum) != wantChecksum {
+		t.Fatalf("checksum = %q, want %q", gotChecksum, wantChecksum)
+	}
+}
+
+func TestDirectPackageAcceptsDistinctUnicodeOutputs(t *testing.T) {
+	for _, tc := range []struct{ archive, checksum string }{
+		{"É.zip", "É.zip.sha256"},
+		{"é.zip", "è.zip"},
+		{"K.zip", "K.zip"},
+		{"Σ.zip", "ς.zip"},
+		{"S.zip", "ſ.zip"},
+		{"𐐀.zip", "𐐨.zip"},
+	} {
+		t.Run(tc.archive+"/"+tc.checksum, func(t *testing.T) {
+			dir := t.TempDir()
+			if filesystemNamesAlias(t, dir, tc.archive, tc.checksum) {
+				t.Fatal("distinct output fixture aliases on this filesystem")
+			}
+			library := filepath.Join(dir, "censorship.so")
+			if err := os.WriteFile(library, []byte("library bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "LICENSE"), []byte("license bytes"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			archive, checksum := filepath.Join(dir, tc.archive), filepath.Join(dir, tc.checksum)
+			cmd := packagerCommand(t, "-version", "1.2.3", "-library", library, "-archive", archive, "-checksum", checksum)
+			cmd.Dir = dir
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("packager: %v\n%s", err, output)
+			}
+			assertPackagedFiles(t, archive, checksum, "censorship.so", []byte("library bytes"), []byte("license bytes"))
+		})
+	}
+}
+
+func TestPackagerRelativePathsOutsideModule(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); !os.IsNotExist(err) {
+		t.Fatalf("fixture must have no go.mod: %v", err)
+	}
+	for path, contents := range map[string]string{"censorship.so": "relative library bytes", "LICENSE": "cwd license bytes"} {
+		if err := os.WriteFile(filepath.Join(dir, path), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := packagerCommand(t, "-version", "1.2.3", "-library", "censorship.so", "-archive", "out/É.zip", "-checksum", "out/É.zip.sha256")
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("packager outside module: %v\n%s", err, output)
+	}
+	assertPackagedFiles(t, filepath.Join(dir, "out", "É.zip"), filepath.Join(dir, "out", "É.zip.sha256"), "censorship.so", []byte("relative library bytes"), []byte("cwd license bytes"))
 }
 
 func TestPathsAliasCaseRules(t *testing.T) {
@@ -1671,6 +1888,12 @@ func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
 	if !strings.Contains(string(output), `-version "$PACKAGER_VERSION" -library`) {
 		t.Fatalf("make package-platform did not read the raw version from the environment:\n%s", output)
 	}
+	if !strings.Contains(string(output), `go run ./.github/scripts/package-release.go "$helper"`) {
+		t.Fatalf("make package-platform omits the running-platform helper:\n%s", output)
+	}
+	if !strings.Contains(string(output), `GOOS="linux" GOARCH="amd64" go build`) {
+		t.Fatalf("library build did not retain the requested target:\n%s", output)
+	}
 
 	cmd = exec.Command("make", "-n", "package", "GOOS=linux", "GOARCH=amd64", "VERSION=vv")
 	cmd.Dir = filepath.Join("..", "..")
@@ -1691,6 +1914,102 @@ func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
 	}
 	if !strings.Contains(string(output), `-dist dist -out dist -version "$PACKAGER_VERSION"`) {
 		t.Fatalf("make package aggregate command did not carry raw vv to the packager:\n%s", output)
+	}
+}
+
+func TestMakePackagerUsesHostCompilation(t *testing.T) {
+	root := t.TempDir()
+	for _, relative := range []string{
+		"Makefile",
+		".github/scripts/package-release.go",
+		".github/scripts/package-release_windows.go",
+		".github/scripts/package-release_other.go",
+	} {
+		contents, err := os.ReadFile(filepath.Join("..", "..", relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(root, relative)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, contents, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	library := filepath.Join(root, "dist", "linux_amd64", "censorship.so")
+	if err := os.MkdirAll(filepath.Dir(library), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(library, []byte("Make fixture library"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	license := filepath.Join(root, "LICENSE")
+	if err := os.WriteFile(license, []byte("Make fixture license"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotFiles(t, library, license)
+	targetOS := "windows"
+	if runtime.GOOS == "windows" {
+		targetOS = "linux"
+	}
+	targetEnv := "override GOOS := " + targetOS + "\noverride GOARCH := arm64\nexport GOOS GOARCH\n"
+	if err := os.WriteFile(filepath.Join(root, "target-env.mk"), []byte(targetEnv), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("make", "-f", "Makefile", "-f", "target-env.mk", "package", "GOOS=", "GOARCH=", "VERSION=1.2.3")
+	cmd.Dir = root
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("real Make aggregate packaging with inherited %s/arm64 must run on %s/%s: %v\n%s", targetOS, runtime.GOOS, runtime.GOARCH, err, output)
+	}
+	archive := filepath.Join(root, "dist", "censorship_1.2.3_linux_amd64.zip")
+	checksum := archive + ".sha256"
+	assertPackagedFiles(t, archive, checksum, "censorship.so", []byte("Make fixture library"), []byte("Make fixture license"))
+	individual, err := os.ReadFile(checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aggregate, err := os.ReadFile(filepath.Join(root, "dist", "checksums.txt"))
+	if err != nil || !bytes.Equal(aggregate, individual) {
+		t.Fatalf("aggregate = %q, %v; want %q", aggregate, err, individual)
+	}
+	assertFilesUnchanged(t, before)
+	assertNoReleaseTemporaryEntries(t, filepath.Join(root, "dist"))
+}
+
+func TestMakeValidateVersionWithoutGo(t *testing.T) {
+	makefile, err := filepath.Abs(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goName := "go"
+	if runtime.GOOS == "windows" {
+		goName += ".exe"
+	}
+	var pathDirs []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if _, err := os.Stat(filepath.Join(dir, goName)); os.IsNotExist(err) {
+			pathDirs = append(pathDirs, dir)
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, version := range []string{"v1.2.3", "v"} {
+		cmd := exec.Command(makePath, "-f", makefile, "validate-version", "VERSION="+version, "GO=unavailable-go-command")
+		cmd.Dir = t.TempDir()
+		cmd.Env = withEnvironment(os.Environ(), "PATH", strings.Join(pathDirs, string(os.PathListSeparator)))
+		output, err := cmd.CombinedOutput()
+		if version == "v1.2.3" {
+			if err != nil {
+				t.Fatalf("validate-version without Go: %v\n%s", err, output)
+			}
+		} else if err == nil || !strings.Contains(string(output), "VERSION must normalize to a safe non-empty release version") {
+			t.Fatalf("invalid version without Go: %v\n%s", err, output)
+		}
 	}
 }
 
@@ -1898,7 +2217,7 @@ func TestBuildWorkflowContract(t *testing.T) {
 	testRuns := nonemptyRuns(workflow.Jobs["test"].Steps)
 	wantTestRuns := []string{
 		"make test",
-		"go test .github/scripts/package-release.go .github/scripts/package-release_test.go",
+		"go test .github/scripts/package-release.go .github/scripts/package-release_other.go .github/scripts/package-release_test.go",
 		"make race",
 		"make vet",
 		"make integration",
@@ -1934,6 +2253,26 @@ func TestBuildWorkflowContract(t *testing.T) {
 		t.Fatal("matrix package/upload contract is incomplete")
 	}
 
+	const windowsPackagerTest = "go test .github/scripts/package-release.go .github/scripts/package-release_windows.go .github/scripts/package-release_test.go .github/scripts/package-release_windows_test.go -count=1 -v"
+	setupIndex, testIndex, packageIndex := -1, -1, -1
+	for i, step := range build.Steps {
+		if step.Uses == "msys2/setup-msys2@v2" {
+			setupIndex = i
+		}
+		if step.Run == windowsPackagerTest {
+			testIndex = i
+			if step.Shell != "msys2 {0}" || step.If != "${{ matrix.GOOS == 'windows' && matrix.GOARCH == 'amd64' }}" {
+				t.Fatalf("Windows packager test step = %#v", step)
+			}
+		}
+		if strings.Contains(step.Run, "make package") && step.Shell == "msys2 {0}" {
+			packageIndex = i
+		}
+	}
+	if setupIndex < 0 || testIndex <= setupIndex || packageIndex <= testIndex {
+		t.Fatalf("Windows packager tests must run after MSYS2 setup and before packaging: setup=%d test=%d package=%d", setupIndex, testIndex, packageIndex)
+	}
+
 	const crossAction = "go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a"
 	if got := bytes.Count(raw, []byte("uses: "+crossAction+" # v1")); got != 1 {
 		t.Fatalf("pinned cross action lines = %d, want 1", got)
@@ -1959,7 +2298,7 @@ func TestBuildWorkflowContract(t *testing.T) {
 			jobActionWith(job, crossAction, "flags") != "-ldflags=-s -w" ||
 			jobActionWith(job, crossAction, "x-flags") != "main.pluginVersion=${{ steps.release_metadata.outputs.version }}" ||
 			!jobRunContains(job, "-version \"${MAKE_VERSION}\"") ||
-			!jobRunContains(job, "go run ./.github/scripts/package-release.go") ||
+			!jobRunContains(job, "go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go") ||
 			!jobRunContains(job, "-library \""+libraryPath+"\"") ||
 			!jobRunContains(job, "-archive \"dist/"+tc.archive+"\"") ||
 			!jobRunContains(job, "-checksum \"dist/"+tc.archive+".sha256\"") ||
@@ -1979,7 +2318,7 @@ func TestBuildWorkflowContract(t *testing.T) {
 		!jobRunContains(freebsd, "sudo tar -xf") ||
 		!jobRunContains(freebsd, `make build-platform VERSION="${MAKE_VERSION}" GOOS=freebsd GOARCH=amd64`) ||
 		!jobRunContains(freebsd, "clang --target=x86_64-unknown-freebsd14.4 --sysroot=") ||
-		!jobRunContains(freebsd, "go run ./.github/scripts/package-release.go") ||
+		!jobRunContains(freebsd, "go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go") ||
 		!jobRunContains(freebsd, "-library \"dist/freebsd_amd64/censorship.so\"") ||
 		!jobRunContains(freebsd, "-archive \"dist/censorship_${VERSION}_freebsd_amd64.zip\"") ||
 		!jobRunContains(freebsd, "-checksum \"dist/censorship_${VERSION}_freebsd_amd64.zip.sha256\"") ||
