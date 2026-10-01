@@ -67,6 +67,10 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	if err != nil {
 		return transformResult{}, err
 	}
+	return transformSelectedSpans(body, spans, cfg)
+}
+
+func transformSelectedSpans(body []byte, spans []textSpan, cfg *configSnapshot) (transformResult, error) {
 	blocked, changed := applyMode(spans, cfg)
 	if blocked != nil {
 		return transformResult{Blocked: blocked}, nil
