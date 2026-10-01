@@ -38,7 +38,11 @@ func appendOpenAIChatTool(spans *[]textSpan, tool gjson.Result, roles scopeSet) 
 	case "function":
 		function := tool.Get("function")
 		appendStringSpan(spans, function.Get("description"), "developer", roles)
-		appendJSONSchemaDescriptions(spans, function.Get("parameters"), "developer", roles)
+		schema := function.Get("parameters")
+		if !schema.Exists() {
+			schema = function.Get("parametersJsonSchema")
+		}
+		appendJSONSchemaDescriptions(spans, schema, "developer", roles)
 		appendJSONSchemaDescriptions(spans, function.Get("output_schema"), "developer", roles)
 	case "custom":
 		appendStringSpan(spans, tool.Get("custom.description"), "developer", roles)
@@ -69,7 +73,11 @@ func collectOpenAI(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 				return true
 			}
 			content := message.Get("content")
-			appendStringSpan(spans, content, roleName, roles)
+			if roleName == "tool" {
+				appendToolResultStringSpan(spans, content, roleName, roles)
+			} else {
+				appendStringSpan(spans, content, roleName, roles)
+			}
 			if roleName == "assistant" {
 				appendStringSpan(spans, message.Get("refusal"), roleName, roles)
 			}
@@ -149,18 +157,21 @@ func openAIResponsesRole(item gjson.Result) (string, bool) {
 	}
 }
 
-func appendOpenAIResponsesInputTextOutput(output gjson.Result, roles scopeSet, spans *[]textSpan) {
-	appendStringSpan(spans, output, "tool", roles)
-	if !output.IsArray() {
-		return
+func appendOpenAIResponsesInputTextOutput(output gjson.Result, roles scopeSet, spans *[]textSpan, maxCodePoints int) {
+	before := len(*spans)
+	appendToolResultStringSpan(spans, output, "tool", roles)
+	if output.IsArray() {
+		output.ForEach(func(_, part gjson.Result) bool {
+			partType := part.Get("type")
+			if partType.Type == gjson.String && partType.Str == "input_text" {
+				appendStringSpan(spans, part.Get("text"), "tool", roles)
+			}
+			return true
+		})
 	}
-	output.ForEach(func(_, part gjson.Result) bool {
-		partType := part.Get("type")
-		if partType.Type == gjson.String && partType.Str == "input_text" {
-			appendStringSpan(spans, part.Get("text"), "tool", roles)
-		}
-		return true
-	})
+	for i := before; i < len(*spans); i++ {
+		(*spans)[i].MaxCodePoints = maxCodePoints
+	}
 }
 
 func collectOpenAIResponsesTool(spans *[]textSpan, tool gjson.Result, role string, roles scopeSet) {
@@ -261,12 +272,20 @@ func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *
 	switch itemType.Str {
 	case "function_call_output", "custom_tool_call_output":
 		if roles.has("tool") {
-			appendOpenAIResponsesInputTextOutput(item.Get("output"), roles, spans)
+			maxCodePoints := 0
+			if itemType.Str == "function_call_output" {
+				maxCodePoints = 10485760
+			}
+			appendOpenAIResponsesInputTextOutput(item.Get("output"), roles, spans, maxCodePoints)
 		}
 		return true
 	case "local_shell_call_output", "apply_patch_call_output":
 		if roles.has("tool") {
+			before := len(*spans)
 			appendStringSpan(spans, item.Get("output"), "tool", roles)
+			if itemType.Str == "apply_patch_call_output" && len(*spans) > before {
+				(*spans)[before].MaxCodePoints = 10485760
+			}
 		}
 		return true
 	case "shell_call_output":
@@ -274,8 +293,12 @@ func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *
 			output := item.Get("output")
 			if output.IsArray() {
 				output.ForEach(func(_, result gjson.Result) bool {
+					before := len(*spans)
 					appendStringSpan(spans, result.Get("stdout"), "tool", roles)
 					appendStringSpan(spans, result.Get("stderr"), "tool", roles)
+					for i := before; i < len(*spans); i++ {
+						(*spans)[i].MaxCodePoints = 10485760
+					}
 					return true
 				})
 			}
@@ -332,7 +355,11 @@ func collectOpenAIResponsesToolOutput(item gjson.Result, roles scopeSet, spans *
 		return true
 	case "program_output":
 		if roles.has("tool") {
+			before := len(*spans)
 			appendStringSpan(spans, item.Get("result"), "tool", roles)
+			if len(*spans) > before {
+				(*spans)[before].MaxCodePoints = 10485760
+			}
 		}
 		return true
 	case "file_search_call":
@@ -409,7 +436,11 @@ func collectOpenAIResponses(root gjson.Result, roles scopeSet, spans *[]textSpan
 		format := root.Get("text.format")
 		if format.Get("type").Str == "json_schema" {
 			appendStringSpan(spans, format.Get("description"), "developer", roles)
-			appendJSONSchemaDescriptions(spans, format.Get("schema"), "developer", roles)
+			schema := format.Get("schema")
+			if !schema.Exists() {
+				schema = format.Get("json_schema.schema")
+			}
+			appendJSONSchemaDescriptions(spans, schema, "developer", roles)
 		}
 	}
 	if roles.has("developer") || roles.has("user") {
