@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -403,6 +405,146 @@ func TestClaudeResultTextPreservesMachineFields(t *testing.T) {
 	)
 	if !bytes.Equal(resp.Body, want) {
 		t.Fatalf("body differs outside selected Claude result text")
+	}
+}
+
+func TestClaudeDocumentTitleMaxCodePoints(t *testing.T) {
+	const unicodeEscape = "\\u"
+	for _, path := range []struct {
+		name, role, prefix, suffix string
+	}{
+		{"direct user", "user", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[`, `]}]}`},
+		{"nested tool", "tool", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"ab id","is_error":false,"content":[`, `]}]}]}`},
+	} {
+		for _, tc := range []struct {
+			name, title, rawTitle, rules, want, wantCode string
+			noOp, disabled                               bool
+		}{
+			{name: "ASCII final 500", title: strings.Repeat("x", 497) + "ab", want: strings.Repeat("x", 497) + "a​b"},
+			{name: "ASCII final 501", title: strings.Repeat("x", 498) + "ab", wantCode: "censorship_invalid_request"},
+			{name: "Chinese final 500", title: strings.Repeat("中", 497) + "ab", want: strings.Repeat("中", 497) + "a​b"},
+			{name: "Chinese final 501", title: strings.Repeat("中", 498) + "ab", wantCode: "censorship_invalid_request"},
+			{name: "emoji final 500", title: strings.Repeat("😀", 497) + "ab", want: strings.Repeat("😀", 497) + "a​b"},
+			{name: "emoji final 501", title: strings.Repeat("😀", 498) + "ab", wantCode: "censorship_invalid_request"},
+			{name: "escaped ASCII final 500", rawTitle: `"` + strings.Repeat("x", 497) + unicodeEscape + "0061" + unicodeEscape + `0062"`, want: strings.Repeat("x", 497) + "a​b"},
+			{name: "escaped ASCII final 501", rawTitle: `"` + strings.Repeat("x", 498) + unicodeEscape + "0061" + unicodeEscape + `0062"`, wantCode: "censorship_invalid_request"},
+			{name: "escaped Chinese final 500", rawTitle: `"` + strings.Repeat(unicodeEscape+"4e2d", 497) + `ab"`, want: strings.Repeat("中", 497) + "a​b"},
+			{name: "escaped Chinese final 501", rawTitle: `"` + strings.Repeat(unicodeEscape+"4e2d", 498) + `ab"`, wantCode: "censorship_invalid_request"},
+			{name: "surrogate pairs final 500", rawTitle: `"` + strings.Repeat(unicodeEscape+"d83d"+unicodeEscape+"de00", 497) + `ab"`, want: strings.Repeat("😀", 497) + "a​b"},
+			{name: "surrogate pairs final 501", rawTitle: `"` + strings.Repeat(unicodeEscape+"d83d"+unicodeEscape+"de00", 498) + `ab"`, wantCode: "censorship_invalid_request"},
+			{name: "strip then obfs final 500", title: strings.Repeat("x", 494) + "zzabab", rules: "  strip: [zz]\n  obfs: [ab]\n", want: strings.Repeat("x", 494) + "a​ba​b"},
+			{name: "strip then obfs final 501", title: strings.Repeat("x", 495) + "zabab", rules: "  strip: [z]\n  obfs: [ab]\n", wantCode: "censorship_invalid_request"},
+			{name: "cancellation preserves escaped token", rawTitle: `"` + strings.Repeat("x", 497) + "a" + unicodeEscape + `200bb"`, rules: "  strip: ['​']\n  obfs: [ab]\n", noOp: true},
+			{name: "block precedes invalid expansion", title: strings.Repeat("x", 498) + "ab", rules: "  block: [ab]\n  strip: [ab]\n  obfs: [ab]\n", wantCode: "censorship_blocked"},
+			{name: "scope disabled", title: strings.Repeat("x", 498) + "ab", noOp: true, disabled: true},
+			{name: "title retains nonempty constraint", title: "ab", rules: "  strip: [ab]\n", wantCode: "censorship_invalid_request"},
+		} {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				rules := tc.rules
+				if rules == "" {
+					rules = "  obfs: [ab]\n"
+				}
+				role := path.role
+				if tc.disabled {
+					role = "assistant"
+				}
+				registerConfig(t, "words:\n"+rules+"scope:\n  roles: ["+role+"]\n")
+				title, err := json.Marshal(tc.title)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.rawTitle != "" {
+					title = []byte(tc.rawTitle)
+				}
+				body := []byte(path.prefix + `{"type":"document","title":` + string(title) + `,"context":"clean context","source":{"type":"text","data":"clean"},"cache_control":{"type":"ephemeral","unknown":"ab"},"unknown":"ab"}` + path.suffix)
+				resp := interceptRPC(t, "claude", body)
+				if tc.wantCode != "" {
+					if !resp.Terminate || resp.StatusCode != http.StatusBadRequest || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != tc.wantCode {
+						t.Fatalf("want %s, terminate=%t status=%d body bytes=%d error=%s", tc.wantCode, resp.Terminate, resp.StatusCode, len(resp.Body), resp.ResponseBody)
+					}
+					if tc.wantCode == "censorship_blocked" && (gjson.GetBytes(resp.ResponseBody, "error.role").Str != path.role || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "ab") {
+						t.Fatalf("want canonical %s block for ab, error=%s", path.role, resp.ResponseBody)
+					}
+					return
+				}
+				if tc.noOp {
+					requireNoOpResponse(t, resp)
+					return
+				}
+				wantTitle, err := json.Marshal(tc.want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := replaceRawTokens(t, body, rawReplacement{Before: string(title), After: string(wantTitle)})
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("body differs from expected title rewrite, terminate=%t error=%s", resp.Terminate, resp.ResponseBody)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeDocumentTitleDoesNotLimitOtherResultText(t *testing.T) {
+	value, err := json.Marshal(strings.Repeat("x", 498) + "ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantValue, err := json.Marshal(strings.Repeat("x", 498) + "a​b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []struct {
+		name, role, prefix, suffix string
+	}{
+		{"direct user", "user", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[`, `]}]}`},
+		{"nested tool", "tool", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"ab id","content":[`, `]}]}]}`},
+	} {
+		for _, tc := range []struct {
+			name, prefix, suffix string
+		}{
+			{"document context", `{"type":"document","title":"clean","context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"document context absent title", `{"type":"document","context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"document context empty title", `{"type":"document","title":"","context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"document context nonstring title", `{"type":"document","title":42,"context":`, `,"source":{"type":"text","data":"clean"}}`},
+			{"search_result title", `{"type":"search_result","title":`, `,"source":"ab machine","content":[{"type":"text","text":"clean"}]}`},
+		} {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				registerConfig(t, "words:\n  obfs: [ab]\nscope:\n  roles: ["+path.role+"]\n")
+				body := []byte(path.prefix + tc.prefix + string(value) + tc.suffix + path.suffix)
+				want := replaceRawTokens(t, body, rawReplacement{Before: string(value), After: string(wantValue)})
+				resp := interceptRPC(t, "claude", body)
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("want unbounded 501-codepoint result text, terminate=%t error=%s", resp.Terminate, resp.ResponseBody)
+				}
+			})
+		}
+	}
+}
+
+func TestClaudeDocumentTitlePreservesUnchangedToken(t *testing.T) {
+	const unicodeEscape = "\\u"
+	for _, path := range []struct {
+		name, role, prefix, suffix string
+	}{
+		{"direct user", "user", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[`, `]}]}`},
+		{"nested tool", "tool", `{"model":"claude-sonnet-4-5","max_tokens":16,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"CHANGE id","is_error":false,"content":[`, `]}]}]}`},
+	} {
+		for _, tc := range []struct {
+			name, title, rules string
+		}{
+			{"unmatched escaped title", `"` + strings.Repeat(unicodeEscape+"0078", 498) + `ab"`, "  strip: [CHANGE]\n"},
+			{"cancelled escaped title", `"` + strings.Repeat("x", 497) + "a" + unicodeEscape + `200bb"`, "  strip: ['​', CHANGE]\n  obfs: [ab]\n"},
+		} {
+			t.Run(path.name+"/"+tc.name, func(t *testing.T) {
+				registerConfig(t, "words:\n"+tc.rules+"scope:\n  roles: ["+path.role+"]\n")
+				body := []byte(path.prefix + `{"type":"document","title":` + tc.title + `,"context":"CHANGE context","source":{"type":"url","url":"CHANGE machine"},"unknown":"CHANGE metadata"}` + path.suffix)
+				want := replaceRawTokens(t, body, rawReplacement{Before: `"CHANGE context"`, After: `" context"`})
+				resp := interceptRPC(t, "claude", body)
+				if resp.Terminate || !bytes.Equal(resp.Body, want) {
+					t.Fatalf("unchanged title or machine token was rewritten, terminate=%t error=%s", resp.Terminate, resp.ResponseBody)
+				}
+			})
+		}
 	}
 }
 

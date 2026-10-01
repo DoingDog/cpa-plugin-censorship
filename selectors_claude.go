@@ -169,7 +169,11 @@ func appendClaudeResultText(spans *[]textSpan, block gjson.Result, role string, 
 			return true
 		})
 	case "document":
+		before := len(*spans)
 		appendNonEmptyStringSpan(spans, block.Get("title"), role, roles)
+		if len(*spans) > before {
+			(*spans)[before].MaxCodePoints = 500
+		}
 		appendNonEmptyStringSpan(spans, block.Get("context"), role, roles)
 		source := block.Get("source")
 		if !source.IsObject() {
