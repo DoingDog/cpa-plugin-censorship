@@ -20,6 +20,23 @@ var selectedTextFormats = []struct {
 	{"interactions", `{"input":`, `}`, "input"},
 }
 
+func TestSelectedTextUnescapedSpanDoesNotAllocate(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation ceilings are measured without race instrumentation")
+	}
+	body := []byte(`{"text":"plain Unicode 中文😀"}`)
+	value := gjson.ParseBytes(body).Get("text")
+	roles := scopeSet{"user": {}}
+	spans := make([]textSpan, 0, 1)
+	allocations := testing.AllocsPerRun(100, func() {
+		spans = spans[:0]
+		appendStringSpan(&spans, value, "user", roles)
+	})
+	if len(spans) != 1 || spans[0].Text != "plain Unicode 中文😀" || allocations != 0 {
+		t.Fatalf("spans=%#v allocations=%.1f want unescaped text without allocation", spans, allocations)
+	}
+}
+
 func TestSelectedTextUsesStandardJSONDecoding(t *testing.T) {
 	for _, raw := range []string{
 		`"\ud800\u0065xample note"`,

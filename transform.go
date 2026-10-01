@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 type textSpan struct {
@@ -16,6 +17,7 @@ type textSpan struct {
 	Changed            bool
 	SkipFoldRewrite    bool
 	RequiresNonEmpty   bool
+	MaxCodePoints      int
 	RequiresUnmodified bool
 	UnmodifiedMessage  string
 	NestedDescription  *textSpan
@@ -183,7 +185,7 @@ func changedSpanInvalidMessage(span textSpan) string {
 		}
 		return "censorship cannot rewrite signature-bound text"
 	}
-	if span.RequiresNonEmpty && span.Text == "" {
+	if span.RequiresNonEmpty && span.Text == "" || span.MaxCodePoints > 0 && utf8.RuneCountInString(span.Text) > span.MaxCodePoints {
 		return "censorship rewrite would make a text field invalid"
 	}
 	return ""

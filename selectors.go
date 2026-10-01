@@ -127,9 +127,11 @@ func appendStringSpan(spans *[]textSpan, value gjson.Result, role string, roles 
 	}
 	text := value.Str
 	if strings.ContainsRune(value.Raw, '\\') {
-		if err := json.Unmarshal([]byte(value.Raw), &text); err != nil {
+		var decoded string
+		if err := json.Unmarshal([]byte(value.Raw), &decoded); err != nil {
 			panic(err)
 		}
+		text = decoded
 	}
 	*spans = append(*spans, textSpan{
 		RawStart: value.Index,

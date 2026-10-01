@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 )
@@ -947,5 +948,187 @@ func TestEncodedToolResultCanceledParentBesideChangedParent(t *testing.T) {
 	want := []byte(`{"first":` + firstToken + `,"second":` + benchmarkQuote(wantSecond) + `}`)
 	if !bytes.Equal(result.Body, want) {
 		t.Fatalf("body=%q want=%q", result.Body, want)
+	}
+}
+
+func TestFinalMaxCodePointsRejectsExpansion(t *testing.T) {
+	body := []byte(`{"text":"ab"}`)
+	var spans []textSpan
+	appendStringSpan(&spans, gjson.ParseBytes(body).Get("text"), "user", scopeSet{"user": {}})
+	spans[0].MaxCodePoints = 2
+	result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  obfs: [ab]\n"))
+	if err != nil || !result.Invalid || result.Body != nil || result.Blocked != nil || result.InvalidMessage != "censorship rewrite would make a text field invalid" {
+		t.Fatalf("result=%#v err=%v want invalid without replacement", result, err)
+	}
+}
+
+func TestFinalMaxCodePointsBoundaries(t *testing.T) {
+	u := string([]byte{92}) + "u"
+	for _, tc := range []struct {
+		name, raw, config, want string
+		limit                   int
+		invalid, blocked        bool
+	}{
+		{"at limit", `"ab"`, "words:\n  obfs: [ab]\n", "a​b", 3, false, false},
+		{"one over", `"abc"`, "words:\n  obfs: [ab]\n", "", 3, true, false},
+		{"unconstrained", `"ab"`, "words:\n  obfs: [ab]\n", "a​b", 0, false, false},
+		{"unchanged over limit", `"untouched"`, "words:\n  obfs: [ab]\n", "", 1, false, false},
+		{"strip then obfs legal", `"Xab"`, "words:\n  strip: [X]\n  obfs: [ab]\n", "a​b", 3, false, false},
+		{"strip then obfs over", `"Xab"`, "words:\n  strip: [X]\n  obfs: [ab]\n", "", 2, true, false},
+		{"final cancellation", `"a​b"`, "words:\n  strip: ['​']\n  obfs: [ab]\n", "", 2, false, false},
+		{"block before limit", `"ab"`, "words:\n  block: [ab]\n  obfs: [ab]\n", "", 2, false, true},
+		{"Chinese at limit", `"世界"`, "words:\n  obfs: [世界]\n", "世​界", 3, false, false},
+		{"Unicode over", `"中文😀ab"`, "words:\n  obfs: [ab]\n", "", 5, true, false},
+		{"pair at limit", `"` + u + "d83d" + u + `de00ab"`, "words:\n  obfs: [ab]\n", "😀a​b", 4, false, false},
+		{"escaped scalars at limit", `"` + u + `0061b"`, "words:\n  obfs: [ab]\n", "a​b", 3, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"text":` + tc.raw + `}`)
+			var spans []textSpan
+			appendStringSpan(&spans, gjson.ParseBytes(body).Get("text"), "user", scopeSet{"user": {}})
+			spans[0].MaxCodePoints = tc.limit
+			result, err := transformSelectedSpans(body, spans, mustConfig(t, tc.config))
+			if err != nil || result.Invalid != tc.invalid || (result.Blocked != nil) != tc.blocked {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if tc.blocked {
+				if result.Body != nil || *result.Blocked != (blockMatch{Term: "ab", Role: "user"}) {
+					t.Fatalf("result=%#v want block ab", result)
+				}
+			} else if tc.invalid || tc.want == "" {
+				if result.Body != nil {
+					t.Fatalf("unexpected replacement: %q", result.Body)
+				}
+			} else if want := []byte(`{"text":` + benchmarkQuote(tc.want) + `}`); !bytes.Equal(result.Body, want) {
+				t.Fatalf("body=%q want=%q", result.Body, want)
+			}
+		})
+	}
+}
+
+func TestFinalMaxCodePointsCarrierParentAndChild(t *testing.T) {
+	inner := `[ {"type":"text","text":"中文😀ab"}, ` + encodedTestImage + ` ]`
+	wantInner := strings.Replace(inner, `"中文😀ab"`, `"中文😀a​b"`, 1)
+	parentLength := utf8.RuneCountInString(wantInner)
+	for _, tc := range []struct {
+		name                string
+		parentMax, childMax int
+		invalid             bool
+	}{
+		{"parent whole JSON over", parentLength - 1, 0, true},
+		{"parent whole JSON at limit", parentLength, 0, false},
+		{"child final text over", 0, 5, true},
+		{"child final text at limit", 0, 6, false},
+		{"default unlimited", 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, spans := encodedResultFixture(t, inner)
+			spans[0].MaxCodePoints = tc.parentMax
+			if len(spans[0].EncodedChildren) != 1 {
+				t.Fatalf("children=%#v", spans[0].EncodedChildren)
+			}
+			spans[0].EncodedChildren[0].MaxCodePoints = tc.childMax
+			result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  obfs: [ab]\n"))
+			if err != nil || result.Invalid != tc.invalid || result.Blocked != nil {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if tc.invalid {
+				if result.Body != nil {
+					t.Fatalf("invalid replacement: %q", result.Body)
+				}
+			} else if decodedResultOutput(t, result.Body) != wantInner {
+				t.Fatalf("output=%q want=%q", decodedResultOutput(t, result.Body), wantInner)
+			}
+		})
+	}
+}
+
+func TestFinalMaxCodePointsUntouchedFieldsRetainTokens(t *testing.T) {
+	for _, carrier := range []bool{false, true} {
+		for _, canceled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("carrier=%t/canceled=%t", carrier, canceled), func(t *testing.T) {
+				text := "a​b"
+				if !canceled {
+					text = "unchanged"
+				}
+				var body []byte
+				if carrier {
+					inner := `[{"type":"text","text":` + benchmarkQuote(text) + `},` + encodedTestImage + `]`
+					body = []byte(`{"output":` + benchmarkQuote(inner) + `,"text":"CHANGE","n":1e+03}`)
+				} else {
+					body = []byte(`{"output":` + benchmarkQuote(text) + `,"text":"CHANGE","n":1e+03}`)
+				}
+				body = bytes.ReplaceAll(body, []byte("a​b"), []byte("a"+string([]byte{92})+"u200bb"))
+				root := gjson.ParseBytes(body)
+				var spans []textSpan
+				appendToolResultStringSpan(&spans, root.Get("output"), "tool", scopeSet{"tool": {}})
+				spans[0].MaxCodePoints = 1
+				for i := range spans[0].EncodedChildren {
+					spans[0].EncodedChildren[i].MaxCodePoints = 1
+				}
+				appendStringSpan(&spans, root.Get("text"), "user", scopeSet{"user": {}})
+				config := "words:\n  strip: [CHANGE]\n"
+				if canceled {
+					config = "words:\n  strip: [CHANGE, '​']\n  obfs: [ab]\n"
+				}
+				result, err := transformSelectedSpans(body, spans, mustConfig(t, config))
+				want := bytes.Replace(body, []byte(`"CHANGE"`), []byte(`""`), 1)
+				if err != nil || result.Invalid || result.Blocked != nil || !bytes.Equal(result.Body, want) {
+					t.Fatalf("body=%q want=%q result=%#v err=%v", result.Body, want, result, err)
+				}
+			})
+		}
+	}
+}
+
+func TestFinalMaxCodePointsKeepsConstraintAndActivationPriority(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, message string
+		unmodified, nonEmpty  bool
+	}{
+		{"signature priority", "words:\n  obfs: [ab]\n", "censorship cannot rewrite signature-bound text", true, false},
+		{"annotation priority", "words:\n  obfs: [ab]\n", "censorship cannot rewrite annotated text", true, false},
+		{"nonempty preserved", "words:\n  strip: [ab]\n", "censorship rewrite would make a text field invalid", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"text":"ab"}`)
+			var spans []textSpan
+			appendStringSpan(&spans, gjson.ParseBytes(body).Get("text"), "user", scopeSet{"user": {}})
+			spans[0].MaxCodePoints = 1
+			spans[0].RequiresUnmodified = tc.unmodified
+			spans[0].RequiresNonEmpty = tc.nonEmpty
+			if tc.name == "annotation priority" {
+				spans[0].UnmodifiedMessage = tc.message
+			}
+			result, err := transformSelectedSpans(body, spans, mustConfig(t, tc.config))
+			if err != nil || !result.Invalid || result.InvalidMessage != tc.message || result.Body != nil || result.Blocked != nil {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+		})
+	}
+	for _, nested := range []string{"BLOCK", "ab"} {
+		t.Run("activated/"+nested, func(t *testing.T) {
+			body := []byte(`{"text":"ab","tools":[{"type":"function","name":"f","description":"FLAT","function":{"description":"` + nested + `"}}]}`)
+			spans, err := selectTextSpans(body, "openai-response", scopeSet{"developer": {}})
+			if err != nil || len(spans) != 1 || spans[0].NestedDescription == nil {
+				t.Fatalf("spans=%#v err=%v", spans, err)
+			}
+			spans[0].NestedDescription.MaxCodePoints = 2
+			appendStringSpan(&spans, gjson.ParseBytes(body).Get("text"), "user", scopeSet{"user": {}})
+			if nested == "BLOCK" {
+				spans[1].MaxCodePoints = 2
+			}
+			result, err := transformSelectedSpans(body, spans, mustConfig(t, "words:\n  block: [BLOCK]\n  strip: [FLAT]\n  obfs: [ab]\n"))
+			if err != nil || result.Body != nil {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+			if nested == "BLOCK" {
+				if result.Invalid || result.Blocked == nil || result.Blocked.Term != "BLOCK" || result.Blocked.Role != "developer" {
+					t.Fatalf("result=%#v want activated block before max check", result)
+				}
+			} else if !result.Invalid || result.Blocked != nil {
+				t.Fatalf("result=%#v want activated final limit", result)
+			}
+		})
 	}
 }
