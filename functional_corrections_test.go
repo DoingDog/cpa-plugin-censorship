@@ -65,7 +65,11 @@ func functionalBody(t *testing.T, fixture functionalFixture, text string) []byte
 	if fixture.carrier {
 		text = `[{"type":"text","text":` + openAIStringToken(t, text) + `},{"type":"input_text","text":` + openAIStringToken(t, text) + `},{"type":"output_text","text":` + openAIStringToken(t, text) + `},{"type":"image_url","image_url":{"url":"https://example.test/SECRET.png"}},{"type":"input_image","file_id":"SECRET file"},{"type":"unknown","text":"SECRET unknown"}]`
 	}
-	return []byte(`{"model":"body-decoy","metadata":{"note":"SECRET metadata","n":1.2300e+00},` + fmt.Sprintf(fixture.fragment, openAIStringToken(t, text)) + `}`)
+	return functionalRawBody(fixture, openAIStringToken(t, text))
+}
+
+func functionalRawBody(fixture functionalFixture, token string) []byte {
+	return []byte(`{"model":"body-decoy","metadata":{"note":"SECRET metadata","n":1.2300e+00},` + fmt.Sprintf(fixture.fragment, token) + `}`)
 }
 
 func functionalRequest(format string, body []byte) pluginapi.RequestInterceptRequest {
@@ -168,6 +172,59 @@ func TestFunctionalCorrectionsBothInterceptionPhases(t *testing.T) {
 				registerConfig(t, config)
 				requireNoOpResponse(t, functionalCall(t, method, request))
 			})
+		}
+	}
+}
+
+func TestFunctionalCorrectionsRawSurrogateBothInterceptionPhases(t *testing.T) {
+	for _, fixture := range functionalFixtures() {
+		if !strings.HasPrefix(fixture.name, "decode_") {
+			continue
+		}
+		const escape = `\u`
+		for _, token := range []string{`"` + escape + `d800` + escape + `0065xample note"`, `"` + escape + `dc00` + escape + `0065xample note"`} {
+			var original string
+			if err := json.Unmarshal([]byte(token), &original); err != nil {
+				t.Fatal(err)
+			}
+			for _, phase := range []struct{ name, method, filter string }{
+				{"BeforeAuth", pluginabi.MethodRequestInterceptBefore, ""},
+				{"AfterAuth", pluginabi.MethodRequestInterceptAfter, "filter_mode: include\nfilter:\n  models: [target-model]\n"},
+			} {
+				for _, action := range []struct{ name, mode, term, replacement string }{
+					{"block", "block", "example", ""},
+					{"strip", "strip", "example", ""},
+					{"obfs", "obfs", "example", "e​xample"},
+					{"strip_other", "strip", "note", ""},
+					{"obfs_other", "obfs", "note", "n​ote"},
+					{"no_match", "strip", "MISS", ""},
+				} {
+					t.Run(fixture.name+"/"+token+"/"+phase.name+"/"+action.name, func(t *testing.T) {
+						registerConfig(t, "words:\n  "+action.mode+": ["+action.term+"]\nscope:\n  roles: [user]\n"+phase.filter)
+						// 原始 escape 直接进入 RPC，只有期望输出由 encoding/json 解码。
+						body := functionalRawBody(fixture, token)
+						request := functionalRequest(fixture.format, body)
+						if phase.name == "AfterAuth" {
+							requireNoOpResponse(t, functionalCall(t, pluginabi.MethodRequestInterceptBefore, request))
+							unselected := request
+							unselected.Metadata = map[string]any{"source_model": "target-model"}
+							requireNoOpResponse(t, functionalCall(t, phase.method, unselected))
+							miss := request
+							miss.Model, miss.RequestedModel = "model-decoy", "target-model"
+							requireNoOpResponse(t, functionalCall(t, phase.method, miss))
+						}
+						response := functionalCall(t, phase.method, request)
+						if action.name == "no_match" {
+							requireNoOpResponse(t, response)
+						} else if action.mode == "block" {
+							requireFunctionalBlock(t, response, action.term, "user")
+						} else {
+							want := strings.ReplaceAll(original, action.term, action.replacement)
+							requireFunctionalRewrite(t, response, functionalBody(t, fixture, want))
+						}
+					})
+				}
+			}
 		}
 	}
 }

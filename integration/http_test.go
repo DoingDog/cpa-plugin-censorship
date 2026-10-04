@@ -816,7 +816,11 @@ func functionalHTTPBody(t *testing.T, fixture functionalHTTPFixture, text string
 		}
 		text = `[{"type":"text","text":` + functionalHTTPString(t, text) + `},{"type":"input_text","text":` + functionalHTTPString(t, text) + `},{"type":"output_text","text":` + functionalHTTPString(t, text) + `},{"type":"image_url","image_url":{"url":` + functionalHTTPString(t, fixture.imageURL) + `}},` + filePart + `,{"type":"unknown","text":"SECRET unknown"}]`
 	}
-	return []byte(`{"model":"censorship-integration-model",` + fmt.Sprintf(fixture.fragment, functionalHTTPString(t, text)) + `}`)
+	return functionalHTTPRawBody(fixture, functionalHTTPString(t, text))
+}
+
+func functionalHTTPRawBody(fixture functionalHTTPFixture, token string) []byte {
+	return []byte(`{"model":"censorship-integration-model",` + fmt.Sprintf(fixture.fragment, token) + `}`)
 }
 
 func newFunctionalDirectUpstream(t *testing.T, provider string) *mockUpstream {
@@ -1015,6 +1019,78 @@ func TestHTTPFunctionalDecodeAllFormats(t *testing.T) {
 	runFunctionalHTTPMatrix(t, functionalHTTPDecodeFixtures())
 }
 
+type functionalHTTPSurrogateCase struct {
+	name, mode, term, token, want string
+}
+
+func functionalHTTPSurrogateCases(t *testing.T) []functionalHTTPSurrogateCase {
+	t.Helper()
+	const escape = `\u`
+	var cases []functionalHTTPSurrogateCase
+	for _, surrogate := range []string{"d800", "dc00"} {
+		token := `"` + escape + surrogate + escape + `0065xample note"`
+		var original string
+		if err := json.Unmarshal([]byte(token), &original); err != nil {
+			t.Fatal(err)
+		}
+		for _, action := range []struct{ name, mode, term, replacement string }{
+			{"block", "block", "example", ""},
+			{"strip", "strip", "example", ""},
+			{"obfs", "obfs", "example", "e​xample"},
+			{"strip_other", "strip", "note", ""},
+			{"obfs_other", "obfs", "note", "n​ote"},
+			{"no_match", "strip", "MISS", ""},
+		} {
+			cases = append(cases, functionalHTTPSurrogateCase{
+				name: "surrogate_" + surrogate + "_" + action.name, mode: action.mode, term: action.term,
+				token: token, want: strings.ReplaceAll(original, action.term, action.replacement),
+			})
+		}
+	}
+	return cases
+}
+
+func TestHTTPFunctionalRawSurrogateAllFormats(t *testing.T) {
+	for _, fixture := range functionalHTTPDecodeFixtures() {
+		for _, action := range functionalHTTPSurrogateCases(t) {
+			// 原始 no-op bytes 在 RPC/native 边界检查；HTTP 检查插件改写后的文本。
+			if strings.HasSuffix(action.name, "_no_match") {
+				continue
+			}
+			t.Run(fixture.name+"/"+action.name, func(t *testing.T) {
+				config := "words:\n  " + action.mode + ": [" + action.term + "]\nscope:\n  roles: [user]\n"
+				var upstream *mockUpstream
+				var cpa *cpaInstance
+				if fixture.provider == "" {
+					upstream = newMockUpstream(t)
+					cpa = startCPA(t, upstream.URL, true, config)
+				} else {
+					upstream = newFunctionalDirectUpstream(t, fixture.provider)
+					cpa = startFunctionalDirectCPA(t, upstream.URL, fixture.provider, config)
+				}
+				defer func() {
+					t.Logf("GOOS=%s raw token=%s CPA log\n%s", runtime.GOOS, action.token, readCPALog(cpa.logPath))
+				}()
+				status, header, response := postJSON(t, cpa.baseURL+fixture.endpoint, functionalHTTPRawBody(fixture, action.token))
+				if action.mode == "block" {
+					decoded, err := decodeCensorshipError(response)
+					if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || decoded.Error.Code != "censorship_blocked" || decoded.Error.Term != action.term || decoded.Error.Role != "user" || upstream.arrivalCount() != 0 {
+						t.Fatalf("block status=%d arrivals=%d body=%s error=%v", status, upstream.arrivalCount(), response, err)
+					}
+					return
+				}
+				if status != 200 || upstream.arrivalCount() != 1 || upstream.requestCount() != 1 {
+					t.Fatalf("status=%d arrivals=%d body=%s", status, upstream.arrivalCount(), response)
+				}
+				var got string
+				if err := json.Unmarshal([]byte(gjson.GetBytes(upstream.lastRequest(), fixture.textPath).Raw), &got); err != nil || got != action.want {
+					t.Fatalf("upstream text=%q want=%q error=%v body=%s", got, action.want, err, upstream.lastRequest())
+				}
+			})
+		}
+	}
+}
+
 func functionalHTTPOutputFixtures() []functionalHTTPFixture {
 	return []functionalHTTPFixture{
 		{name: "function_scalar", format: "openai-response", provider: "codex", endpoint: "/v1/responses", role: "tool", fragment: `"input":[{"type":"function_call_output","call_id":"SECRET call","output":%s}]`, textPath: "input.0.output", machine: map[string]string{"input.0.call_id": `"SECRET call"`}},
@@ -1193,10 +1269,20 @@ func TestHTTPFunctionalNativeRegistrationAndPhases(t *testing.T) {
 	fixtures = append(fixtures, functionalHTTPDecodeFixtures()...)
 	fixtures = append(fixtures, functionalHTTPCarrierFixtures(t)...)
 	for _, fixture := range fixtures {
+		actions := []functionalHTTPSurrogateCase{
+			{name: "block", mode: "block", term: "SECRET"},
+			{name: "strip", mode: "strip", term: "SECRET", want: " tail"},
+			{name: "obfs", mode: "obfs", term: "SECRET", want: "S​ECRET tail"},
+			{name: "cancellation", want: "a​b tail"},
+		}
+		switch fixture.name {
+		case "Chat", "Responses", "Claude", "Gemini", "Interactions":
+			actions = append(actions, functionalHTTPSurrogateCases(t)...)
+		}
 		for _, phase := range []string{"BeforeAuth", "AfterAuth"} {
-			for _, action := range []struct{ name, want string }{{"block", ""}, {"strip", " tail"}, {"obfs", "S​ECRET tail"}, {"cancellation", "a​b tail"}} {
+			for _, action := range actions {
 				t.Run(fixture.name+"/"+phase+"/"+action.name, func(t *testing.T) {
-					configText := "words:\n  " + action.name + ": [SECRET]\nscope:\n  roles: [" + fixture.role + "]\n"
+					configText := "words:\n  " + action.mode + ": [" + action.term + "]\nscope:\n  roles: [" + fixture.role + "]\n"
 					input := "SECRET tail"
 					if action.name == "cancellation" {
 						input = action.want
@@ -1208,6 +1294,9 @@ func TestHTTPFunctionalNativeRegistrationAndPhases(t *testing.T) {
 					indented := "      " + strings.ReplaceAll(strings.TrimSuffix(configText, "\n"), "\n", "\n      ") + "\n"
 					withDynamicABIHost(t, indented, func(before, after func(pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse) {
 						body := functionalHTTPBody(t, fixture, input)
+						if action.token != "" {
+							body = functionalHTTPRawBody(fixture, action.token)
+						}
 						metadata := map[string]any{executor.SelectedAuthMetadataKey: "auth-1", "preserved": "SECRET", "source_model": "source-decoy"}
 						headers := http.Header{"Content-Encoding": {"identity"}, "Content-Length": {"123"}, "Transfer-Encoding": {"chunked"}, "X-Preserved": {"SECRET header"}}
 						request := pluginapi.RequestInterceptRequest{RequestID: "functional-native", SourceFormat: fixture.format, Model: "target-model", RequestedModel: "requested-decoy", Metadata: metadata, Body: bytes.Clone(body), Headers: headers.Clone()}
@@ -1240,12 +1329,12 @@ func TestHTTPFunctionalNativeRegistrationAndPhases(t *testing.T) {
 						if err != nil || !bytes.Equal(snapshot, finalRequest) {
 							t.Fatalf("native request input/metadata/headers changed, error=%v", err)
 						}
-						if action.name == "block" {
+						if action.mode == "block" {
 							decoded, err := decodeCensorshipError(response.ResponseBody)
-							if err != nil || !response.Terminate || response.StatusCode != 400 || !bytes.Equal(response.Body, body) || response.ClearHeaders != nil || !reflect.DeepEqual(response.Headers, headers) || response.ResponseHeaders.Get("Content-Type") != "application/json" || decoded.Error.Code != "censorship_blocked" || decoded.Error.Term != "SECRET" || decoded.Error.Role != fixture.role {
+							if err != nil || !response.Terminate || response.StatusCode != 400 || !bytes.Equal(response.Body, body) || response.ClearHeaders != nil || !reflect.DeepEqual(response.Headers, headers) || response.ResponseHeaders.Get("Content-Type") != "application/json" || decoded.Error.Code != "censorship_blocked" || decoded.Error.Term != action.term || decoded.Error.Role != fixture.role {
 								t.Fatalf("native block=%#v error=%v", response, err)
 							}
-						} else if action.name == "cancellation" {
+						} else if action.name == "cancellation" || strings.HasSuffix(action.name, "_no_match") {
 							if !reflect.DeepEqual(response, unchanged) {
 								t.Fatalf("native cancellation=%#v", response)
 							}
