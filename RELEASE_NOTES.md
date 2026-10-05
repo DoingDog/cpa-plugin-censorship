@@ -1,3 +1,20 @@
+# Censorship v0.3.9
+
+## v0.3.9 fixes
+
+- Selected escaped JSON string tokens use Go `encoding/json.Unmarshal` semantics, including unpaired UTF-16 surrogates, while unescaped tokens keep their direct text path. Unchanged and exactly cancelled text preserves the original request bytes.
+- OpenAI Chat tool/legacy function string content and Responses function/custom tool output strings recognize explicit JSON-encoded multimodal arrays with non-empty image URL or file-ID carriers. Only exact `text`, `input_text`, and `output_text` string leaves are filtered as `tool`; image and machine bytes remain unchanged. Image-only carriers are no-op, and other JSON strings retain whole-string matching.
+- Final changed OpenAI Responses function output strings/typed `input_text`, shell `stdout`/`stderr`, apply-patch output, and program result text are limited to 10,485,760 Unicode code points per field. Encoded function output limits cover the complete rebuilt inner JSON string. Final changed Claude `document.title` is limited to 500 code points. Exceeding a limit returns local `censorship_invalid_request` without truncation; unchanged and cancelled fields remain untouched.
+- Claude direct user and nested `tool_result` selectors include `search_result.content[*].text`, plain-text `document.source.data`, and typed-text arrays in `document.source.content`. Document title/context and typed text keep their non-empty rewrite requirements.
+- Claude Beta `mcp_tool_result` text is inspected as `tool` in both user and assistant messages, independently of the enclosing role's own scope. Ordinary `tool_result` remains user-message-only. Non-final assistant scalar history cannot be stripped to empty; a final scalar assistant prefill retains that capability, while typed assistant text remains non-empty.
+- OpenAI compatible function tools select Chat `parametersJsonSchema` descriptions when `parameters` is absent and independently select `output_schema` descriptions in legacy functions, Chat function tools, and Responses function tools. Interactions text response schemas support both object and array forms. Machine schema values and unsupported variants remain unchanged.
+- Gemini `generationConfig` description selectors include `response_schema`, `_responseJsonSchema`, `response_json_schema`, and `response_json_schema_ordered` under `developer` scope alongside existing schema paths.
+- Windows packaging rejects Unicode output aliases using actual ancestor directory case-sensitivity and native name comparison, including absent basenames and parents. Distinct Unicode names in case-sensitive directories remain valid; the conservative ASCII alias rule is preserved. Direct CLI uses the main source plus the running-platform helper, preserving caller cwd and relative flags. Both Make package recipes compile the packager for `GOHOSTOS`/`GOHOSTARCH` while retaining the library target.
+
+v0.3.9 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
+Local acceptance covers Windows amd64 tests/race/vet, Windows packager tests/race/vet, v0.3.9 build and both package recipes, ZIP/CRC/license/version/checksum inspection, fixed-host integration, and staged DLL native ABI registration. These checks verify local behavior and request bytes before forwarding; commercial API acceptance is outside their scope. G's Linux and Windows CI checks, seven-platform builds, and Linux `.so` registration remain pending on the final integrated main SHA and must pass before the final tag. Bare source builds retain `0.0.0-dev`.
+
 # Censorship v0.3.8
 
 ## v0.3.8 fixes
