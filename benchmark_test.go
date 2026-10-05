@@ -672,6 +672,118 @@ func BenchmarkEncodedToolResultTransform(b *testing.B) {
 	}
 }
 
+func BenchmarkEscapedCarrierTransformScale(b *testing.B) {
+	const machinePart = `{"type":"future","text":"example machine","n":1e+03}`
+	const imageContent = `[{"type":"image_url","image_url":{"url":"https://example.test/example.png"},"text":"example machine"}]`
+	const tail = `,{"role":"user","content":` + imageContent + `}],"metadata":{"text":"example machine","n":1e+03}}`
+	for _, carrier := range []bool{false, true} {
+		family, countDimension := "escaped", "nodes"
+		if carrier {
+			family, countDimension = "carrier", "carriers"
+		}
+		for _, dimension := range []struct {
+			name   string
+			values [3]int
+		}{
+			{name: "repeats", values: [3]int{1, 128, 2048}},
+			{name: countDimension, values: [3]int{1, 16, 256}},
+		} {
+			for _, value := range dimension.values {
+				repeats, count := 128, 1
+				if dimension.name == "repeats" {
+					repeats = value
+				} else {
+					count = value
+				}
+				for _, action := range []string{"miss", "strip", "obfs"} {
+					b.Run(fmt.Sprintf("%s/%s=%d/%s", family, dimension.name, value, action), func(b *testing.B) {
+						phase, term, wantUnit := action, "example", "�example\n"
+						switch action {
+						case "miss":
+							phase, term = "strip", "NEVER-MATCH"
+						case "strip":
+							wantUnit = "�\n"
+						case "obfs":
+							wantUnit = "�e​xample\n"
+						}
+						cfg := mustBenchmarkConfig(b, "words:\n  "+phase+": ["+term+"]\nscope:\n  roles: [user, tool]\n")
+						u := string([]byte{92}) + "u"
+						raw := `"` + strings.Repeat(u+"d800"+u+"0065xample"+`\n`, repeats) + `"`
+						wantText := strings.Repeat(wantUnit, repeats)
+						want := benchmarkQuote(wantText)
+						if action == "miss" {
+							want = raw
+						}
+						prefix := `{"role":"user","content":`
+						wantInner := ""
+						if carrier {
+							inner := `[{"type":"text","text":` + raw + `},` + encodedTestImage + `,` + machinePart + `]`
+							wantInner = `[{"type":"text","text":` + want + `},` + encodedTestImage + `,` + machinePart + `]`
+							raw, want = benchmarkQuote(inner), benchmarkQuote(wantInner)
+							prefix = `{"role":"tool","tool_call_id":"example-call","content":`
+						}
+						body := []byte(`{"messages":[` + strings.TrimSuffix(strings.Repeat(prefix+raw+`},`, count), ",") + tail)
+						wantBody := []byte(`{"messages":[` + strings.TrimSuffix(strings.Repeat(prefix+want+`},`, count), ",") + tail)
+						original := bytes.Clone(body)
+						got, err := transformRequest(body, "openai", cfg)
+						if err != nil || got.Invalid || got.Blocked != nil || !bytes.Equal(body, original) {
+							b.Fatalf("result=%#v err=%v; want valid transform without input mutation", got, err)
+						}
+						output := got.Body
+						if action == "miss" {
+							if output != nil {
+								b.Fatal("miss replaced body")
+							}
+							output = body
+						}
+						if !bytes.Equal(output, wantBody) {
+							b.Fatal("output differs from independently constructed text and preserved machine/image bytes")
+						}
+						var document struct {
+							Messages []struct{ Content json.RawMessage }
+						}
+						if err := json.Unmarshal(output, &document); err != nil || len(document.Messages) != count+1 {
+							b.Fatalf("messages=%d want=%d err=%v", len(document.Messages), count+1, err)
+						}
+						for _, message := range document.Messages[:count] {
+							var text string
+							if err := json.Unmarshal(message.Content, &text); err != nil {
+								b.Fatal(err)
+							}
+							if carrier {
+								var parts []json.RawMessage
+								if err := json.Unmarshal([]byte(text), &parts); err != nil || len(parts) != 3 || text != wantInner {
+									b.Fatalf("carrier differs from expected rebuilt JSON: parts=%d err=%v", len(parts), err)
+								}
+								if !bytes.Equal(parts[1], []byte(encodedTestImage)) || !bytes.Equal(parts[2], []byte(machinePart)) {
+									b.Fatal("carrier image or machine bytes changed")
+								}
+								var part struct{ Text string }
+								if err := json.Unmarshal(parts[0], &part); err != nil {
+									b.Fatal(err)
+								}
+								text = part.Text
+							}
+							if text != wantText {
+								b.Fatalf("text=%q want=%q", text, wantText)
+							}
+						}
+						if !bytes.Equal(document.Messages[count].Content, []byte(imageContent)) {
+							b.Fatal("outer image bytes changed")
+						}
+						b.ReportAllocs()
+						b.SetBytes(int64(len(body)))
+						b.ResetTimer()
+						for i := 0; i < b.N; i++ {
+							benchmarkTransformSink, benchmarkErrorSink = transformRequest(body, "openai", cfg)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
 func BenchmarkMixedTransformScenario(b *testing.B) {
 	rules := []compiledRule{{Term: "BLOCK"}, {Term: "AB"}, {Term: "xy"}}
 	cfg := benchmarkSnapshot(modeBlock, false, rules)
