@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"image"
 	"image/png"
@@ -13,15 +12,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/tidwall/gjson"
 )
-
-func openAIStringToken(t *testing.T, text string) string {
-	t.Helper()
-	token, err := json.Marshal(text)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(token)
-}
 
 func TestOpenAIEncodedMultimodalToolResults(t *testing.T) {
 	for _, entry := range []struct {
@@ -46,7 +36,7 @@ func TestOpenAIEncodedMultimodalToolResults(t *testing.T) {
 			} {
 				t.Run(entry.name+"/"+action.name+"/"+fixture.name, func(t *testing.T) {
 					registerConfig(t, "words:\n  "+action.name+": [SECRET]\nscope:\n  roles: [tool]\n")
-					token := openAIStringToken(t, fixture.inner)
+					token := benchmarkQuote(fixture.inner)
 					body := []byte(fmt.Sprintf(entry.body, token))
 					resp := interceptRPC(t, entry.source, body)
 					if !fixture.text {
@@ -60,7 +50,7 @@ func TestOpenAIEncodedMultimodalToolResults(t *testing.T) {
 						return
 					}
 					inner := strings.ReplaceAll(fixture.inner, `"SECRET tail"`, `"`+action.replacement+`"`)
-					want := []byte(fmt.Sprintf(entry.body, openAIStringToken(t, inner)))
+					want := []byte(fmt.Sprintf(entry.body, benchmarkQuote(inner)))
 					if resp.Terminate || !bytes.Equal(resp.Body, want) {
 						t.Fatalf("body = %s, want %s, terminate = %t", resp.Body, want, resp.Terminate)
 					}
@@ -86,14 +76,14 @@ func TestOpenAIEncodedMultimodalBoundaries(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: ["+tc.roles+"]\n")
-			token := openAIStringToken(t, tc.inner)
+			token := benchmarkQuote(tc.inner)
 			body := []byte(strings.ReplaceAll(tc.body, "%s", token))
 			resp := interceptRPC(t, tc.source, body)
 			if tc.wantInner == "" {
 				requireNoOpResponse(t, resp)
 				return
 			}
-			want := []byte(strings.ReplaceAll(tc.body, "%s", openAIStringToken(t, tc.wantInner)))
+			want := []byte(strings.ReplaceAll(tc.body, "%s", benchmarkQuote(tc.wantInner)))
 			if resp.Terminate || !bytes.Equal(resp.Body, want) {
 				t.Fatalf("body = %s, want %s", resp.Body, want)
 			}
@@ -118,10 +108,10 @@ func TestOpenAIEncodedMultimodalBoundaries(t *testing.T) {
 
 func TestOpenAIEncodedMultimodalGlobalOrderAndCancellation(t *testing.T) {
 	makeInner := func(text string) string {
-		return `[{"type":"text","text":` + openAIStringToken(t, text) + `},{"type":"input_image","file_id":"SECRET file"}]`
+		return `[{"type":"text","text":` + benchmarkQuote(text) + `},{"type":"input_image","file_id":"SECRET file"}]`
 	}
 	t.Run("global rule-major and earliest outer token", func(t *testing.T) {
-		body := []byte(`{"messages":[{"role":"tool","content":` + openAIStringToken(t, makeInner("EARLY")) + `},{"role":"user","content":"LATE"},{"role":"tool","content":` + openAIStringToken(t, makeInner("LATE")) + `}]}`)
+		body := []byte(`{"messages":[{"role":"tool","content":` + benchmarkQuote(makeInner("EARLY")) + `},{"role":"user","content":"LATE"},{"role":"tool","content":` + benchmarkQuote(makeInner("LATE")) + `}]}`)
 		registerConfig(t, "words:\n  block: [LATE, EARLY]\nscope:\n  roles: [user, tool]\n")
 		resp := interceptRPC(t, "openai", body)
 		if !resp.Terminate || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "LATE" || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "user" {
@@ -130,12 +120,12 @@ func TestOpenAIEncodedMultimodalGlobalOrderAndCancellation(t *testing.T) {
 	})
 	t.Run("multiple parents and strip cascade", func(t *testing.T) {
 		first, second := makeInner("aXb"), makeInner("cc")
-		body := []byte(`{"input":[{"type":"function_call_output","output":` + openAIStringToken(t, first) + `},{"type":"custom_tool_call_output","output":` + openAIStringToken(t, second) + `},{"type":"program_output","result":"CHANGE"}]}`)
+		body := []byte(`{"input":[{"type":"function_call_output","output":` + benchmarkQuote(first) + `},{"type":"custom_tool_call_output","output":` + benchmarkQuote(second) + `},{"type":"program_output","result":"CHANGE"}]}`)
 		registerConfig(t, "words:\n  strip: [X, ab, CHANGE]\n  obfs: [cc, cc]\nscope:\n  roles: [tool]\n")
 		resp := interceptRPC(t, "openai-response", body)
 		want := replaceRawTokens(t, body,
-			rawReplacement{Before: openAIStringToken(t, first), After: openAIStringToken(t, makeInner(""))},
-			rawReplacement{Before: openAIStringToken(t, second), After: openAIStringToken(t, makeInner("c​c"))},
+			rawReplacement{Before: benchmarkQuote(first), After: benchmarkQuote(makeInner(""))},
+			rawReplacement{Before: benchmarkQuote(second), After: benchmarkQuote(makeInner("c​c"))},
 			rawReplacement{Before: `"CHANGE"`, After: `""`},
 		)
 		if resp.Terminate || !bytes.Equal(resp.Body, want) {
@@ -144,7 +134,7 @@ func TestOpenAIEncodedMultimodalGlobalOrderAndCancellation(t *testing.T) {
 	})
 	t.Run("cancelled parent keeps original escaped token", func(t *testing.T) {
 		inner := `[{"type":"text","text":"a​b"},{"type":"input_image","file_id":"SECRET"}]`
-		token := strings.Replace(openAIStringToken(t, inner), "[", "\\u005b", 1)
+		token := strings.Replace(benchmarkQuote(inner), "[", "\\u005b", 1)
 		body := []byte(`{"input":[{"type":"function_call_output","output":` + token + `},{"type":"custom_tool_call_output","output":"CHANGE"}]}`)
 		registerConfig(t, "words:\n  strip: ['​', CHANGE]\n  obfs: [ab]\nscope:\n  roles: [tool]\n")
 		resp := interceptRPC(t, "openai-response", body)
@@ -161,14 +151,14 @@ func TestOpenAIEncodedMultimodalPreservesValidPNG(t *testing.T) {
 		t.Fatal(err)
 	}
 	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
-	inner := `[{"type":"input_text","text":"SECRET tail"},{"type":"input_image","image_url":` + openAIStringToken(t, url) + `}]`
+	inner := `[{"type":"input_text","text":"SECRET tail"},{"type":"input_image","image_url":` + benchmarkQuote(url) + `}]`
 	for _, action := range []struct{ name, replacement string }{{"strip", " tail"}, {"obfs", "S​ECRET tail"}} {
 		t.Run(action.name, func(t *testing.T) {
 			registerConfig(t, "words:\n  "+action.name+": [iVBOR, SECRET]\nscope:\n  roles: [tool]\n")
-			body := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + openAIStringToken(t, inner) + `}]}`)
+			body := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + benchmarkQuote(inner) + `}]}`)
 			resp := interceptRPC(t, "openai-response", body)
-			wantInner := strings.Replace(inner, `"SECRET tail"`, openAIStringToken(t, action.replacement), 1)
-			want := replaceRawTokens(t, body, rawReplacement{Before: openAIStringToken(t, inner), After: openAIStringToken(t, wantInner)})
+			wantInner := strings.Replace(inner, `"SECRET tail"`, benchmarkQuote(action.replacement), 1)
+			want := replaceRawTokens(t, body, rawReplacement{Before: benchmarkQuote(inner), After: benchmarkQuote(wantInner)})
 			if resp.Terminate || !bytes.Equal(resp.Body, want) {
 				t.Fatalf("body = %s, want %s", resp.Body, want)
 			}
@@ -222,7 +212,7 @@ func TestOpenAIResponsesOutputMaxCodePoints(t *testing.T) {
 		} {
 			t.Run(field.name+"/"+boundary.name, func(t *testing.T) {
 				text := strings.Repeat("x", boundary.length-2) + "ab"
-				body := []byte(fmt.Sprintf(field.body, openAIStringToken(t, text)))
+				body := []byte(fmt.Sprintf(field.body, benchmarkQuote(text)))
 				registerConfig(t, "words:\n  obfs: [ab]\nscope:\n  roles: [tool, user]\n")
 				resp := interceptRPC(t, "openai-response", body)
 				if field.limited && boundary.length == limit {
@@ -230,7 +220,7 @@ func TestOpenAIResponsesOutputMaxCodePoints(t *testing.T) {
 					return
 				}
 				wantText := strings.Repeat("x", boundary.length-2) + "a​b"
-				want := []byte(fmt.Sprintf(field.body, openAIStringToken(t, wantText)))
+				want := []byte(fmt.Sprintf(field.body, benchmarkQuote(wantText)))
 				if resp.Terminate || !bytes.Equal(resp.Body, want) {
 					t.Fatalf("terminate = %t, body bytes = %d, want bytes = %d", resp.Terminate, len(resp.Body), len(want))
 				}
@@ -255,7 +245,7 @@ func TestOpenAIResponsesEncodedOutputParentMaxCodePoints(t *testing.T) {
 		for _, length := range []int{limit, limit - 1} {
 			t.Run(fmt.Sprintf("%s/original_%d", kind, length), func(t *testing.T) {
 				inner := strings.Replace(base, `"note":""`, `"note":"`+strings.Repeat("x", length-len(base))+`"`, 1)
-				body := []byte(`{"input":[{"type":"` + kind + `","call_id":"call-1","output":` + openAIStringToken(t, inner) + `}]}`)
+				body := []byte(`{"input":[{"type":"` + kind + `","call_id":"call-1","output":` + benchmarkQuote(inner) + `}]}`)
 				registerConfig(t, "words:\n  obfs: [ab]\nscope:\n  roles: [tool]\n")
 				resp := interceptRPC(t, "openai-response", body)
 				if kind == "function_call_output" && length == limit {
@@ -263,7 +253,7 @@ func TestOpenAIResponsesEncodedOutputParentMaxCodePoints(t *testing.T) {
 					return
 				}
 				wantInner := strings.Replace(inner, `"ab"`, `"a​b"`, 1)
-				want := replaceRawTokens(t, body, rawReplacement{Before: openAIStringToken(t, inner), After: openAIStringToken(t, wantInner)})
+				want := replaceRawTokens(t, body, rawReplacement{Before: benchmarkQuote(inner), After: benchmarkQuote(wantInner)})
 				if resp.Terminate || !bytes.Equal(resp.Body, want) {
 					t.Fatalf("terminate = %t, body bytes = %d, want bytes = %d", resp.Terminate, len(resp.Body), len(want))
 				}
@@ -290,7 +280,7 @@ func TestOpenAIResponsesOutputFinalCodePointSemantics(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prefix := strings.Repeat(tc.unit, limit-3)
-			body := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + openAIStringToken(t, prefix+tc.tail) + `}]}`)
+			body := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + benchmarkQuote(prefix+tc.tail) + `}]}`)
 			registerConfig(t, "words:\n"+tc.config+"scope:\n  roles: [tool]\n")
 			resp := interceptRPC(t, "openai-response", body)
 			if tc.invalid {
@@ -301,7 +291,7 @@ func TestOpenAIResponsesOutputFinalCodePointSemantics(t *testing.T) {
 				requireNoOpResponse(t, resp)
 				return
 			}
-			want := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + openAIStringToken(t, prefix+tc.wantTail) + `}]}`)
+			want := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + benchmarkQuote(prefix+tc.wantTail) + `}]}`)
 			if resp.Terminate || !bytes.Equal(resp.Body, want) {
 				t.Fatalf("terminate = %t, body bytes = %d, want bytes = %d", resp.Terminate, len(resp.Body), len(want))
 			}
@@ -310,7 +300,7 @@ func TestOpenAIResponsesOutputFinalCodePointSemantics(t *testing.T) {
 
 	t.Run("block precedes overlimit rewrite", func(t *testing.T) {
 		text := strings.Repeat("x", limit-2) + "ab"
-		body := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + openAIStringToken(t, text) + `},{"type":"custom_tool_call_output","call_id":"call-2","output":"BLOCK"}]}`)
+		body := []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":` + benchmarkQuote(text) + `},{"type":"custom_tool_call_output","call_id":"call-2","output":"BLOCK"}]}`)
 		registerConfig(t, "words:\n  block: [BLOCK]\n  obfs: [ab]\nscope:\n  roles: [tool]\n")
 		resp := interceptRPC(t, "openai-response", body)
 		if !resp.Terminate || resp.StatusCode != 400 || resp.Body != nil || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "BLOCK" || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "tool" {
@@ -327,7 +317,7 @@ func TestOpenAIResponsesUntouchedOverlimitOutputKeepsToken(t *testing.T) {
 		{"cancelled carrier", `[{"type":"text","text":"a​b"},{"type":"input_image","file_id":"SECRET","metadata":{"note":"` + strings.Repeat("x", limit) + `"}}]`, "  strip: ['​', CHANGE]\n  obfs: [ab]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			token := openAIStringToken(t, tc.inner)
+			token := benchmarkQuote(tc.inner)
 			if strings.HasPrefix(tc.inner, "[") {
 				token = strings.Replace(token, "[", "\\u005b", 1)
 			}
@@ -363,7 +353,7 @@ func TestOpenAICompatibleSchemaFallbacks(t *testing.T) {
 						return
 					}
 					wantText := strings.Replace(location.text, "SECRET", action.replacement, 1)
-					want := replaceRawTokens(t, body, rawReplacement{Before: openAIStringToken(t, location.text), After: openAIStringToken(t, wantText)})
+					want := replaceRawTokens(t, body, rawReplacement{Before: benchmarkQuote(location.text), After: benchmarkQuote(wantText)})
 					if resp.Terminate || !bytes.Equal(resp.Body, want) {
 						t.Fatalf("body = %s, want %s", resp.Body, want)
 					}
@@ -402,8 +392,8 @@ func TestOpenAICompatibleSchemaPrecedence(t *testing.T) {
 						return
 					}
 					want := replaceRawTokens(t, body,
-						rawReplacement{Before: `"SECRET root"`, After: openAIStringToken(t, action.replacement+" root")},
-						rawReplacement{Before: `"SECRET property"`, After: openAIStringToken(t, action.replacement+" property")},
+						rawReplacement{Before: `"SECRET root"`, After: benchmarkQuote(action.replacement + " root")},
+						rawReplacement{Before: `"SECRET property"`, After: benchmarkQuote(action.replacement + " property")},
 					)
 					if resp.Terminate || !bytes.Equal(resp.Body, want) {
 						t.Fatalf("body = %s, want %s", resp.Body, want)
@@ -451,7 +441,7 @@ func TestOpenAICompatibleSchemaLegacyCanonical(t *testing.T) {
 					return
 				}
 				wantText := strings.Replace(field.text, "SECRET", action.replacement, 1)
-				want := replaceRawTokens(t, body, rawReplacement{Before: openAIStringToken(t, field.text), After: openAIStringToken(t, wantText)})
+				want := replaceRawTokens(t, body, rawReplacement{Before: benchmarkQuote(field.text), After: benchmarkQuote(wantText)})
 				if resp.Terminate || !bytes.Equal(resp.Body, want) {
 					t.Fatalf("body = %s, want %s", resp.Body, want)
 				}

@@ -13,6 +13,40 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+func TestFunctionalSelectorEntryPointOrdering(t *testing.T) {
+	for _, tc := range []struct{ source, body, firstRole, lastRole string }{
+		{"openai", `{"tools":[{"type":"function","function":{"description":"SECRET tail"}}],"messages":[{"role":"user","content":"SECRET tail"}]}`, "developer", "user"},
+		{"openai-response", `{"input":"SECRET tail","instructions":"SECRET tail"}`, "user", "system"},
+		{"claude", `{"messages":[{"role":"user","content":"SECRET tail"}],"system":"SECRET tail"}`, "user", "system"},
+		{"gemini", `{"contents":[{"role":"user","parts":[{"text":"SECRET tail"}]}],"systemInstruction":{"parts":[{"text":"SECRET tail"}]}}`, "user", "system"},
+		{"interactions", `{"input":"SECRET tail","system_instruction":"SECRET tail"}`, "user", "system"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			body := []byte(tc.body)
+			roles := scopeSet{"system": {}, "developer": {}, "user": {}}
+			spans, err := selectTextSpans(body, tc.source, roles)
+			if err != nil || len(spans) != 2 {
+				t.Fatalf("spans=%#v err=%v; want two sorted spans", spans, err)
+			}
+			starts := []int{bytes.Index(body, []byte(`"SECRET tail"`)), bytes.LastIndex(body, []byte(`"SECRET tail"`))}
+			for i, role := range []string{tc.firstRole, tc.lastRole} {
+				if spans[i].RawStart != starts[i] || spans[i].RawEnd != starts[i]+len(`"SECRET tail"`) || spans[i].Text != "SECRET tail" || spans[i].Role != role {
+					t.Fatalf("span[%d]=%#v; want token at %d with role %s", i, spans[i], starts[i], role)
+				}
+			}
+			blocked, err := transformRequest(body, tc.source, mustConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [system, developer, user]\n"))
+			if err != nil || blocked.Invalid || blocked.Body != nil || !reflect.DeepEqual(blocked.Blocked, &blockMatch{Term: "SECRET", Role: tc.firstRole}) {
+				t.Fatalf("blocked=%#v err=%v; want earliest outer token", blocked, err)
+			}
+			result, err := transformRequest(body, tc.source, mustConfig(t, "words:\n  obfs: [SECRET]\nscope:\n  roles: [system, developer, user]\n"))
+			want := []byte(strings.ReplaceAll(tc.body, `"SECRET tail"`, `"S​ECRET tail"`))
+			if err != nil || result.Invalid || result.Blocked != nil || !bytes.Equal(result.Body, want) || string(body) != tc.body {
+				t.Fatalf("body=%s want=%s result=%#v err=%v", result.Body, want, result, err)
+			}
+		})
+	}
+}
+
 type functionalFixture struct {
 	name, format, role, fragment string
 	carrier                      bool
@@ -63,9 +97,9 @@ func functionalFixtures() []functionalFixture {
 func functionalBody(t *testing.T, fixture functionalFixture, text string) []byte {
 	t.Helper()
 	if fixture.carrier {
-		text = `[{"type":"text","text":` + openAIStringToken(t, text) + `},{"type":"input_text","text":` + openAIStringToken(t, text) + `},{"type":"output_text","text":` + openAIStringToken(t, text) + `},{"type":"image_url","image_url":{"url":"https://example.test/SECRET.png"}},{"type":"input_image","file_id":"SECRET file"},{"type":"unknown","text":"SECRET unknown"}]`
+		text = `[{"type":"text","text":` + benchmarkQuote(text) + `},{"type":"input_text","text":` + benchmarkQuote(text) + `},{"type":"output_text","text":` + benchmarkQuote(text) + `},{"type":"image_url","image_url":{"url":"https://example.test/SECRET.png"}},{"type":"input_image","file_id":"SECRET file"},{"type":"unknown","text":"SECRET unknown"}]`
 	}
-	return functionalRawBody(fixture, openAIStringToken(t, text))
+	return functionalRawBody(fixture, benchmarkQuote(text))
 }
 
 func functionalRawBody(fixture functionalFixture, token string) []byte {
@@ -310,7 +344,7 @@ func TestFunctionalCorrectionsProtectedTextAndOrderingBothPhases(t *testing.T) {
 		}
 		t.Run(method+"/rule_major_then_outer_token", func(t *testing.T) {
 			inner := `[{"type":"text","text":"EARLY"},{"type":"input_image","file_id":"SECRET file"}]`
-			body := []byte(`{"messages":[{"role":"tool","content":` + openAIStringToken(t, inner) + `},{"role":"user","content":"LATE"},{"role":"tool","content":` + openAIStringToken(t, strings.Replace(inner, "EARLY", "LATE", 1)) + `}]}`)
+			body := []byte(`{"messages":[{"role":"tool","content":` + benchmarkQuote(inner) + `},{"role":"user","content":"LATE"},{"role":"tool","content":` + benchmarkQuote(strings.Replace(inner, "EARLY", "LATE", 1)) + `}]}`)
 			registerConfig(t, "words:\n  block: [LATE, EARLY]\nscope:\n  roles: [user, tool]\n"+filter)
 			requireFunctionalBlock(t, functionalCall(t, method, functionalRequest("openai", body)), "LATE", "user")
 		})

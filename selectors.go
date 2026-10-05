@@ -75,6 +75,17 @@ func selectorHasEnabledRole(sourceFormat string, roles scopeSet) bool {
 }
 
 func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSpan, error) {
+	spans, err := collectTextSpans(body, sourceFormat, roles)
+	if err != nil {
+		return nil, err
+	}
+	if err := sortAndValidateSpans(spans, len(body)); err != nil {
+		return nil, err
+	}
+	return spans, nil
+}
+
+func collectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSpan, error) {
 	if !jsonNestingWithin(body, maxJSONNestingDepth) || !utf8.Valid(body) || !gjson.ValidBytes(body) {
 		return nil, errInvalidRequest
 	}
@@ -97,9 +108,6 @@ func selectTextSpans(body []byte, sourceFormat string, roles scopeSet) ([]textSp
 		collectGemini(root, roles, &spans)
 	case "interactions":
 		collectInteractions(root, roles, &spans)
-	}
-	if err := sortAndValidateSpans(spans, len(body)); err != nil {
-		return nil, err
 	}
 	return spans, nil
 }

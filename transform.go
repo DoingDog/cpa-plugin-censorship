@@ -63,7 +63,7 @@ func transformRequest(body []byte, sourceFormat string, cfg *configSnapshot) (tr
 	if cfg == nil || len(cfg.Rules) == 0 || !cfg.Formats.has(sourceFormat) || len(cfg.Formats) == 0 || len(cfg.Roles) == 0 {
 		return transformResult{}, nil
 	}
-	spans, err := selectTextSpans(body, sourceFormat, cfg.Roles)
+	spans, err := collectTextSpans(body, sourceFormat, cfg.Roles)
 	if errors.Is(err, errInvalidRequest) {
 		return transformResult{Invalid: true}, nil
 	}

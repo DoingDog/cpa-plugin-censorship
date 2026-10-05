@@ -881,17 +881,14 @@ func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
 	}
 
 	aggregateOut := filepath.Join(tmp, "aggregate")
-	runPackager := func(args ...string) error {
+	runPackager := func(args ...string) {
 		cmd := packagerCommand(t, args...)
 		output, err := cmd.CombinedOutput()
 		if err == nil || !strings.Contains(string(output), "is not a safe filename component") {
 			t.Fatalf("packager must reject unsafe version with business error: %v\n%s", err, output)
 		}
-		return err
 	}
-	if err := runPackager("-version", "foo/bar", "-dist", dist, "-out", aggregateOut); err == nil {
-		t.Fatal("aggregate packaging accepted unsafe version")
-	}
+	runPackager("-version", "foo/bar", "-dist", dist, "-out", aggregateOut)
 	if entries, err := os.ReadDir(aggregateOut); err == nil && len(entries) != 0 {
 		t.Fatalf("aggregate output = %#v, want absent or empty", entries)
 	} else if err != nil && !os.IsNotExist(err) {
@@ -903,9 +900,7 @@ func TestPackagerRejectsUnsafeVersionBeforeCreatingOutput(t *testing.T) {
 
 	directArchive := filepath.Join(tmp, "direct", "censorship.zip")
 	directChecksum := directArchive + ".sha256"
-	if err := runPackager("-version", "foo/bar", "-library", library, "-archive", directArchive, "-checksum", directChecksum); err == nil {
-		t.Fatal("direct packaging accepted unsafe version")
-	}
+	runPackager("-version", "foo/bar", "-library", library, "-archive", directArchive, "-checksum", directChecksum)
 	for _, path := range []string{directArchive, directChecksum} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("unsafe direct output %s exists: %v", path, err)
