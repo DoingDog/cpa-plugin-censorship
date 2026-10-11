@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/tidwall/gjson"
 )
@@ -912,6 +913,120 @@ func TestOpenAIResponsesInstructionsScope(t *testing.T) {
 			t.Fatalf("response = %#v, want no-op", resp)
 		}
 	})
+}
+
+func TestOpenAIChatFlatCustomDescription(t *testing.T) {
+	const raw = ` {"model":"target-model","messages":[{"role":"user","content":"safe"}],"tools":[{"type":"custom","name":"SECRET name","description":"SECRET tail","format":{"type":"grammar","syntax":"lark","definition":"start: \"SECRET\""},"id":"SECRET id"}],"metadata":{"n":1.2300e+00,"note":"SECRET"}} `
+	for _, scope := range []string{"", "scope:\n  roles: [developer]\n"} {
+		for _, action := range []struct{ name, token string }{{"block", ""}, {"strip", `" tail"`}, {"obfs", `"S​ECRET tail"`}} {
+			t.Run(action.name+"/"+scope, func(t *testing.T) {
+				body := []byte(raw)
+				config := "words:\n  " + action.name + ": [SECRET]\n" + scope
+				cfg := mustConfig(t, config)
+				spans, err := selectTextSpans(body, "openai", cfg.Roles)
+				var descriptions []textSpan
+				for _, span := range spans {
+					if span.Role == "developer" {
+						descriptions = append(descriptions, span)
+					}
+				}
+				start := bytes.Index(body, []byte(`"SECRET tail"`))
+				if err != nil || len(descriptions) != 1 || descriptions[0].Text != "SECRET tail" || descriptions[0].RawStart != start || descriptions[0].RawEnd != start+len(`"SECRET tail"`) {
+					t.Fatalf("flat description spans=%#v error=%v; want SECRET tail/developer at %d", descriptions, err, start)
+				}
+				result, err := transformRequest(body, "openai", cfg)
+				if err != nil || result.Invalid || string(body) != raw {
+					t.Fatalf("result=%#v error=%v; input=%s", result, err, body)
+				}
+				registerConfig(t, config)
+				response := functionalCall(t, pluginabi.MethodRequestInterceptBefore, functionalRequest("openai", body))
+				if action.name == "block" {
+					if result.Body != nil || result.Blocked == nil || *result.Blocked != (blockMatch{Term: "SECRET", Role: "developer"}) {
+						t.Fatalf("block result=%#v", result)
+					}
+					requireFunctionalBlock(t, response, "SECRET", "developer")
+				} else {
+					want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET tail"`, After: action.token})
+					if result.Blocked != nil || !bytes.Equal(result.Body, want) {
+						t.Fatalf("rewrite=%s want=%s", result.Body, want)
+					}
+					requireFunctionalRewrite(t, response, want)
+				}
+			})
+		}
+	}
+}
+
+func TestOpenAIChatFlatCustomDescriptionShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool string
+		tokens     []string
+	}{
+		{"flat", `{"type":"custom","name":"safe","description":"SECRET flat"}`, []string{`"SECRET flat"`}},
+		{"empty custom", `{"type":"custom","name":"safe","description":"SECRET flat","custom":{}}`, []string{`"SECRET flat"`}},
+		{"null custom", `{"type":"custom","name":"safe","description":"SECRET flat","custom":null}`, []string{`"SECRET flat"`}},
+		{"safe nested", `{"type":"custom","name":"safe","description":"SECRET flat","custom":{"description":"safe nested"}}`, []string{`"SECRET flat"`}},
+		{"mixed flat first", `{"type":"custom","name":"safe","description":"SECRET flat","custom":{"description":"SECRET nested"}}`, []string{`"SECRET flat"`, `"SECRET nested"`}},
+		{"mixed nested first", `{"custom":{"description":"SECRET nested"},"description":"SECRET flat","name":"safe","type":"custom"}`, []string{`"SECRET nested"`, `"SECRET flat"`}},
+		{"nested without flat name", `{"type":"custom","description":"SECRET excluded","custom":{"description":"SECRET nested"}}`, []string{`"SECRET nested"`}},
+		{"nested with empty flat name", `{"type":"custom","name":"","description":"SECRET excluded","custom":{"description":"SECRET nested"}}`, []string{`"SECRET nested"`}},
+		{"nested with null flat name", `{"type":"custom","name":null,"description":"SECRET excluded","custom":{"description":"SECRET nested"}}`, []string{`"SECRET nested"`}},
+		{"nested with numeric flat name", `{"type":"custom","name":7,"description":"SECRET excluded","custom":{"description":"SECRET nested"}}`, []string{`"SECRET nested"`}},
+		{"whitespace name remains valid", `{"type":"custom","name":" ","description":"SECRET flat"}`, []string{`"SECRET flat"`}},
+		{"missing name", `{"type":"custom","description":"SECRET excluded"}`, nil},
+		{"empty name", `{"type":"custom","name":"","description":"SECRET excluded"}`, nil},
+		{"null name", `{"type":"custom","name":null,"description":"SECRET excluded"}`, nil},
+		{"numeric name", `{"type":"custom","name":7,"description":"SECRET excluded"}`, nil},
+		{"missing description", `{"type":"custom","name":"SECRET name"}`, nil},
+		{"empty description", `{"type":"custom","name":"SECRET name","description":""}`, nil},
+		{"null description", `{"type":"custom","name":"SECRET name","description":null}`, nil},
+		{"numeric description", `{"type":"custom","name":"SECRET name","description":7}`, nil},
+		{"object description", `{"type":"custom","name":"SECRET name","description":{"text":"SECRET excluded"}}`, nil},
+		{"unknown type", `{"type":"unknown","name":"safe","description":"SECRET excluded","custom":{"description":"SECRET excluded"}}`, nil},
+		{"nonstring type", `{"type":7,"name":"safe","description":"SECRET excluded"}`, nil},
+		{"nonobject", `"SECRET excluded"`, nil},
+		{"machine only", `{"type":"custom","name":"SECRET name","description":"safe","id":"SECRET id","format":{"type":"grammar","syntax":"lark","definition":"start: \"SECRET\""}}`, nil},
+	} {
+		for _, action := range []string{"block", "strip", "obfs"} {
+			t.Run(tc.name+"/"+action, func(t *testing.T) {
+				body := []byte(` {"tools":[` + tc.tool + `],"metadata":{"n":1.2300e+00,"note":"SECRET metadata"}} `)
+				registerConfig(t, "words:\n  "+action+": [SECRET]\nscope:\n  roles: [developer]\n")
+				response := functionalCall(t, pluginabi.MethodRequestInterceptBefore, functionalRequest("openai", body))
+				if len(tc.tokens) == 0 {
+					requireNoOpResponse(t, response)
+				} else if action == "block" {
+					requireFunctionalBlock(t, response, "SECRET", "developer")
+				} else {
+					var replacements []rawReplacement
+					for _, token := range tc.tokens {
+						replacement := ""
+						if action == "obfs" {
+							replacement = "S​ECRET"
+						}
+						replacements = append(replacements, rawReplacement{Before: token, After: strings.Replace(token, "SECRET", replacement, 1)})
+					}
+					requireFunctionalRewrite(t, response, replaceRawTokens(t, body, replacements...))
+				}
+				spans, err := selectTextSpans(body, "openai", scopeSet{"developer": {}})
+				var matching []textSpan
+				for _, span := range spans {
+					if strings.Contains(span.Text, "SECRET") {
+						matching = append(matching, span)
+					}
+				}
+				spans = matching
+				if err != nil || len(spans) != len(tc.tokens) {
+					t.Fatalf("spans=%#v error=%v; want %d", spans, err, len(tc.tokens))
+				}
+				for i, token := range tc.tokens {
+					start := bytes.Index(body, []byte(token))
+					if spans[i].RawStart != start || spans[i].RawEnd != start+len(token) || spans[i].Role != "developer" {
+						t.Fatalf("span[%d]=%#v; want developer token %s at %d", i, spans[i], token, start)
+					}
+				}
+			})
+		}
+	}
 }
 
 func TestOpenAIChatModelVisibleDefinitionsUseDeclaredRoles(t *testing.T) {

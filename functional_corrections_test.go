@@ -54,6 +54,7 @@ type functionalFixture struct {
 
 func functionalFixtures() []functionalFixture {
 	fixtures := []functionalFixture{
+		{"Chat_flat_custom", "openai", "developer", `"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"custom","name":"SECRET name","description":%s,"format":{"type":"grammar","syntax":"lark","definition":"start: \"SECRET\""},"id":"SECRET id"}]`, false},
 		{"Chat_schema_root", "openai", "developer", `"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"function","function":{"name":"SECRET name","parametersJsonSchema":{"description":%s,"properties":{"SECRET key":{"enum":["SECRET enum"],"default":"SECRET default"}}}}}]`, false},
 		{"Chat_schema_property", "openai", "developer", `"messages":[],"tools":[{"type":"function","function":{"name":"SECRET name","parametersJsonSchema":{"properties":{"SECRET key":{"description":%s,"const":"SECRET const"}}}}}]`, false},
 		{"Responses_format_root", "openai-response", "developer", `"input":"safe","text":{"format":{"type":"json_schema","name":"SECRET name","json_schema":{"schema":{"description":%s,"enum":["SECRET enum"]}}}}`, false},
@@ -208,6 +209,93 @@ func TestFunctionalCorrectionsBothInterceptionPhases(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestFunctionalFlatCustomDescription(t *testing.T) {
+	fixture := functionalFixtures()[0]
+	if fixture.name != "Chat_flat_custom" {
+		t.Fatal("flat custom fixture missing")
+	}
+	for _, phase := range []struct{ name, method, filter string }{
+		{"BeforeAuth", pluginabi.MethodRequestInterceptBefore, ""},
+		{"AfterAuth", pluginabi.MethodRequestInterceptAfter, "filter_mode: include\nfilter:\n  models: [target-model]\n"},
+	} {
+		for _, tc := range []struct{ name, token, words, want string }{
+			{"full strip", `"SECRET"`, "  strip: [SECRET]\n", `""`},
+			{"no match", `"safe"`, "  block: [SECRET]\n", ""},
+			{"cascade once", `"aXb"`, "  strip: [X]\n  obfs: [ab, ab]\n", `"a​b"`},
+			{"escaped cancellation", `"\u0061\u200bb"`, "  strip: ['​']\n  obfs: [ab]\n", ""},
+			{"folded", `"secret tail"`, "  obfs: [SECRET]\n", `"s​ecret tail"`},
+			{"Unicode", `"界SECRET😀"`, "  strip: [SECRET]\n", `"界😀"`},
+			{"escaped Unicode", `"\u0053ECRET\u754c"`, "  obfs: [SECRET]\n", `"S​ECRET界"`},
+			{"surrogate subsequent escape", `"\ud800\u0053ECRET tail"`, "  strip: [SECRET]\n", `"� tail"`},
+		} {
+			t.Run(phase.name+"/"+tc.name, func(t *testing.T) {
+				config := "words:\n" + tc.words + "scope:\n  roles: [developer]\n" + phase.filter
+				if tc.name == "folded" {
+					config += "ignore_case: true\n"
+				}
+				registerConfig(t, config)
+				body := functionalRawBody(fixture, tc.token)
+				response := functionalCall(t, phase.method, functionalRequest("openai", body))
+				if tc.want == "" {
+					requireNoOpResponse(t, response)
+				} else {
+					requireFunctionalRewrite(t, response, replaceRawTokens(t, body, rawReplacement{Before: tc.token, After: tc.want}))
+				}
+			})
+		}
+		for _, action := range []struct{ name, want string }{{"block", ""}, {"strip", " tail"}, {"obfs", "s​ecret tail"}} {
+			t.Run(phase.name+"/folded_"+action.name, func(t *testing.T) {
+				registerConfig(t, "words:\n  "+action.name+": [SECRET]\nignore_case: true\n"+phase.filter)
+				response := functionalCall(t, phase.method, functionalRequest("openai", functionalBody(t, fixture, "secret tail")))
+				if action.name == "block" {
+					requireFunctionalBlock(t, response, "SECRET", "developer")
+				} else {
+					requireFunctionalRewrite(t, response, functionalBody(t, fixture, action.want))
+				}
+			})
+		}
+		for _, tc := range []struct{ name, body, words, term, role string }{
+			{"flat earliest", `{"tools":[{"type":"custom","name":"safe","description":"SECRET"}],"messages":[{"role":"user","content":"SECRET"}]}`, "  block: [SECRET]\n", "SECRET", "developer"},
+			{"user earliest", `{"messages":[{"role":"user","content":"SECRET"}],"tools":[{"type":"custom","name":"safe","description":"SECRET"}]}`, "  block: [SECRET]\n", "SECRET", "user"},
+			{"rule major", `{"tools":[{"type":"custom","name":"safe","description":"EARLY"}],"messages":[{"role":"user","content":"LATE"}]}`, "  block: [LATE, EARLY]\n", "LATE", "user"},
+			{"no cross node", `{"tools":[{"type":"custom","name":"safe","description":"SEC","custom":{"description":"RET"}}]}`, "  block: [SECRET]\n", "", ""},
+			{"block before strip and obfs", `{"tools":[{"type":"custom","name":"safe","description":"SECRET"}]}`, "  obfs: [SECRET]\n  strip: [SECRET]\n  block: [SECRET]\n", "SECRET", "developer"},
+		} {
+			t.Run(phase.name+"/"+tc.name, func(t *testing.T) {
+				registerConfig(t, "words:\n"+tc.words+phase.filter)
+				response := functionalCall(t, phase.method, functionalRequest("openai", []byte(tc.body)))
+				if tc.term == "" {
+					requireNoOpResponse(t, response)
+				} else {
+					requireFunctionalBlock(t, response, tc.term, tc.role)
+				}
+			})
+		}
+	}
+	t.Run("empty request Model ignores all decoys", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [SECRET]\nfilter_mode: include\nfilter:\n  models: [target-model]\n")
+		request := functionalRequest("openai", functionalBody(t, fixture, "SECRET tail"))
+		request.Model, request.RequestedModel = "", "target-model"
+		request.Metadata["source_model"] = "target-model"
+		request.Body = bytes.Replace(request.Body, []byte("body-decoy"), []byte("target-model"), 1)
+		request.Headers.Set("X-Model", "target-model")
+		requireNoOpResponse(t, functionalCall(t, pluginabi.MethodRequestInterceptAfter, request))
+	})
+	t.Run("model BeforeAuth bypasses malformed envelope", func(t *testing.T) {
+		registerConfig(t, "words:\n  block: [SECRET]\nfilter:\n  models: [target-model]\n")
+		raw, err := handleMethod(pluginabi.MethodRequestInterceptBefore, []byte(`{"invalid envelope`))
+		var envelope pluginabi.Envelope
+		if err != nil || json.Unmarshal(raw, &envelope) != nil || !envelope.OK {
+			t.Fatalf("raw=%s error=%v; want successful response", raw, err)
+		}
+		var response pluginapi.RequestInterceptResponse
+		if err := json.Unmarshal(envelope.Result, &response); err != nil {
+			t.Fatal(err)
+		}
+		requireNoOpResponse(t, response)
+	})
 }
 
 func TestFunctionalCorrectionsRawSurrogateBothInterceptionPhases(t *testing.T) {

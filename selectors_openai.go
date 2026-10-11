@@ -45,6 +45,10 @@ func appendOpenAIChatTool(spans *[]textSpan, tool gjson.Result, roles scopeSet) 
 		appendJSONSchemaDescriptions(spans, schema, "developer", roles)
 		appendJSONSchemaDescriptions(spans, function.Get("output_schema"), "developer", roles)
 	case "custom":
+		name := tool.Get("name")
+		if name.Type == gjson.String && name.Str != "" {
+			appendStringSpan(spans, tool.Get("description"), "developer", roles)
+		}
 		appendStringSpan(spans, tool.Get("custom.description"), "developer", roles)
 	}
 }
