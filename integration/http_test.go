@@ -933,8 +933,8 @@ func runFunctionalHTTPMatrix(t *testing.T, fixtures []functionalHTTPFixture) {
 				status, header, response := postJSON(t, cpa.baseURL+fixture.endpoint, functionalHTTPBody(t, fixture, action.input))
 				if action.name == "block" {
 					errorResponse, err := decodeCensorshipError(response)
-					if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || errorResponse.Error.Code != "censorship_blocked" || errorResponse.Error.Term != "SECRET" || errorResponse.Error.Role != fixture.role || upstream.arrivalCount() != 0 {
-						t.Fatalf("block status=%d arrivals=%d body=%s error=%v\n%s", status, upstream.arrivalCount(), response, err, readCPALog(cpa.logPath))
+					if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || errorResponse.Error.Code != "censorship_blocked" || errorResponse.Error.Term != "SECRET" || errorResponse.Error.Role != fixture.role || upstream.arrivalCount() != 0 || upstream.requestCount() != 0 {
+						t.Fatalf("block status=%d arrivals=%d requests=%d body=%s error=%v\n%s", status, upstream.arrivalCount(), upstream.requestCount(), response, err, readCPALog(cpa.logPath))
 					}
 					return
 				}
@@ -954,6 +954,53 @@ func runFunctionalHTTPMatrix(t *testing.T, fixtures []functionalHTTPFixture) {
 				}
 			})
 		}
+	}
+}
+
+func functionalHTTPFlatCustomFixtures() []functionalHTTPFixture {
+	return []functionalHTTPFixture{
+		{name: "Chat_flat_custom", format: "openai", provider: "codex", endpoint: "/v1/chat/completions", role: "developer", fragment: `"messages":[{"role":"user","content":"safe"}],"tools":[{"type":"custom","name":"SECRET_tool","description":%s,"format":{"type":"grammar","syntax":"lark","definition":"start: \"SECRET\""},"id":"SECRET id"}]`, textPath: "tools.0.description", machine: map[string]string{"tools.0.type": `"custom"`, "tools.0.name": `"SECRET_tool"`, "tools.0.format.type": `"grammar"`, "tools.0.format.syntax": `"lark"`, "tools.0.format.definition": `"start: \"SECRET\""`, "tools.0.id": `"SECRET id"`}},
+	}
+}
+
+func TestHTTPFunctionalChatFlatCustomToCodex(t *testing.T) {
+	fixtures := functionalHTTPFlatCustomFixtures()
+	runFunctionalHTTPMatrix(t, fixtures)
+	fixture := fixtures[0]
+	for _, tc := range []struct {
+		name, config, input, want string
+		blocked                   bool
+	}{
+		{"default_scope", "words:\n  block: [SECRET]\n", "SECRET tail", "", true},
+		{"developer_disabled", "words:\n  block: [SECRET]\nscope:\n  roles: [user]\n", "SECRET tail", "SECRET tail", false},
+		{"no_match", "words:\n  block: [SECRET]\n", "safe tail", "safe tail", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := newFunctionalDirectUpstream(t, fixture.provider)
+			cpa := startFunctionalDirectCPA(t, upstream.URL, fixture.provider, tc.config)
+			defer func() { t.Logf("Chat->Codex CPA log\n%s", readCPALog(cpa.logPath)) }()
+			status, header, response := postJSON(t, cpa.baseURL+fixture.endpoint, functionalHTTPBody(t, fixture, tc.input))
+			if tc.blocked {
+				decoded, err := decodeCensorshipError(response)
+				if err != nil || status != 400 || header.Get("Content-Type") != "application/json" || decoded.Error.Code != "censorship_blocked" || decoded.Error.Term != "SECRET" || decoded.Error.Role != "developer" || upstream.arrivalCount() != 0 || upstream.requestCount() != 0 {
+					t.Fatalf("block status=%d arrivals=%d requests=%d body=%s error=%v", status, upstream.arrivalCount(), upstream.requestCount(), response, err)
+				}
+				return
+			}
+			if status != 200 || upstream.arrivalCount() != 1 || upstream.requestCount() != 1 {
+				t.Fatalf("status=%d arrivals=%d requests=%d body=%s", status, upstream.arrivalCount(), upstream.requestCount(), response)
+			}
+			captured := upstream.lastRequest()
+			value := gjson.GetBytes(captured, fixture.textPath)
+			if value.Type != gjson.String || value.String() != tc.want {
+				t.Fatalf("upstream description=%s, want %q; body=%s", value.Raw, tc.want, captured)
+			}
+			for path, want := range fixture.machine {
+				if got := gjson.GetBytes(captured, path).Raw; got != want {
+					t.Errorf("machine %s=%s, want %s", path, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -1223,6 +1270,75 @@ func TestHTTPFunctionalInvalidBoundaries(t *testing.T) {
 	}
 }
 
+func TestHTTPFunctionalNativeChatFlatCustomGates(t *testing.T) {
+	for _, phase := range []string{"BeforeAuth", "AfterAuth"} {
+		for _, tc := range []struct {
+			name, config, input, want, fragment, term, role string
+			noOp                                            bool
+		}{
+			{name: "default_block", config: "words:\n  block: [SECRET]\n", input: "SECRET tail", term: "SECRET", role: "developer"},
+			{name: "default_strip", config: "words:\n  strip: [SECRET]\n", input: "SECRET tail", want: " tail"},
+			{name: "default_obfs", config: "words:\n  obfs: [SECRET]\n", input: "SECRET tail", want: "S​ECRET tail"},
+			{name: "developer_disabled", config: "words:\n  block: [SECRET]\nscope:\n  roles: [user]\n", input: "SECRET tail", noOp: true},
+			{name: "format_disabled", config: "words:\n  block: [SECRET]\nscope:\n  formats: []\n", input: "SECRET tail", noOp: true},
+			{name: "no_match", config: "words:\n  strip: [SECRET]\n", input: "safe tail", noOp: true},
+			{name: "machine_only", config: "words:\n  block: [SECRET]\n", input: "safe", noOp: true},
+			{name: "full_strip", config: "words:\n  strip: [SECRET]\n", input: "SECRET", want: ""},
+			{name: "cascade_once", config: "words:\n  strip: [X]\n  obfs: [ab, ab]\n", input: "XaXb", want: "a​b"},
+			{name: "rule_major", config: "words:\n  block: [LATE, EARLY]\n", input: "EARLY", fragment: `"tools":[{"type":"custom","name":"safe","description":%s}],"messages":[{"role":"user","content":"LATE"}]`, term: "LATE", role: "user"},
+			{name: "earliest_user", config: "words:\n  block: [SECRET]\n", input: "SECRET tail", fragment: `"messages":[{"role":"user","content":"SECRET first"}],"tools":[{"type":"custom","name":"safe","description":%s}]`, term: "SECRET", role: "user"},
+			{name: "earliest_developer", config: "words:\n  block: [SECRET]\n", input: "SECRET tail", fragment: `"tools":[{"type":"custom","name":"safe","description":%s}],"messages":[{"role":"user","content":"SECRET later"}]`, term: "SECRET", role: "developer"},
+			{name: "no_cross_node", config: "words:\n  block: [SECRET]\n", input: "SEC", fragment: `"tools":[{"type":"custom","name":"safe","description":%s,"custom":{"description":"RET"}}]`, noOp: true},
+		} {
+			t.Run(phase+"/"+tc.name, func(t *testing.T) {
+				fixture := functionalHTTPFlatCustomFixtures()[0]
+				if tc.fragment != "" {
+					fixture.fragment = tc.fragment
+				}
+				configText := tc.config
+				if phase == "AfterAuth" {
+					configText += "filter_mode: include\nfilter:\n  models: [target-model]\n"
+				}
+				indented := "      " + strings.ReplaceAll(strings.TrimSuffix(configText, "\n"), "\n", "\n      ") + "\n"
+				withDynamicABIHost(t, indented, func(before, after func(pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse) {
+					body := functionalHTTPBody(t, fixture, tc.input)
+					headers := http.Header{"Content-Encoding": {"identity"}, "Content-Length": {"123"}, "Transfer-Encoding": {"chunked"}, "X-Preserved": {"SECRET header"}}
+					request := pluginapi.RequestInterceptRequest{SourceFormat: fixture.format, Model: "target-model", RequestedModel: "requested-decoy", Metadata: map[string]any{executor.SelectedAuthMetadataKey: "auth-1", "preserved": "SECRET"}, Body: bytes.Clone(body), Headers: headers.Clone()}
+					snapshot, err := json.Marshal(request)
+					if err != nil {
+						t.Fatal(err)
+					}
+					unchanged := pluginapi.RequestInterceptResponse{Body: body, Headers: headers}
+					call, inactive := before, after
+					if phase == "AfterAuth" {
+						call, inactive = after, before
+					}
+					if got := inactive(request); !reflect.DeepEqual(got, unchanged) {
+						t.Fatalf("inactive phase=%#v", got)
+					}
+					response := call(request)
+					finalRequest, err := json.Marshal(request)
+					if err != nil || !bytes.Equal(snapshot, finalRequest) {
+						t.Fatalf("native input/metadata/headers changed, error=%v", err)
+					}
+					if tc.term != "" {
+						decoded, err := decodeCensorshipError(response.ResponseBody)
+						if err != nil || !response.Terminate || response.StatusCode != 400 || !bytes.Equal(response.Body, body) || !reflect.DeepEqual(response.Headers, headers) || response.ClearHeaders != nil || response.ResponseHeaders.Get("Content-Type") != "application/json" || decoded.Error.Code != "censorship_blocked" || decoded.Error.Term != tc.term || decoded.Error.Role != tc.role {
+							t.Fatalf("native block=%#v error=%v", response, err)
+						}
+					} else if tc.noOp {
+						if !reflect.DeepEqual(response, unchanged) {
+							t.Fatalf("native no-op=%#v", response)
+						}
+					} else if !reflect.DeepEqual(response, pluginapi.RequestInterceptResponse{Body: functionalHTTPBody(t, fixture, tc.want), Headers: http.Header{"X-Preserved": {"SECRET header"}}}) {
+						t.Fatalf("native rewrite=%#v", response)
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestHTTPFunctionalNativeRegistrationAndPhases(t *testing.T) {
 	pluginDir := os.Getenv("CENSORSHIP_PLUGIN_DIR")
 	if pluginDir == "" {
@@ -1263,7 +1379,8 @@ func TestHTTPFunctionalNativeRegistrationAndPhases(t *testing.T) {
 	if !found || !host.PluginRegistered("censorship") {
 		t.Fatal("native censorship registration missing")
 	}
-	fixtures := append(functionalHTTPSchemaFixtures(), functionalHTTPClaudeMCPFixtures()...)
+	fixtures := append(functionalHTTPFlatCustomFixtures(), functionalHTTPSchemaFixtures()...)
+	fixtures = append(fixtures, functionalHTTPClaudeMCPFixtures()...)
 	fixtures = append(fixtures, functionalHTTPClaudeTitleFixtures()...)
 	fixtures = append(fixtures, functionalHTTPOutputFixtures()...)
 	fixtures = append(fixtures, functionalHTTPDecodeFixtures()...)
