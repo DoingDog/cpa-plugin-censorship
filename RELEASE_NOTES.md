@@ -1,3 +1,17 @@
+# Censorship v0.3.10
+
+## v0.3.10 fixes
+
+Release date: 2026-10-12.
+
+- OpenAI Chat flat custom tools select top-level `description` under canonical `developer` scope when `type` is the string `custom` and top-level `name` is a non-empty string. The description must be a non-empty string. Existing nested `custom.description` remains independently selected without the flat name gate; mixed tools select both eligible descriptions in original token order. Full strip may leave the Chat custom description empty. Names, IDs, grammar, and other machine bytes remain unchanged.
+- Independent semantic and raw protocol test oracles now cover Chat flat custom descriptions and the already-supported Claude tool/output-schema and Gemini function-declaration descriptions. Claude/Gemini production selection is unchanged.
+- The protocol checker's title-length branch accepts the existing Claude rejection only when a selected rewrite changes the final document title to more than 500 decoded Unicode code points and returns the exact local invalid-text response without a replacement body or block. Boundary, escaped Unicode, and forged-result tests preserve the existing empty-strip rejection checks. Production title validation is unchanged.
+
+v0.3.10 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
+The local verification scope includes Windows amd64 root tests/race/vet, independent Windows packager tests/race/vet, bounded fuzz, fixed-host native registration and two-phase callbacks, real Chat->Codex HTTP forwarding to a local Responses upstream, formal build/package, ZIP/CRC/license/checksum inspection, and formal DLL active-after ABI smoke. New main/tag CI and seven-platform release asset acceptance remain pending. Local upstream fixtures do not establish commercial provider API acceptance or native loading on every platform. Bare source and integration builds retain `0.0.0-dev`; formal VERSION injection uses `0.3.10`.
+
 # Censorship v0.3.9
 
 ## v0.3.9 fixes
