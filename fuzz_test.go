@@ -169,6 +169,356 @@ func TestProtocolOracleAcceptsOnlyGeminiSignatureBoundRewrites(t *testing.T) {
 	}
 }
 
+func protocolFlatCustomFixtures() []struct {
+	name, tool string
+	texts      []string
+} {
+	return []struct {
+		name, tool string
+		texts      []string
+	}{
+		{"flat", `{"type":"custom","name":"safe","description":"SECRET tail"}`, []string{"SECRET tail"}},
+		{"nested only", `{"type":"custom","custom":{"description":"SECRET nested"}}`, []string{"SECRET nested"}},
+		{"mixed", `{"type":"custom","name":"safe","description":"SECRET flat","custom":{"description":"SECRET nested"}}`, []string{"SECRET flat", "SECRET nested"}},
+		{"nested first", `{"custom":{"description":"SECRET nested"},"name":"safe","type":"custom","description":"SECRET flat"}`, []string{"SECRET flat", "SECRET nested"}},
+		{"empty custom", `{"type":"custom","name":"safe","description":"SECRET tail","custom":{}}`, []string{"SECRET tail"}},
+		{"null custom", `{"type":"custom","name":"safe","description":"SECRET tail","custom":null}`, []string{"SECRET tail"}},
+		{"safe nested", `{"type":"custom","name":"safe","description":"SECRET flat","custom":{"description":"safe nested"}}`, []string{"SECRET flat", "safe nested"}},
+		{"missing name", `{"type":"custom","description":"SECRET excluded"}`, nil},
+		{"empty name nested retained", `{"type":"custom","name":"","description":"SECRET excluded","custom":{"description":"SECRET nested"}}`, []string{"SECRET nested"}},
+		{"null name", `{"type":"custom","name":null,"description":"SECRET excluded"}`, nil},
+		{"numeric name", `{"type":"custom","name":7,"description":"SECRET excluded"}`, nil},
+		{"empty description", `{"type":"custom","name":"safe","description":""}`, []string{""}},
+		{"null description", `{"type":"custom","name":"safe","description":null}`, nil},
+		{"object description", `{"type":"custom","name":"safe","description":{"text":"SECRET excluded"}}`, nil},
+		{"numeric description", `{"type":"custom","name":"safe","description":7}`, nil},
+		{"unknown type", `{"type":"unknown","name":"safe","description":"SECRET excluded"}`, nil},
+		{"nonobject", `"SECRET excluded"`, nil},
+		{"machine only", `{"type":"custom","name":"SECRET name","id":"SECRET id","description":"safe","format":{"definition":"SECRET grammar"}}`, []string{"safe"}},
+		{"escaped", `{"type":"custom","name":"safe","description":"\u0053ECRET\u754c"}`, []string{"SECRET界"}},
+		{"full strip", `{"type":"custom","name":"safe","description":"SECRET"}`, []string{"SECRET"}},
+	}
+}
+
+func TestProtocolOracleChatFlatCustomDescription(t *testing.T) {
+	for _, tc := range protocolFlatCustomFixtures() {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(` {"tools":[` + tc.tool + `],"metadata":{"note":"SECRET machine","n":1.2300e+00}} `)
+			var want []oracleProtocolSpan
+			for _, text := range tc.texts {
+				want = append(want, oracleProtocolSpan{Text: text, Role: "developer"})
+			}
+			spans, ok := oracleProtocolSpans("openai", body)
+			if !ok || !reflect.DeepEqual(spans, want) {
+				t.Errorf("semantic spans=%#v parsed=%t; want %#v", spans, ok, want)
+			}
+			raw, ok := oracleRawProtocolSpans("openai", body)
+			if !ok || len(raw) != len(want) {
+				t.Fatalf("raw spans=%#v parsed=%t; want %#v", raw, ok, want)
+			}
+			for i, expected := range want {
+				token := benchmarkQuote(expected.Text)
+				if tc.name == "escaped" {
+					token = `"\u0053ECRET\u754c"`
+				}
+				start := bytes.Index(body, []byte(token))
+				if raw[i].Text != expected.Text || raw[i].Role != expected.Role || raw[i].Start != start || raw[i].End != start+len(token) {
+					t.Fatalf("raw[%d]=%#v; want %s/developer at %d", i, raw[i], token, start)
+				}
+			}
+			for _, fold := range []bool{false, true} {
+				for _, action := range []mode{modeBlock, modeStrip, modeObfs} {
+					got, err := transformRequest(body, "openai", mustConfig(t, fmt.Sprintf("words:\n  %s: [SECRET]\nignore_case: %t\n", action, fold)))
+					if err != nil {
+						t.Fatal(err)
+					}
+					var replacements []rawReplacement
+					for _, expected := range tc.texts {
+						if !strings.Contains(expected, "SECRET") {
+							continue
+						}
+						before := benchmarkQuote(expected)
+						if tc.name == "escaped" {
+							before = `"\u0053ECRET\u754c"`
+						}
+						replacement := ""
+						if action == modeObfs {
+							replacement = "S​ECRET"
+						}
+						replacements = append(replacements, rawReplacement{Before: before, After: benchmarkQuote(strings.ReplaceAll(expected, "SECRET", replacement))})
+					}
+					if len(replacements) == 0 {
+						if !reflect.DeepEqual(got, transformResult{}) {
+							t.Fatalf("result=%#v; want no-op", got)
+						}
+					} else if action == modeBlock {
+						if got.Invalid || got.Body != nil || got.Blocked == nil || *got.Blocked != (blockMatch{Term: "SECRET", Role: "developer"}) {
+							t.Fatalf("result=%#v; want SECRET/developer block", got)
+						}
+					} else if !bytes.Equal(got.Body, replaceRawTokens(t, body, replacements...)) {
+						t.Fatalf("rewrite body=%s", got.Body)
+					}
+					if err := checkProtocolResult("openai", body, action, fold, got); err != nil {
+						t.Fatal(err)
+					}
+					if len(got.Body) != 0 {
+						forged := transformResult{Body: bytes.Replace(got.Body, []byte("SECRET machine"), []byte("changed machine"), 1)}
+						if err := checkProtocolResult("openai", body, action, fold, forged); err == nil {
+							t.Fatal("checker accepted machine token mutation")
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func protocolDefinitionFixtures() []struct{ name, format, role, fragment string } {
+	fixtures := []struct{ name, format, role, fragment string }{
+		{"Claude tool", "claude", "system", `"tools":[{"name":"SECRET name","description":%s,"input_schema":{"type":"object","enum":["SECRET enum"]}}]`},
+		{"Claude input_schema", "claude", "system", `"tools":[{"name":"","input_schema":{"properties":{"SECRET key":{"description":%s,"const":"SECRET const"}}}}]`},
+		{"Claude output_config", "claude", "system", `"output_config":{"format":{"type":"json_schema","schema":{"description":%s,"default":"SECRET default"}}}`},
+		{"Claude output_format", "claude", "system", `"output_format":{"type":"json_schema","schema":{"properties":{"SECRET key":{"description":%s,"required":["SECRET required"]}}}}`},
+	}
+	for _, key := range []string{"functionDeclarations", "function_declarations"} {
+		for _, field := range []string{"description", "parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
+			value := `%s`
+			if field != "description" {
+				value = `{"description":%s,"properties":{"SECRET key":{"enum":["SECRET enum"],"default":"SECRET default","const":"SECRET const"}},"required":["SECRET required"],"x-extra":{"description":"SECRET excluded"}}`
+			}
+			fixtures = append(fixtures, struct{ name, format, role, fragment string }{
+				"Gemini " + key + "/" + field, "gemini", "developer", `"tools":[{"` + key + `":[{"name":"SECRET name","` + field + `":` + value + `}]}]`,
+			})
+		}
+	}
+	return fixtures
+}
+
+func TestProtocolOracleClaudeGeminiDefinitions(t *testing.T) {
+	for _, fixture := range protocolDefinitionFixtures() {
+		t.Run(fixture.name, func(t *testing.T) {
+			body := []byte(` {"metadata":{"n":1.2300e+00,"note":"SECRET machine"},` + fmt.Sprintf(fixture.fragment, `"SECRET tail"`) + `} `)
+			got, err := transformRequest(body, fixture.format, mustConfig(t, "words:\n  block: [SECRET]\n"))
+			if err != nil || got.Invalid || got.Body != nil || got.Blocked == nil || *got.Blocked != (blockMatch{Term: "SECRET", Role: fixture.role}) {
+				t.Fatalf("production block=%#v error=%v; want SECRET/%s", got, err, fixture.role)
+			}
+			if err := checkProtocolResult(fixture.format, body, modeBlock, false, got); err != nil {
+				t.Fatal(err)
+			}
+			want := []oracleProtocolSpan{{Text: "SECRET tail", Role: fixture.role}}
+			spans, ok := oracleProtocolSpans(fixture.format, body)
+			if !ok || !reflect.DeepEqual(spans, want) {
+				t.Fatalf("semantic spans=%#v parsed=%t; want %#v", spans, ok, want)
+			}
+			raw, ok := oracleRawProtocolSpans(fixture.format, body)
+			start := bytes.Index(body, []byte(`"SECRET tail"`))
+			if !ok || len(raw) != 1 || raw[0].Text != "SECRET tail" || raw[0].Role != fixture.role || raw[0].Start != start || raw[0].End != start+len(`"SECRET tail"`) {
+				t.Fatalf("raw=%#v parsed=%t; want SECRET tail/%s at %d", raw, ok, fixture.role, start)
+			}
+			for _, fold := range []bool{false, true} {
+				for _, action := range []struct {
+					mode  mode
+					token string
+				}{{modeBlock, ""}, {modeStrip, `" tail"`}, {modeObfs, `"S​ECRET tail"`}} {
+					got, err := transformRequest(body, fixture.format, mustConfig(t, fmt.Sprintf("words:\n  %s: [SECRET]\nignore_case: %t\n", action.mode, fold)))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if action.mode != modeBlock {
+						want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET tail"`, After: action.token})
+						if got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
+							t.Fatalf("result=%#v; want %s", got, want)
+						}
+					}
+					if err := checkProtocolResult(fixture.format, body, action.mode, fold, got); err != nil {
+						t.Fatal(err)
+					}
+					if len(got.Body) > 0 {
+						forged := transformResult{Body: bytes.Replace(got.Body, []byte("SECRET machine"), []byte("changed machine"), 1)}
+						if err := checkProtocolResult(fixture.format, body, action.mode, fold, forged); err == nil {
+							t.Fatal("checker accepted machine mutation")
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestProtocolOracleDefinitionGatesAndIndependentSchemas(t *testing.T) {
+	for _, fixture := range protocolDefinitionFixtures() {
+		for _, token := range []string{`""`, "null", "7", `{"text":"SECRET excluded"}`, `"safe"`} {
+			t.Run(fixture.name+"/"+token, func(t *testing.T) {
+				prefix := `"messages":[{"role":"user","content":"safe"}],`
+				if fixture.format == "gemini" {
+					prefix = `"contents":[{"role":"user","parts":[{"text":"safe"}]}],`
+				}
+				body := []byte(`{` + prefix + fmt.Sprintf(fixture.fragment, token) + `}`)
+				for _, action := range []mode{modeBlock, modeStrip, modeObfs} {
+					got, err := transformRequest(body, fixture.format, mustConfig(t, fmt.Sprintf("words:\n  %s: [SECRET]\n", action)))
+					if err != nil || !reflect.DeepEqual(got, transformResult{}) {
+						t.Fatalf("production=%#v error=%v; want no-op", got, err)
+					}
+					if err := checkProtocolResult(fixture.format, body, action, false, got); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+	for _, tc := range []struct{ format, body string }{
+		{"claude", `{"tools":[{"description":"SECRET","input_schema":{}},{"name":null,"description":"SECRET","input_schema":{}},{"name":7,"description":"SECRET","input_schema":{}},{"name":"safe","description":"SECRET","input_schema":null},{"name":"safe","description":"SECRET","input_schema":[]}],"output_config":{"format":{"type":"other","schema":{"description":"SECRET"}}},"output_format":{"type":7,"schema":{"description":"SECRET"}}}`},
+		{"gemini", `{"tools":[{"functionDeclarations":["SECRET",7,null,[]],"function_declarations":{"description":"SECRET"}},[{"functionDeclarations":[{"description":"SECRET"}]}]]}`},
+		{"claude", `{"tools":[{"name":"SECRET name","input_schema":{"enum":["SECRET enum"],"default":"SECRET default","const":"SECRET const","required":["SECRET"],"properties":{"SECRET key":{"x-unknown":{"description":"SECRET"}}}}}]}`},
+	} {
+		t.Run("excluded/"+tc.format, func(t *testing.T) {
+			for _, action := range []mode{modeBlock, modeStrip, modeObfs} {
+				got, err := transformRequest([]byte(tc.body), tc.format, mustConfig(t, fmt.Sprintf("words:\n  %s: [SECRET]\n", action)))
+				if err != nil || !reflect.DeepEqual(got, transformResult{}) {
+					t.Fatalf("production=%#v error=%v; want no-op", got, err)
+				}
+				if err := checkProtocolResult(tc.format, []byte(tc.body), action, false, got); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+	declaration := `{"name":"SECRET name","description":"SECRET declaration"`
+	for _, field := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
+		declaration += `,"` + field + `":{"properties":{"SECRET key":{"description":"SECRET ` + field + `","enum":["SECRET machine"]}}}`
+	}
+	declaration += `}`
+	body := []byte(`{"tools":[{"function_declarations":[` + declaration + `],"functionDeclarations":[{"description":"SECRET camel"}]}],"contents":[{"role":"user","parts":[{"text":"SECRET user"}]}]}`)
+	want := []oracleProtocolSpan{{Text: "SECRET camel", Role: "developer"}, {Text: "SECRET declaration", Role: "developer"}}
+	for _, text := range []string{"SECRET parameters", "SECRET parametersJsonSchema", "SECRET parameters_json_schema", "SECRET response", "SECRET responseJsonSchema", "SECRET response_json_schema"} {
+		want = append(want, oracleProtocolSpan{Text: text, Role: "developer"})
+	}
+	want = append(want, oracleProtocolSpan{Text: "SECRET user", Role: "user"})
+	spans, ok := oracleProtocolSpans("gemini", body)
+	if !ok || !reflect.DeepEqual(spans, want) {
+		t.Fatalf("all independent schemas spans=%#v; want %#v", spans, want)
+	}
+	raw, ok := oracleRawProtocolSpans("gemini", body)
+	if !ok || len(raw) != len(want) {
+		t.Fatalf("all independent raw schemas=%#v; want %#v", raw, want)
+	}
+	for i, expected := range want {
+		start := bytes.Index(body, []byte(benchmarkQuote(expected.Text)))
+		if raw[i].Text != expected.Text || raw[i].Role != expected.Role || raw[i].Start != start || raw[i].End != start+len(benchmarkQuote(expected.Text)) {
+			t.Fatalf("raw[%d]=%#v; want %#v at %d", i, raw[i], expected, start)
+		}
+	}
+	for _, action := range []mode{modeBlock, modeStrip, modeObfs} {
+		got, err := transformRequest(body, "gemini", mustConfig(t, fmt.Sprintf("words:\n  %s: [SECRET]\n", action)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if action == modeBlock && (got.Blocked == nil || got.Blocked.Role != "developer") {
+			t.Fatalf("earliest role=%#v; want developer", got)
+		}
+		if err := checkProtocolResult("gemini", body, action, false, got); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestProtocolOracleClaudeTitleLimit(t *testing.T) {
+	for _, length := range []int{493, 494} {
+		t.Run(fmt.Sprintf("final_%d", length+7), func(t *testing.T) {
+			title := strings.Repeat("x", length) + "SECRET"
+			body := []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":` + benchmarkQuote(title) + `}]}]}`)
+			got, err := transformRequest(body, "claude", mustConfig(t, "words:\n  obfs: [SECRET]\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if length == 494 {
+				want := transformResult{Invalid: true, InvalidMessage: "censorship rewrite would make a text field invalid"}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("production result=%#v; want %#v", got, want)
+				}
+			} else {
+				want := replaceRawTokens(t, body, rawReplacement{Before: benchmarkQuote(title), After: benchmarkQuote(strings.Repeat("x", length) + "S​ECRET")})
+				if got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
+					t.Fatalf("production result=%#v; want final 500 code points", got)
+				}
+			}
+			if err := checkProtocolResult("claude", body, modeObfs, false, got); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestProtocolOracleClaudeTitleCodePointsAndForgedInvalid(t *testing.T) {
+	const message = "censorship rewrite would make a text field invalid"
+	invalid := transformResult{Invalid: true, InvalidMessage: message}
+	for _, tc := range []struct {
+		name, unit, suffix, wantSuffix string
+		count                          int
+		mode                           mode
+		fold, reject                   bool
+	}{
+		{"Chinese final 500", "界", "SECRET", "S​ECRET", 493, modeObfs, false, false},
+		{"emoji final 501", "😀", "SECRET", "", 494, modeObfs, false, true},
+		{"folded final 501", "界", "secret", "", 494, modeObfs, true, true},
+		{"strip still 501", "😀", "SECRET", "", 501, modeStrip, false, true},
+		{"strip final 500", "界", "SECRET", "", 500, modeStrip, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			title := strings.Repeat(tc.unit, tc.count) + tc.suffix
+			token := benchmarkQuote(title)
+			if tc.unit == "界" {
+				token = strings.ReplaceAll(token, "界", `\u754c`)
+			}
+			body := []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":` + token + `}]}]}`)
+			got, err := transformRequest(body, "claude", mustConfig(t, fmt.Sprintf("words:\n  %s: [SECRET]\nignore_case: %t\n", tc.mode, tc.fold)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.reject {
+				if !reflect.DeepEqual(got, invalid) {
+					t.Fatalf("production=%#v; want %#v", got, invalid)
+				}
+			} else {
+				want := replaceRawTokens(t, body, rawReplacement{Before: token, After: benchmarkQuote(strings.Repeat(tc.unit, tc.count) + tc.wantSuffix)})
+				if got.Invalid || got.Blocked != nil || !bytes.Equal(got.Body, want) {
+					t.Fatalf("production=%#v; want final 500 code points", got)
+				}
+			}
+			if err := checkProtocolResult("claude", body, tc.mode, tc.fold, got); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	long := benchmarkQuote(strings.Repeat("x", 494) + "SECRET")
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":` + long + `}]}]}`)
+	for _, tc := range []struct {
+		name, format string
+		body         []byte
+		mode         mode
+		got          transformResult
+	}{
+		{"legal final 500", "claude", []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":` + benchmarkQuote(strings.Repeat("x", 493)+"SECRET") + `}]}]}`), modeObfs, invalid},
+		{"unmatched overlong title", "claude", []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":` + benchmarkQuote(strings.Repeat("x", 501)) + `}]}]}`), modeObfs, invalid},
+		{"unchanged title other match", "claude", []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":` + benchmarkQuote(strings.Repeat("x", 501)) + `,"context":"SECRET tail"}]}]}`), modeStrip, invalid},
+		{"other field overlong", "claude", []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":` + long + `}]}]}`), modeObfs, invalid},
+		{"search_result title", "claude", []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":` + long + `}]}]}`), modeObfs, invalid},
+		{"assistant disabled", "claude", bytes.Replace(body, []byte(`"user"`), []byte(`"assistant"`), 1), modeObfs, invalid},
+		{"tool disabled", "claude", bytes.Replace(body, []byte(`"user"`), []byte(`"tool"`), 1), modeObfs, invalid},
+		{"other provider", "openai", body, modeObfs, invalid},
+		{"block mode", "claude", body, modeBlock, invalid},
+		{"wrong message", "claude", body, modeObfs, transformResult{Invalid: true, InvalidMessage: "different"}},
+		{"also blocked", "claude", body, modeObfs, transformResult{Invalid: true, InvalidMessage: message, Blocked: &blockMatch{Term: "SECRET", Role: "user"}}},
+		{"replacement body", "claude", body, modeObfs, transformResult{Invalid: true, InvalidMessage: message, Body: []byte(`{}`)}},
+	} {
+		t.Run("forged/"+tc.name, func(t *testing.T) {
+			if err := checkProtocolResult(tc.format, tc.body, tc.mode, false, tc.got); err == nil {
+				t.Fatal("checker accepted forged Invalid")
+			}
+		})
+	}
+}
+
 func TestProtocolOracleCompatibleSchemaAliases(t *testing.T) {
 	paths := []struct {
 		name, format, template, canonical string
@@ -980,6 +1330,24 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "openai-response", body: []byte(`{"text":{"format":{"type":"json_schema","schema":{},"json_schema":{"schema":{"description":"SECRET shadow"}}}}}`)},
 		{format: "openai", body: []byte(`not-json`)},
 	}
+	for _, fixture := range protocolFlatCustomFixtures() {
+		seeds = append(seeds, struct {
+			format string
+			body   []byte
+		}{"openai", []byte(`{"tools":[` + fixture.tool + `],"metadata":{"note":"SECRET machine","n":1.2300e+00}}`)})
+	}
+	for _, fixture := range protocolDefinitionFixtures() {
+		seeds = append(seeds, struct {
+			format string
+			body   []byte
+		}{fixture.format, []byte(`{"metadata":{"note":"SECRET machine"},` + fmt.Sprintf(fixture.fragment, `"SECRET tail"`) + `}`)})
+	}
+	for _, length := range []int{493, 494} {
+		seeds = append(seeds, struct {
+			format string
+			body   []byte
+		}{"claude", []byte(`{"messages":[{"role":"user","content":[{"type":"document","title":` + benchmarkQuote(strings.Repeat("x", length)+"SECRET") + `}]}]}`)})
+	}
 	for _, seed := range seeds {
 		for mode := uint8(0); mode < 3; mode++ {
 			f.Add(seed.format, seed.body, mode, false)
@@ -1039,9 +1407,9 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 				}
 			}
 		}
-		if format == "claude" && selected == modeStrip && got.Blocked == nil && len(got.Body) == 0 &&
+		if format == "claude" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 &&
 			got.InvalidMessage == "censorship rewrite would make a text field invalid" &&
-			oracleClaudeRequiredFieldWouldBeEmpty(body, fold) {
+			(selected == modeStrip && oracleClaudeRequiredFieldWouldBeEmpty(body, fold) || oracleClaudeTitleWouldExceedLimit(body, selected, fold)) {
 			return nil
 		}
 		if format == "gemini" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 &&
@@ -1221,6 +1589,39 @@ func oracleInteractionsSignatureBoundSpanMatches(body []byte, fold bool) bool {
 		}
 	}
 	return false
+}
+
+func oracleClaudeTitleWouldExceedLimit(body []byte, selected mode, fold bool) bool {
+	messages, ok := oracleFirstField(body, "messages")
+	if !ok {
+		return false
+	}
+	found := false
+	oracleForEachArray(messages, func(message json.RawMessage) {
+		role, ok := oracleStringField(message, "role")
+		if !ok || role != "user" {
+			return
+		}
+		content, ok := oracleFirstField(message, "content")
+		if !ok {
+			return
+		}
+		oracleForEachArray(content, func(block json.RawMessage) {
+			if !oracleJSONHasType(block, "document") {
+				return
+			}
+			title, ok := oracleStringField(block, "title")
+			if !ok || title == "" {
+				return
+			}
+			final := oracleStrip(title, "SECRET", fold)
+			if selected == modeObfs {
+				final = oracleObfuscate(title, "SECRET", fold, "​")
+			}
+			found = found || final != title && utf8.RuneCountInString(final) > 500
+		})
+	})
+	return found
 }
 
 func oracleClaudeRequiredFieldWouldBeEmpty(body []byte, fold bool) bool {
@@ -1714,6 +2115,11 @@ func oracleAppendOpenAIChatTool(spans *[]oracleProtocolSpan, tool json.RawMessag
 			oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
 		}
 	case "custom":
+		if name, ok := oracleStringField(tool, "name"); ok && name != "" {
+			if description, ok := oracleFirstField(tool, "description"); ok {
+				oracleAppendString(spans, description, "developer")
+			}
+		}
 		custom, ok := oracleFirstField(tool, "custom")
 		if !ok {
 			return
@@ -2004,6 +2410,31 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 			}
 		})
 	}
+	if tools, ok := oracleFirstField(root, "tools"); ok {
+		oracleForEachArray(tools, func(tool json.RawMessage) {
+			_, nameOK := oracleStringField(tool, "name")
+			schema, schemaOK := oracleFirstField(tool, "input_schema")
+			if !nameOK || !schemaOK || !bytes.HasPrefix(bytes.TrimSpace(schema), []byte("{")) {
+				return
+			}
+			if description, ok := oracleFirstField(tool, "description"); ok {
+				oracleAppendString(spans, description, "system")
+			}
+			oracleAppendJSONSchemaDescriptions(spans, schema, "system")
+		})
+	}
+	if config, ok := oracleFirstField(root, "output_config"); ok {
+		if format, ok := oracleFirstField(config, "format"); ok && oracleJSONHasType(format, "json_schema") {
+			if schema, ok := oracleFirstField(format, "schema"); ok {
+				oracleAppendJSONSchemaDescriptions(spans, schema, "system")
+			}
+		}
+	}
+	if format, ok := oracleFirstField(root, "output_format"); ok && oracleJSONHasType(format, "json_schema") {
+		if schema, ok := oracleFirstField(format, "schema"); ok {
+			oracleAppendJSONSchemaDescriptions(spans, schema, "system")
+		}
+	}
 	if contextManagement, ok := oracleFirstField(root, "context_management"); ok {
 		if edits, ok := oracleFirstField(contextManagement, "edits"); ok {
 			oracleForEachArray(edits, func(edit json.RawMessage) {
@@ -2105,6 +2536,24 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 }
 
 func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
+	if tools, ok := oracleFirstField(root, "tools"); ok {
+		oracleForEachArray(tools, func(tool json.RawMessage) {
+			for _, key := range []string{"functionDeclarations", "function_declarations"} {
+				if declarations, ok := oracleFirstField(tool, key); ok {
+					oracleForEachArray(declarations, func(declaration json.RawMessage) {
+						if description, ok := oracleFirstField(declaration, "description"); ok {
+							oracleAppendString(spans, description, "developer")
+						}
+						for _, field := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
+							if schema, ok := oracleFirstField(declaration, field); ok {
+								oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+							}
+						}
+					})
+				}
+			}
+		})
+	}
 	if config, ok := oracleFirstField(root, "generationConfig"); ok {
 		for _, key := range []string{"responseSchema", "responseJsonSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "response_json_schema_ordered"} {
 			if schema, ok := oracleFirstField(config, key); ok {
@@ -2488,6 +2937,11 @@ func oracleRawAppendOpenAIChatTool(spans *[]oracleRawStringToken, tool *oracleRa
 			oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
 		}
 	case "custom":
+		if name, ok := oracleRawStringField(tool, "name"); ok && name != "" {
+			if description, ok := tool.firstField("description"); ok {
+				oracleRawAppendString(spans, description, "developer")
+			}
+		}
 		custom, ok := tool.firstField("custom")
 		if !ok {
 			return
@@ -2795,6 +3249,31 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 			}
 		}
 	}
+	if tools, ok := root.firstField("tools"); ok && tools.kind == 'a' {
+		for _, tool := range tools.array {
+			_, nameOK := oracleRawStringField(tool, "name")
+			schema, schemaOK := tool.firstField("input_schema")
+			if !nameOK || !schemaOK || schema.kind != 'o' {
+				continue
+			}
+			if description, ok := tool.firstField("description"); ok {
+				oracleRawAppendString(spans, description, "system")
+			}
+			oracleRawAppendJSONSchemaDescriptions(spans, schema, "system")
+		}
+	}
+	if config, ok := root.firstField("output_config"); ok {
+		if format, ok := config.firstField("format"); ok && oracleRawJSONHasType(format, "json_schema") {
+			if schema, ok := format.firstField("schema"); ok {
+				oracleRawAppendJSONSchemaDescriptions(spans, schema, "system")
+			}
+		}
+	}
+	if format, ok := root.firstField("output_format"); ok && oracleRawJSONHasType(format, "json_schema") {
+		if schema, ok := format.firstField("schema"); ok {
+			oracleRawAppendJSONSchemaDescriptions(spans, schema, "system")
+		}
+	}
 	if contextManagement, ok := root.firstField("context_management"); ok {
 		if edits, ok := contextManagement.firstField("edits"); ok && edits.kind == 'a' {
 			for _, edit := range edits.array {
@@ -2908,6 +3387,26 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 }
 
 func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
+	if tools, ok := root.firstField("tools"); ok && tools.kind == 'a' {
+		for _, tool := range tools.array {
+			for _, key := range []string{"functionDeclarations", "function_declarations"} {
+				declarations, ok := tool.firstField(key)
+				if !ok || declarations.kind != 'a' {
+					continue
+				}
+				for _, declaration := range declarations.array {
+					if description, ok := declaration.firstField("description"); ok {
+						oracleRawAppendString(spans, description, "developer")
+					}
+					for _, field := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
+						if schema, ok := declaration.firstField(field); ok {
+							oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+						}
+					}
+				}
+			}
+		}
+	}
 	if config, ok := root.firstField("generationConfig"); ok {
 		for _, key := range []string{"responseSchema", "responseJsonSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "response_json_schema_ordered"} {
 			if schema, ok := config.firstField(key); ok {
