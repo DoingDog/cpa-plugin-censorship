@@ -54,11 +54,11 @@
 
 ## 5. 英语说明与 v0.3.11
 
-文件：`README.md`、`RELEASE_NOTES.md`。
+文件：`README.md`、`RELEASE_NOTES.md`、`main_test.go` 的当前发行段兼容性断言。
 
 - 当前兼容版本及当前命令示例使用 v0.3.11，固定 CPA、schema 5、ABI v1 不变。
 - 说明无 per-message effort 的消息内 system scalar 的 Changed-final empty 约束及带 effort scalar、effort-only `[]`、顶层 system 边界。
-- RELEASE_NOTES prepend 2026-10-23 的最小 fix section，保留旧历史和无关 pending 原文。
+- RELEASE_NOTES prepend 2026-10-23 的最小 fix section，保留旧历史和无关 pending 原文。`main_test.go` 的 current-release guard 同步检查 v0.3.11 段，并将 v0.3.10 兼容句移入历史断言列表，保留 glibc 2.34+ 要求。
 - bare `pluginVersion` 保持 `0.0.0-dev`。仅在真实命令通过后描述本机已验证范围；不宣称商业 API、CI、其他平台已验收。
 
 验收：英语文案与实现、实际结果相符；历史段落无无关改写。
@@ -92,3 +92,39 @@
 4. 确认所有修改已合并且无未保存内容后，退出并清理本次 worktree 和对应本地分支；保留用户已有产物及其他任务 worktree。
 
 以上远端流程由主会话执行，本子任务的本地完成不代表远端流程完成。商业 API 接受结果与其他平台 native 实际加载不在本机验收范围。
+
+## 本地完成记录（2026-10-23）
+
+执行环境为 Windows amd64、Go 1.26.5。保留接管时四个修改，从 `dfa14b2e52ebfd9ce15a65c011f3ae119c3bab33` 继续。EnterWorktree 因此脚本子会话从仓库根目录启动而未能切换，所有命令均显式使用本 worktree 的绝对路径或 subprocess cwd，没有 reset、discard 或额外实现 worktree。
+
+### RED/GREEN 与范围核对
+
+- 首个真实 RPC RED 保留在 `.local-verification/claude-system-scalar/red-rpc.log`，退出 1。随后以 OS 临时 Go overlay 映射 `4911f30` 的 selector，重新证明两阶段普通 scalar、历史位置、`output_config: {}`、fold/cascade full-strip 失败，均返回 replacement Body 而未 Terminate；`red-rpc-literal-overlay.log` 和 `red-rpc-overlay.log` 均退出 1。工作树没有回滚。
+- 独立 oracle 的 base-helper overlay 对普通 system scalar 的 canonical 拒绝和 forged accepted-empty 均失败，退出 1。接管时 oracle 对带 effort 的伪造拒绝和普通 scalar 的伪造成功空输出也失败，退出 1；修正后 `green-rpc-oracle.log`、`focused-final.log` 均退出 0。semantic/raw span selector 保持不变；相消由 system functional fixtures 和既有 `TestOracleApplyTracksFinalRewriteState` 核查。
+- 生产 diff 仅为 `collectClaude` 的一行 role 条件。两阶段 RPC 覆盖 literal/fold/cascade、partial/obfs/block 优先级/no-match/相消、roles/formats/rules/filter/auth gates、已有空值/未知 shapes，以及 effort 字段存在时的保留行为（包括 null、空 string 和非 string）。typed text、顶层 system、最终 assistant、tool/MCP scalar 保持既有边界。没有增加配置、export、依赖、模型或 effort 枚举验证；`C.GoBytes` 不变。
+- 当前发行文档更新后，旧 v0.3.10 current-release guard 曾令 `make test` 退出 2，记录于 `make-test-final.log`。更新该 guard 至 v0.3.11、将 v0.3.10 兼容句保留为历史断言并补齐当前 glibc 说明后，focused 文档测试及完整 root suite 均退出 0。
+
+### 完整验收
+
+全部命令、cwd、实际退出状态及耗时保留在 `.local-verification/claude-system-scalar/commands.jsonl` 和对应 `.log` 中。
+
+| 检查 | 实际结果 |
+|---|---|
+| `make test`、`make race`、`make vet` | 均退出 0；发行段修正后复跑 root suite、race、vet |
+| Windows packager 的 main source、Windows helper、通用及 Windows tests | 独立 `go test -count=1`、`go test -race -count=1`、`go vet` 均退出 0 |
+| 六个现有 fuzz 目标 | 每个使用 `-fuzztime=3000x -parallel=2` 并退出 0；FoldKMP 实际 3011 次，其余各 3000 次 |
+| `make integration` | 两次完整流程均退出 0；最终 `make-integration-final.log` 包括 native 注册、active-after、HTTP/SSE/WS 和新两阶段 native/HTTP full-strip 矩阵 |
+| `make build`、`make build VERSION=v0.3.11` | 均退出 0 |
+| selected-platform 与 aggregate `make package VERSION=v0.3.11` | 均退出 0；两种 ZIP 和其中 DLL 逐字节相同 |
+| ZIP CRC、成员、LICENSE、时间、权限及 checksum | 根目录仅 DLL 和 LICENSE；CRC 通过；LICENSE 字节一致；两项时间均为 1980-01-01 00:00:00；DLL 为 0755；lowercase sidecar 与 aggregate 精确一致 |
+| 正式 DLL native 验收 | ZIP 提取 DLL、dist DLL、runner staged DLL 和 loader shadow DLL 字节相同；SDK loader/RPC 实际断言 Metadata.Version 为 0.3.11、schema 5、ABI 1、七个 ConfigFields、Object words、request-only、active-after；原有 `TestDynamicABIActiveAfter` 同样通过 |
+
+首次正式包验收脚本退出 1，原因是额外假定 LICENSE 为 0644。核对既有 packager 后确认 LICENSE 保留 Windows 源文件权限 0666；验收只对 DLL 要求 0755，随后完整包验收退出 0。该过程没有修改 packager。
+
+正式 ZIP 为 `dist/censorship_0.3.11_windows_amd64.zip`，SHA-256 为 `99b894b595c35456b9a29249e897361b84a91045e751f381a11e6fbdd22b62c4`；正式 DLL 为 `dist/windows_amd64/censorship.dll`，SHA-256 为 `9281c3b98dcc9940aa68ee3b6f4fbbef2442d21328acd83213fb7bcbb39fcf39`。完整来源记录为 `.local-verification/claude-system-scalar/formal-package.json`，包含验收时 sourceHead 和源码 SHA-256。DLL 的 nested-worktree VCS metadata 为父仓库 revision `4911f30`、module v0.3.10，注入版本已由真实注册独立核查；没有把 metadata 当作编译源码来源的替代证据。
+
+### 交付与清理
+
+按规格逐项核对 diff、调用者、配置和 ABI 边界，未留下无条件 system 拒绝或其他撤销实现。OS 临时 overlay 已通过临时目录机制清理；本地命令日志、复核脚本、正式 ZIP 提取 DLL 及生成的 integration/dist 产物保留供主会话独立复核，因此保留精确 `.gitignore` 规则。没有手工修改生成的 `.integration` 或 `dist` 内容。
+
+本地验收不包含商业 API、远端 CI、七平台发行资产或其他平台 native 加载；未 push、tag 或合并 main。本 worktree 和分支保留，等待主会话独立审查及后续合并。

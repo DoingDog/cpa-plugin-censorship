@@ -61,6 +61,9 @@ func functionalFixtures() []functionalFixture {
 		{"Responses_format_property", "openai-response", "developer", `"input":"safe","text":{"format":{"type":"json_schema","json_schema":{"schema":{"properties":{"SECRET key":{"description":%s,"default":"SECRET default"}}}}}}`, false},
 		{"Claude_MCP_assistant_scalar", "claude", "tool", `"messages":[{"role":"assistant","content":[{"type":"mcp_tool_result","tool_use_id":"SECRET id","is_error":false,"content":%s,"cache_control":{"type":"ephemeral"}}]}]`, false},
 		{"Claude_MCP_assistant_typed", "claude", "tool", `"messages":[{"role":"assistant","content":[{"type":"mcp_tool_result","tool_use_id":"SECRET id","content":[{"type":"text","text":%s},{"type":"image","source":{"data":"SECRET image"}},{"type":"unknown","text":"SECRET unknown"}]}]}]`, false},
+		{"Claude_system_scalar", "claude", "system", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s}]`, false},
+		{"Claude_system_history_scalar", "claude", "system", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s},{"role":"assistant","content":"safe reply"},{"role":"user","content":"continue"}]`, false},
+		{"Claude_system_effort_scalar", "claude", "system", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{"effort":"low"}}]`, false},
 		{"Claude_history_scalar", "claude", "assistant", `"messages":[{"role":"assistant","content":%s},{"role":"user","content":"safe"}]`, false},
 		{"Claude_document_title", "claude", "user", `"messages":[{"role":"user","content":[{"type":"document","title":%s,"source":{"type":"text","data":"safe"},"citations":{"enabled":true}}]}]`, false},
 		{"Claude_nested_document_title", "claude", "tool", `"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"SECRET id","content":[{"type":"document","title":%s,"source":{"type":"text","data":"safe"}}]}]}]`, false},
@@ -196,7 +199,11 @@ func TestFunctionalCorrectionsBothInterceptionPhases(t *testing.T) {
 					request.Model = "model-decoy"
 					request.RequestedModel = "target-model"
 				case "role_disabled":
-					config = "words:\n  block: [SECRET]\nscope:\n  roles: [system]\nfilter_mode: include\nfilter:\n  models: [target-model]\n"
+					disabledRole := "system"
+					if fixture.role == "system" {
+						disabledRole = "developer"
+					}
+					config = "words:\n  block: [SECRET]\nscope:\n  roles: [" + disabledRole + "]\nfilter_mode: include\nfilter:\n  models: [target-model]\n"
 				case "format_disabled":
 					other := "interactions"
 					if fixture.format == other {
@@ -361,6 +368,17 @@ func TestFunctionalCorrectionsNonEmptyAndLimitsBothPhases(t *testing.T) {
 			name, fragment, role string
 			invalid              bool
 		}{
+			{"system_scalar", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s}]`, "system", true},
+			{"system_history_scalar", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s},{"role":"assistant","content":"safe reply"},{"role":"user","content":"continue"}]`, "system", true},
+			{"system_typed", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":[{"type":"text","text":%s}]}]`, "system", true},
+			{"system_effort_typed", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":[{"type":"text","text":%s}],"output_config":{"effort":"low"}}]`, "system", true},
+			{"system_effort_null", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{"effort":null}}]`, "system", false},
+			{"system_effort_empty", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{"effort":""}}]`, "system", false},
+			{"system_effort_nonstring", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{"effort":false}}]`, "system", false},
+			{"system_output_config_empty", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{}}]`, "system", true},
+			{"system_effort_scalar", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{"effort":"low"}}]`, "system", false},
+			{"top_level_system", `"system":%s,"messages":[{"role":"user","content":"safe"}]`, "system", false},
+			{"tool_scalar", `"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":%s}]}]`, "tool", false},
 			{"history_scalar", `"messages":[{"role":"assistant","content":%s},{"role":"user","content":"safe"}]`, "assistant", true},
 			{"last_scalar", `"messages":[{"role":"user","content":"safe"},{"role":"assistant","content":%s}]`, "assistant", false},
 			{"history_before_null", `"messages":[{"role":"assistant","content":%s},null]`, "assistant", true},
@@ -403,6 +421,80 @@ func TestFunctionalCorrectionsNonEmptyAndLimitsBothPhases(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestClaudeSystemScalarFinalTextBothPhases(t *testing.T) {
+	for _, fixture := range functionalFixtures() {
+		if !strings.HasPrefix(fixture.name, "Claude_system_") {
+			continue
+		}
+		for _, method := range []string{pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter} {
+			for _, tc := range []struct{ name, config, input, outcome string }{
+				{"fold_empty", "words:\n  strip: [SECRET]\nignore_case: true\n", "secret", "invalid"},
+				{"cascade_empty", "words:\n  strip: [X, SECRET]\n", "SEXCXRET", "invalid"},
+				{"block_precedes_empty", "words:\n  block: [SECRET]\n  strip: [SECRET]\n", "SECRET", "block"},
+				{"no_match", "words:\n  strip: [SECRET]\n", "safe", "no_op"},
+			} {
+				t.Run(fixture.name+"/"+method+"/"+tc.name, func(t *testing.T) {
+					config := tc.config
+					if method == pluginabi.MethodRequestInterceptAfter {
+						config += "filter_mode: include\nfilter:\n  models: [target-model]\n"
+					}
+					registerConfig(t, config)
+					response := functionalCall(t, method, functionalRequest("claude", functionalBody(t, fixture, tc.input)))
+					switch tc.outcome {
+					case "invalid":
+						if fixture.name == "Claude_system_effort_scalar" {
+							requireFunctionalRewrite(t, response, functionalBody(t, fixture, ""))
+							return
+						}
+						requireOpenAIInvalidRewrite(t, response)
+						if string(response.ResponseBody) != `{"error":{"type":"invalid_request_error","code":"censorship_invalid_request","message":"censorship rewrite would make a text field invalid"}}` {
+							t.Fatalf("invalid-text response=%s", response.ResponseBody)
+						}
+					case "block":
+						requireFunctionalBlock(t, response, "SECRET", "system")
+					case "no_op":
+						requireNoOpResponse(t, response)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestClaudeSystemScalarUnchangedBoundariesBothPhases(t *testing.T) {
+	for _, method := range []string{pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter} {
+		for _, tc := range []struct{ name, config, fragment, want string }{
+			{"roles_empty", "scope:\n  roles: []\n", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]`, ""},
+			{"formats_empty", "scope:\n  formats: []\n", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]`, ""},
+			{"rules_empty", "words: {}\n", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]`, ""},
+			{"effort_only", "", `"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}},{"role":"user","content":"safe"}]`, ""},
+			{"existing_empty", "", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":""}]`, ""},
+			{"empty_beside_rewrite", "", `"system":"SECRET","messages":[{"role":"user","content":"safe"},{"role":"system","content":""}]`, `"system":"","messages":[{"role":"user","content":"safe"},{"role":"system","content":""}]`},
+			{"unknown_role", "", `"messages":[{"role":"unknown","content":"SECRET"}]`, ""},
+			{"unknown_block", "", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":[{"type":"unknown","text":"SECRET"}]}]`, ""},
+			{"unknown_shape", "", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":{"text":"SECRET"}}]`, ""},
+		} {
+			t.Run(method+"/"+tc.name, func(t *testing.T) {
+				config := "words:\n  strip: [SECRET]\n" + tc.config
+				if tc.name == "rules_empty" {
+					config = tc.config
+				}
+				if method == pluginabi.MethodRequestInterceptAfter {
+					config += "filter_mode: include\nfilter:\n  models: [target-model]\n"
+				}
+				registerConfig(t, config)
+				body := []byte(`{"model":"claude-opus-5-5",` + tc.fragment + `}`)
+				response := functionalCall(t, method, functionalRequest("claude", body))
+				if tc.want == "" {
+					requireNoOpResponse(t, response)
+				} else {
+					requireFunctionalRewrite(t, response, []byte(`{"model":"claude-opus-5-5",`+tc.want+`}`))
+				}
+			})
 		}
 	}
 }

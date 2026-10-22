@@ -75,6 +75,11 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		{name: "document context", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","context":"SECRET"}]}]}`)},
 		{name: "document source content typed text", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":[{"type":"text","text":"SECRET"}]}}]}]}`)},
 		{name: "canonical user scalar content", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}]}`)},
+		{name: "system scalar content", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]}`)},
+		{name: "folded system scalar content", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"secret"}]}`), fold: true},
+		{name: "system scalar empty output_config", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET","output_config":{}}]}`)},
+		{name: "historical system scalar content", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"},{"role":"assistant","content":"safe reply"},{"role":"user","content":"continue"}]}`)},
+		{name: "system effort typed text", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":[{"type":"text","text":"SECRET"}],"output_config":{"effort":"low"}}]}`)},
 	}
 	for _, tc := range accepted {
 		if err := checkProtocolResult("claude", tc.body, modeStrip, tc.fold, invalid); err != nil {
@@ -97,6 +102,15 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		{name: "Claude document source scalar content", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"content","content":"SECRET"}}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude nested tool result", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"SECRET"}]}]}]}`), mode: modeStrip, got: invalid},
 		{name: "Claude partial required text", format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET tail"}]}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude top-level system scalar", format: "claude", body: []byte(`{"system":"SECRET"}`), mode: modeStrip, got: invalid},
+		{name: "Claude system scalar partial", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET tail"}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude system scalar no match", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"safe"}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude system scalar already empty", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":""}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude effort-only system", format: "claude", body: []byte(`{"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}},{"role":"user","content":"safe"}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude system effort scalar", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET","output_config":{"effort":"low"}}]}`), mode: modeStrip, got: invalid},
+		{name: "Claude system scalar accepted empty rewrite", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]}`), mode: modeStrip, got: transformResult{Body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":""}]}`)}},
+		{name: "Claude system scalar obfs", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]}`), mode: modeObfs, got: invalid},
+		{name: "Claude system scalar invalid with body", format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]}`), mode: modeStrip, got: transformResult{Invalid: true, InvalidMessage: invalidMessage, Body: []byte(`{}`)}},
 		{name: "Claude obfuscation", format: "claude", body: accepted[0].body, mode: modeObfs, got: invalid},
 		{name: "empty invalid message", format: "claude", body: accepted[0].body, mode: modeStrip, got: transformResult{Invalid: true}},
 		{name: "different invalid message", format: "claude", body: accepted[0].body, mode: modeStrip, got: transformResult{Invalid: true, InvalidMessage: "different"}},
@@ -105,6 +119,32 @@ func TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip(t *testing.T) {
 		if err := checkProtocolResult(tc.format, tc.body, tc.mode, false, tc.got); err == nil {
 			t.Errorf("%s was accepted", tc.name)
 		}
+	}
+}
+
+func TestProtocolOracleClaudeSystemScalarResults(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, outputConfig, want string
+		noOp                              bool
+	}{
+		{"partial", `"SECRET tail"`, "", `" tail"`, false},
+		{"no match", `"safe"`, "", "", true},
+		{"already empty", `""`, "", "", true},
+		{"effort scalar", `"SECRET"`, `,"output_config":{"effort":"low"}`, `""`, false},
+		{"effort null", `"SECRET"`, `,"output_config":{"effort":null}`, `""`, false},
+		{"effort nonstring", `"SECRET"`, `,"output_config":{"effort":false}`, `""`, false},
+		{"effort-only array", `[]`, `,"output_config":{"effort":"low"}`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":` + tc.content + tc.outputConfig + `}]}`)
+			var result transformResult
+			if !tc.noOp {
+				result.Body = bytes.Replace(body, []byte(`"content":`+tc.content), []byte(`"content":`+tc.want), 1)
+			}
+			if err := checkProtocolResult("claude", body, modeStrip, false, result); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -1295,6 +1335,11 @@ func FuzzProtocolTransform(f *testing.F) {
 		{format: "openai", body: []byte(`{"messages":[{"role":"user","content":"SECRET"}],"tools":[{"description":"SECRET"}]}`)},
 		{format: "openai-response", body: []byte(`{"instructions":"SECRET","input":[{"type":"function_call_output","output":"SECRET"}]}`)},
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"SECRET"},{"type":"thinking","thinking":"SECRET"}]}]}`)},
+		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"}]}`)},
+		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"secret","output_config":{}}]}`)},
+		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET"},{"role":"assistant","content":"safe reply"},{"role":"user","content":"continue"}]}`)},
+		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":"safe"},{"role":"system","content":"SECRET","output_config":{"effort":"low"}}]}`)},
+		{format: "claude", body: []byte(`{"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}},{"role":"user","content":"safe"}]}`)},
 		{format: "claude", body: []byte(`{"messages":[{"role":"user","content":[{"type":"search_result","title":"secret","content":[{"type":"text","text":"search SECRET tail"},{"type":"image","source":{"data":"SECRET"}}],"id":"SECRET","url":"https://SECRET","cache_metadata":{"SECRET":"SECRET"}},{"type":"document","title":"document SECRET tail","context":"context SECRET tail","source":{"type":"text","data":"data SECRET tail","text":"SECRET","media":"SECRET"},"id":"SECRET","citations":[{"url":"https://SECRET"}]},{"type":"document","source":{"type":"content","content":"scalar SECRET tail","data":"SECRET"}},{"type":"document","source":{"type":"content","content":[{"type":"text","text":"typed SECRET tail"},{"type":"image","source":{"data":"SECRET"}}]}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"text":"SECRET"},{"text":"SECRET","inlineData":{"data":"SECRET"}}]}]}`)},
 		{format: "gemini", body: []byte(`{"contents":[{"role":"user","parts":[{"functionCall":{}}]},{"parts":[{"functionResponse":null},{"text":"SECRET"}]},{"parts":[{"text":"assistant SECRET"}]}]}`)},
@@ -1397,6 +1442,7 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		}
 		return nil
 	}
+	claudeEmptyStrip := format == "claude" && selected == modeStrip && oracleClaudeRequiredFieldWouldBeEmpty(body, fold)
 	if got.Invalid {
 		if format == "openai-response" && selected == modeStrip && got.Blocked == nil && len(got.Body) == 0 &&
 			got.InvalidMessage == "censorship cannot rewrite non-string tool description" {
@@ -1409,7 +1455,7 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 		}
 		if format == "claude" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 &&
 			got.InvalidMessage == "censorship rewrite would make a text field invalid" &&
-			(selected == modeStrip && oracleClaudeRequiredFieldWouldBeEmpty(body, fold) || oracleClaudeTitleWouldExceedLimit(body, selected, fold)) {
+			(claudeEmptyStrip || oracleClaudeTitleWouldExceedLimit(body, selected, fold)) {
 			return nil
 		}
 		if format == "gemini" && (selected == modeStrip || selected == modeObfs) && got.Blocked == nil && len(got.Body) == 0 &&
@@ -1430,6 +1476,9 @@ func checkProtocolResult(format string, body []byte, selected mode, fold bool, g
 			}
 		}
 		return fmt.Errorf("valid JSON object marked invalid: %s", body)
+	}
+	if claudeEmptyStrip {
+		return fmt.Errorf("required Claude text field emptied without invalid result")
 	}
 
 	before, ok := oracleProtocolSpans(format, body)
@@ -1648,12 +1697,12 @@ func oracleClaudeRequiredFieldWouldBeEmpty(body []byte, fold bool) bool {
 		if !ok {
 			return
 		}
-		if role == "user" {
-			var scalar string
-			if json.Unmarshal(content, &scalar) == nil && oracleWouldEmptyAfterStrip(scalar, fold) {
-				found = true
-				return
-			}
+		outputConfig, _ := oracleFirstField(message, "output_config")
+		_, hasEffort := oracleFirstField(outputConfig, "effort")
+		var scalar string
+		if (role == "user" || !hasEffort) && json.Unmarshal(content, &scalar) == nil && oracleWouldEmptyAfterStrip(scalar, fold) {
+			found = true
+			return
 		}
 		oracleForEachArray(content, func(block json.RawMessage) {
 			if found {

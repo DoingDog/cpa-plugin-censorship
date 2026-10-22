@@ -26,7 +26,7 @@
 4. `functional_corrections_test.go` 和 `selectors_claude_test.go`：公开 RPC helpers、两阶段矩阵、非空及允许空的现有边界。
 5. `fuzz_test.go`：独立 `oracleClaudeRequiredFieldWouldBeEmpty` 须识别 system scalar；semantic/raw selector 已选择该路径，不新增约束字段或重复实现。
 6. `integration/http_test.go`、现有 native registration helpers、`.github/scripts/integration-runner.go`：从本 worktree 当前源码构建 DLL，经固定 CPA 运行本地 HTTP 与 native 两阶段检查。仅编辑源 fixture，生成文件由 runner 写入。
-7. `README.md`、`RELEASE_NOTES.md`：英语说明和当前版本 v0.3.11；`main.go` 的 bare `pluginVersion` 保持 `0.0.0-dev`。
+7. `README.md`、`RELEASE_NOTES.md`：英语说明和当前版本 v0.3.11；`main_test.go` 同步当前发行段及历史兼容句断言；`main.go` 的 bare `pluginVersion` 保持 `0.0.0-dev`。
 
 失败响应不包含 replacement Body、request Headers、ClearHeaders 或部分改写；ResponseHeaders 仅沿用 canonical JSON 响应。原请求字节、metadata、headers 不变。本地 HTTP 完整 strip 必须零 upstream。
 

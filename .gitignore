@@ -1,3 +1,4 @@
 dist/
 .integration/
+.local-verification/claude-system-scalar/
 *.h

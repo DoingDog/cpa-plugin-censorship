@@ -20,7 +20,7 @@ Copy the native library to the CPA platform plugin directory, then start or rest
 
 Linux release libraries require glibc 2.34+.
 
-v0.3.10 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.3.11 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Configuration
 
@@ -164,7 +164,9 @@ This also excludes tool names and IDs, protocol discriminators, model names, met
 
 Gemini machine exclusions include camelCase and snake_case non-null function, media, file, and code carriers; signature values remain excluded without excluding same-Part visible text. Interactions accepts camel-case `systemInstruction` when snake-case `system_instruction` is absent. Unknown SourceFormat, roles, item types, content blocks, and future protocol shapes are left unchanged.
 
-Enabled known formats reject JSON objects with duplicate member names at any nesting depth. The plugin returns `censorship_invalid_request`; JSON text inside a string remains ordinary text except for the explicit OpenAI multimodal carriers above. Scalar Claude user content cannot be stripped to empty: a matching rewrite terminates locally with `censorship_invalid_request`: censorship rewrite would make a text field invalid. This restriction also applies to non-final assistant scalar history. A scalar assistant prefill at the final `messages` array element may be stripped to empty. The same invalid-text response applies if a rewrite empties a Claude `TextBlockParam.text` (including final assistant typed text), present `document.title`, or present `document.context`.
+Enabled known formats reject JSON objects with duplicate member names at any nesting depth. The plugin returns `censorship_invalid_request`; JSON text inside a string remains ordinary text except for the explicit OpenAI multimodal carriers above. Scalar Claude user content cannot be stripped to empty: a changed final rewrite terminates locally with `censorship_invalid_request`: censorship rewrite would make a text field invalid. This restriction also applies to non-final assistant scalar history and `messages[*]` system scalar content without a per-message `output_config.effort` field, including `output_config: {}`. The same invalid-text response applies if a rewrite empties a Claude `TextBlockParam.text` (including final assistant typed text), present `document.title`, or present `document.context`.
+
+Top-level `system` scalar, system scalar with an existing per-message `output_config.effort` field, final assistant scalar prefill, and `tool_result`/`mcp_tool_result` scalar retain their existing full-strip behavior. Effort-only `content: []` remains untouched. Preserving effort-bearing scalar behavior does not establish provider acceptance of empty scalar content or validate the effort value.
 
 ## Configuration reload
 
@@ -219,17 +221,17 @@ Direct and aggregate packaging rejects library/archive/checksum input/output ali
 Direct CLI calls pass the main source and exactly one helper for the running platform. Windows uses:
 
 ```powershell
-go run ./.github/scripts/package-release.go ./.github/scripts/package-release_windows.go -version v0.3.10 -library dist/windows_amd64/censorship.dll -archive dist/censorship_0.3.10_windows_amd64.zip -checksum dist/censorship_0.3.10_windows_amd64.zip.sha256
+go run ./.github/scripts/package-release.go ./.github/scripts/package-release_windows.go -version v0.3.11 -library dist/windows_amd64/censorship.dll -archive dist/censorship_0.3.11_windows_amd64.zip -checksum dist/censorship_0.3.11_windows_amd64.zip.sha256
 ```
 
 Unix uses:
 
 ```bash
-go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go -version v0.3.10 -library dist/linux_amd64/censorship.so -archive dist/censorship_0.3.10_linux_amd64.zip -checksum dist/censorship_0.3.10_linux_amd64.zip.sha256
+go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go -version v0.3.11 -library dist/linux_amd64/censorship.so -archive dist/censorship_0.3.11_linux_amd64.zip -checksum dist/censorship_0.3.11_linux_amd64.zip.sha256
 ```
 
 Choose the helper by the running host, independently of the library target. Explicit Go source lists do not filter the two helpers by build tags or platform filenames. From a cwd outside the repository, use absolute paths to both source files in their shared repository directory and keep the original cwd: relative flags, output paths, optional `LICENSE`, and Git version lookup still resolve from the caller cwd. The packager uses only the standard library and requires no CGO. Both Make package recipes compile and run it with `GOHOSTOS`/`GOHOSTARCH`, while the library build keeps its selected target.
 
 The release workflow overwrites assets only for an existing draft. A published-release rerun updates notes, downloads the remote assets, compares their exact files and bytes with `release/`, and verifies every sidecar checksum plus aggregate `checksums.txt` without overwriting public assets.
 
-v0.3.10 local verification scope includes Windows amd64 tests, race, vet, independent packager checks, bounded fuzz, both package recipes, fixed-host integration, and formal DLL ABI registration. Chat->Codex fixtures verify selection, rewriting, converted Responses tool descriptions, and preserved machine fields using a local upstream. New main/tag Linux and Windows CI checks, seven-platform builds, Linux `.so` registration, and release asset acceptance remain pending; required main CI jobs must succeed before creating the final tag. Commercial provider API acceptance and native loading on every platform are outside this local verification scope.
+v0.3.11 local verification scope includes Windows amd64 tests, race, vet, independent packager checks, bounded fuzz, both package recipes, fixed-host integration, and formal DLL ABI registration. Chat->Codex fixtures verify selection, rewriting, converted Responses tool descriptions, and preserved machine fields using a local upstream. New main/tag Linux and Windows CI checks, seven-platform builds, Linux `.so` registration, and release asset acceptance remain pending; required main CI jobs must succeed before creating the final tag. Commercial provider API acceptance and native loading on every platform are outside this local verification scope.

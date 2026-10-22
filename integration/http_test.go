@@ -581,6 +581,122 @@ func TestHTTPClaudeScalarUserFullStripReturnsLocalInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestHTTPClaudeSystemScalarBothPhases(t *testing.T) {
+	for _, phase := range []string{"BeforeAuth", "AfterAuth"} {
+		for _, tc := range []struct {
+			name, fragment, textPath, emptyPath string
+			required, noText                    bool
+		}{
+			{"system_scalar", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s}]`, "messages.1.content.0.text", "messages.1.content", true, false},
+			{"system_history_scalar", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s},{"role":"assistant","content":"safe reply"},{"role":"user","content":"continue"}]`, "messages.1.content", "messages.1.content", true, false},
+			{"system_output_config_empty", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{}}]`, "messages.1.content.0.text", "messages.1.content", true, false},
+			{"system_effort_scalar", `"messages":[{"role":"user","content":"safe"},{"role":"system","content":%s,"output_config":{"effort":"low"}}]`, "messages.1.content.0.text", "messages.1.content", false, false},
+			{"top_level_system", `"system":%s,"messages":[{"role":"user","content":"safe"}]`, "system.0.text", "system", false, false},
+			{"effort_only", `"metadata":{"user_id":%s},"messages":[{"role":"system","content":[],"output_config":{"effort":"low"}},{"role":"user","content":"safe"}]`, "messages.0.content", "messages.0.content", false, true},
+		} {
+			for _, action := range []struct{ name, words, input, want string }{
+				{"full_strip", "  strip: [SECRET]\n", "SECRET", ""},
+				{"partial_strip", "  strip: [SECRET]\n", "SECRET tail", " tail"},
+				{"block_first", "  block: [SECRET]\n  strip: [SECRET]\n", "SECRET", ""},
+			} {
+				if tc.noText && action.name != "full_strip" {
+					continue
+				}
+				t.Run(phase+"/"+tc.name+"/"+action.name, func(t *testing.T) {
+					configText := "words:\n" + action.words + "scope:\n  roles: [system]\n"
+					if phase == "AfterAuth" {
+						configText += "filter_mode: include\nfilter:\n  models: [claude-opus-5-5]\n"
+					}
+					fixture := functionalHTTPFixture{fragment: `"max_tokens":16,` + tc.fragment}
+					body := functionalHTTPBody(t, fixture, action.input)
+					wantBody := functionalHTTPBody(t, fixture, action.want)
+					wantError := ""
+					if action.name == "block_first" {
+						wantError = `{"error":{"type":"invalid_request_error","code":"censorship_blocked","message":"request blocked by censorship rule","term":"SECRET","role":"system"}}`
+					} else if tc.required && action.name == "full_strip" {
+						wantError = `{"error":{"type":"invalid_request_error","code":"censorship_invalid_request","message":"censorship rewrite would make a text field invalid"}}`
+					}
+					headers := http.Header{"Content-Length": {"123"}, "Content-Encoding": {"identity"}, "Transfer-Encoding": {"chunked"}, "X-Preserved": {"SECRET header"}}
+					indented := "      " + strings.ReplaceAll(strings.TrimSuffix(configText, "\n"), "\n", "\n      ") + "\n"
+					withDynamicABIHost(t, indented, func(before, after func(pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse) {
+						request := pluginapi.RequestInterceptRequest{SourceFormat: "claude", Model: "claude-opus-5-5", Metadata: map[string]any{executor.SelectedAuthMetadataKey: "auth-1"}, Body: bytes.Clone(body), Headers: headers.Clone()}
+						snapshot, err := json.Marshal(request)
+						if err != nil {
+							t.Fatal(err)
+						}
+						call, inactive := before, after
+						if phase == "AfterAuth" {
+							call, inactive = after, before
+						}
+						unchanged := pluginapi.RequestInterceptResponse{Body: body, Headers: headers}
+						if got := inactive(request); !reflect.DeepEqual(got, unchanged) {
+							t.Fatalf("inactive native phase=%#v", got)
+						}
+						want := pluginapi.RequestInterceptResponse{Body: wantBody, Headers: http.Header{"X-Preserved": {"SECRET header"}}}
+						if tc.noText {
+							want = unchanged
+						} else if wantError != "" {
+							want = unchanged
+							want.Terminate, want.StatusCode = true, 400
+							want.ResponseHeaders = http.Header{"Content-Type": {"application/json"}}
+							want.ResponseBody = []byte(wantError)
+						}
+						if got := call(request); !reflect.DeepEqual(got, want) {
+							t.Fatalf("native response=%#v, want=%#v", got, want)
+						}
+						if final, err := json.Marshal(request); err != nil || !bytes.Equal(final, snapshot) {
+							t.Fatalf("native request mutated, error=%v", err)
+						}
+					})
+					upstream := newFunctionalDirectUpstream(t, "claude")
+					cpa := startFunctionalDirectCPA(t, upstream.URL, "claude", configText)
+					request, err := http.NewRequest(http.MethodPost, cpa.baseURL+"/v1/messages", bytes.NewReader(body))
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Header.Set("Authorization", "Bearer "+downstreamKey)
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("anthropic-beta", "mid-conversation-output-config-2026-07-01")
+					response, err := integrationHTTPClient.Do(request)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer response.Body.Close()
+					responseBody, err := io.ReadAll(response.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if wantError != "" {
+						if response.StatusCode != 400 || response.Header.Get("Content-Type") != "application/json" || string(responseBody) != wantError || upstream.arrivalCount() != 0 || upstream.requestCount() != 0 {
+							t.Fatalf("status=%d headers=%v arrivals=%d requests=%d body=%s", response.StatusCode, response.Header, upstream.arrivalCount(), upstream.requestCount(), responseBody)
+						}
+						return
+					}
+					captured := upstream.lastRequest()
+					if response.StatusCode != 200 || upstream.arrivalCount() != 1 || upstream.requestCount() != 1 || gjson.GetBytes(captured, "model").Str != "claude-opus-5-5" {
+						t.Fatalf("status=%d arrivals=%d requests=%d upstream=%s response=%s", response.StatusCode, upstream.arrivalCount(), upstream.requestCount(), captured, responseBody)
+					}
+					path := tc.textPath
+					if action.name == "full_strip" {
+						path = tc.emptyPath
+					}
+					value := gjson.GetBytes(captured, path)
+					if tc.noText {
+						if value.Raw != "[]" || gjson.GetBytes(captured, "messages.0.output_config.effort").Str != "low" || gjson.GetBytes(captured, "metadata.user_id").Str != action.input {
+							t.Fatalf("effort-only or machine fields changed: %s", captured)
+						}
+					} else if value.Type != gjson.String || value.Str != action.want {
+						t.Fatalf("upstream %s=%s, want=%q; body=%s", path, value.Raw, action.want, captured)
+					}
+					if tc.name == "system_effort_scalar" && gjson.GetBytes(captured, "messages.1.output_config.effort").Str != "low" {
+						t.Fatalf("per-message effort changed: %s", captured)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestHTTPGeminiSignedHistoryBlockReturnsLocalError(t *testing.T) {
 	upstream := newMockUpstream(t)
 	cpa := startCPA(t, upstream.URL, true, "mode: block\nwords: [SECRET]\nscope:\n  roles: [assistant]\n")
@@ -875,7 +991,11 @@ func startFunctionalDirectCPA(t *testing.T, upstreamURL, provider, censorshipYAM
 	}
 	runDir := t.TempDir()
 	configPath := filepath.Join(runDir, "config.yaml")
-	base := fmt.Sprintf("host: 127.0.0.1\nport: %d\napi-keys: [%q]\ndisable-claude-cloak-mode: true\n%s-api-key:\n  - api-key: local-fixture-key\n    base-url: %q\n    models:\n      - name: %q\n        alias: %q\nplugins:\n  enabled: true\n  dir: %q\n  configs:\n", port, downstreamKey, provider, upstreamURL, modelName, modelName, paths.pluginDir)
+	providerModel := modelName
+	if provider == "claude" {
+		providerModel = "claude-opus-5-5"
+	}
+	base := fmt.Sprintf("host: 127.0.0.1\nport: %d\napi-keys: [%q]\ndisable-claude-cloak-mode: true\n%s-api-key:\n  - api-key: local-fixture-key\n    base-url: %q\n    models:\n      - name: %q\n        alias: %q\nplugins:\n  enabled: true\n  dir: %q\n  configs:\n", port, downstreamKey, provider, upstreamURL, providerModel, modelName, paths.pluginDir)
 	if err := os.WriteFile(configPath, []byte(base), 0o600); err != nil {
 		t.Fatal(err)
 	}

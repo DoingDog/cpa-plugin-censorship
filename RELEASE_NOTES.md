@@ -1,3 +1,15 @@
+# Censorship v0.3.11
+
+## v0.3.11 fixes
+
+Release date: 2026-10-23.
+
+- Claude `messages[*]` system scalar content without per-message `output_config.effort` now returns canonical local HTTP 400 `censorship_invalid_request` when a changed final strip result is empty. `output_config: {}` follows this rule. Rejected requests are not forwarded upstream.
+- System scalar content with an existing per-message effort field, effort-only `content: []`, top-level system scalar, final assistant scalar prefill, and tool-result scalar keep their existing behavior. This change adds no model or effort-value validation.
+- Two-phase RPC/native/HTTP regressions and the independent protocol oracle cover the new empty-strip boundary and reject forged successful empty outputs.
+
+v0.3.11 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
 # Censorship v0.3.10
 
 ## v0.3.10 fixes
