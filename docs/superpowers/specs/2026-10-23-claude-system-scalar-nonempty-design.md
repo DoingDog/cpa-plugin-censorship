@@ -4,7 +4,7 @@
 
 ## 已确认问题与官方依据
 
-`collectClaude` 已选择 `messages[*].role: "system"` 的 string `content`，但 scalar 分支仅对 user 和实际非末尾 assistant 调用 `appendNonEmptyStringSpan`。完整 strip 因而返回空 string 的 replacement body，未触发现有本地 invalid-text 响应。任务输入记录了两阶段 RPC 和当前源码临时 DLL 经固定 CPA 转发至本地 upstream 的确认结果；本次实现仍须自行取得 RED 和集成结果。
+`collectClaude` 已选择 `messages[*].role: "system"` 的 string `content`，但 scalar 分支仅对 user 和实际非末尾 assistant 调用 `appendNonEmptyStringSpan`。无 per-message `output_config.effort` 的普通 system scalar 经完整 strip 后返回空 string 的 replacement body，未触发现有本地 invalid-text 响应。本 worktree 的首个两阶段 RPC regression 已观察到 `Terminate: false`、replacement Body 和 ClearHeaders；HTTP 结果须由本 worktree 的激活插件集成测试自行验证。
 
 2026-10-23 阅读以下官方章节：
 
@@ -12,11 +12,11 @@
 - [Mid-conversation system messages 的 How it works](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages#how-it-works)：消息内 system 的 content 使用 plain string 或 content blocks，与 user/assistant 同形。携带文本的 system 消息紧随 user，位于末尾或紧接 assistant 之前；测试应使用符合此规则的位置。
 - [Effort 的 Per-message effort (beta)](https://platform.claude.com/docs/en/build-with-claude/effort#per-message-effort-beta)：合法 effort-only system 使用 `content: []` 和 `output_config.effort`。Claude API 支持列表包括 Claude Opus 5.5，要求 `mid-conversation-output-config-2026-07-01` beta。测试使用该模型和 beta 形状，不调用商业 API。
 
-上述 shorthand 约束针对 messages 中的 string content。顶层 `system` 是独立参数，本次不认定顶层 `system: ""` 非法。effort-only `[]` 没有文本 span；非空 scalar 即使携带 effort，被 strip 为空仍代表空 TextBlock，不能按 `output_config` 存在豁免。
+上述 shorthand 约束针对 messages 中的 string content。顶层 `system` 是独立参数，本次不认定顶层 `system: ""` 非法。effort-only `[]` 没有文本 span。官方 How it works 同时概括了 empty content 仅设置 effort 的例外；带 `output_config.effort` 的空 scalar 是否按该例外正规化尚未核实，因此本次保持该 scalar 的既有行为，不宣称供应商接受性。仅有 `output_config: {}` 不属于 effort 字段存在。
 
 ## 实现范围与调用链
 
-最小生产变更是在 `selectors_claude.go` 的 scalar role 条件中加入 system，复用已有 helper 和最终验证。不增加配置、依赖、抽象、parser、重试或 fallback。
+最小生产变更是在 `selectors_claude.go` 的 scalar role 条件中加入无 `output_config.effort` 字段的 system，使用现有 gjson 字段存在判断，复用已有 helper 和最终验证。不增加配置、依赖、抽象、parser、重试或 fallback。
 
 已核查的关联位置：
 
@@ -32,7 +32,7 @@
 
 ## 非范围与保持行为
 
-- 顶层 system scalar、最终 assistant scalar prefill、tool_result/mcp_tool_result scalar 允许完整 strip 到空的既有行为不变。
+- 带 per-message `output_config.effort` 的 system scalar、顶层 system scalar、最终 assistant scalar prefill、tool_result/mcp_tool_result scalar 允许完整 strip 到空的既有行为不变。不新增模型、effort 枚举或非法输入验证。
 - Claude typed text、user scalar、非末尾 assistant scalar、document title/context 及 title 上限保留现有规则。
 - 原本为空的 scalar 不新增验证；空数组、effort-only `[]`、未选 role、关闭 format、过滤 bypass、未知 role/content/format 保持 no-op。
 - block 优先级、partial strip、obfs、literal/fold 语义、按顺序 cascade、最终相消与机器字段字节保持不变。
@@ -41,10 +41,10 @@
 ## 测试边界与完成条件
 
 1. 一个公开 RPC 完整 strip regression 先真实失败，再以单一 role 条件修复通过；保存 RED/GREEN 命令、退出状态和输出。
-2. 两阶段检查 ordinary/effort scalar 的 literal、fold、cascade 清空；block 优先于 strip；partial/obfs/no-match/取消；disabled rules/roles/formats、过滤和阶段 gates。复用现有矩阵及响应 helper。若将 system fixture 加入全局矩阵，其 `role_disabled` 控制必须确实关闭 system。
-3. 独立 oracle 的 system scalar 正反例先 RED 后 GREEN；验证合法空数组、已有空输入、partial/no-match/obfs、顶层 system 和错误结果不会被误接受。保留既有 fuzz false-positive checks。
-4. 固定 CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8` 和当前源码 DLL 完成 native 注册、两阶段、`TestDynamicABIActiveAfter`、全部 HTTP/SSE/WS。新增 HTTP regression 证明 canonical 400 与零 upstream；合法对照转发到本地 upstream，按既有 CPA `ensureCacheControl` 正规化后的实际结构断言。
-5. `make test`、`make race`、`make vet`，独立 Windows packager tests/race/vet，六个有界 fuzz 目标，`make integration`、`make build`，两种 `make package VERSION=v0.3.11` 均通过。检查 ZIP CRC、成员、LICENSE、注入版本、sidecar 和 aggregate；正式 DLL 做 active-after smoke。
+2. 两阶段检查无 effort 的普通 scalar 的 literal、fold、cascade 清空与 `output_config: {}`；带 effort scalar 保留完整 strip 到空的对照；block 优先于 strip；partial/obfs/no-match/取消；disabled rules/roles/formats、过滤和阶段 gates。复用现有矩阵及响应 helper。若将 system fixture 加入全局矩阵，其 `role_disabled` 控制必须确实关闭 system。
+3. 独立 oracle 的无 effort system scalar 正反例先 RED 后 GREEN，并用伪造 accepted 空输出的负对照强制检查应拒绝结果；验证合法空数组、已有空输入、partial/no-match/obfs、顶层 system 和错误结果不会被误接受。保留既有 fuzz false-positive checks。
+4. 固定 CPA commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8` 和当前源码 DLL 完成 native 注册、两阶段、`TestDynamicABIActiveAfter`、全部 HTTP/SSE/WS。新增普通 system scalar HTTP regression 证明 canonical 400 与零 upstream；带 effort scalar 和合法 effort-only 等对照转发到本地 upstream，按既有 CPA `ensureCacheControl` 正规化后的实际结构断言。
+5. `make test`、`make race`、`make vet`，独立 Windows packager tests/race/vet，六个有界 fuzz 目标，`make integration`、`make build`，两种 `make package VERSION=v0.3.11` 均通过。检查 ZIP CRC、成员、LICENSE、注入版本、sidecar 和 aggregate；加载 ZIP 中同一正式 DLL，真实断言注册 `Metadata.Version == "0.3.11"`、Object words、七个字段、schema 5、ABI v1 和 active-after。
 6. 逐项规格自审及 diff 检查通过，相关修改提交到本 worktree 分支。提交消息英语；不 push、tag 或合并 main。
 
 ## 主会话后续验收

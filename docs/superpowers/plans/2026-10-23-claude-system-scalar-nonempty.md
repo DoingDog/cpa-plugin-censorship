@@ -23,7 +23,7 @@
 
 - 复用 `functionalRequest`、`functionalCall`、`requireOpenAIInvalidRewrite`；加入一个合法位置的 system scalar 完整 strip case，先不堆其他测试。
 - 运行 focused regression，保存真实 RED 输出和退出码，确认失败原因是返回空 replacement body且未 Terminate。
-- 仅在 scalar role 条件加入 system，复用 `appendNonEmptyStringSpan`，不改其他 collector/transform/RPC/ABI 实现。
+- 仅在 scalar role 条件加入无 per-message `output_config.effort` 字段的 system，使用 gjson 字段存在判断并复用 `appendNonEmptyStringSpan`，不改其他 collector/transform/RPC/ABI 实现。
 - 运行相同命令取得 GREEN，再运行 Claude 现有相关测试。
 
 验收：canonical 400、无 replacement Body/Headers/ClearHeaders、原请求不变；生产 diff 只有必要 role 条件。`C.GoBytes` 完整保留。
@@ -32,11 +32,11 @@
 
 文件：`functional_corrections_test.go`、`fuzz_test.go`；必要时局部复用 `selectors_claude_test.go`。
 
-- 复用已有表驱动 helpers，按实际风险补 ordinary 与 effort scalar 的 literal/fold/cascade 清空，block 优先级、partial strip、obfs、no-match、最终相消。
+- 复用已有表驱动 helpers，按实际风险补无 effort 的普通 scalar 的 literal/fold/cascade 清空和 `output_config: {}`，block 优先级、partial strip、obfs、no-match、最终相消。
 - 验证 roles/formats/rules 关闭、filter bypass、BeforeAuth/AfterAuth gating、未选或未知 shapes；原始空 scalar 与 effort-only `[]` 不新增验证。
-- 覆盖顶层 system、最终 assistant、tool_result/mcp_tool_result scalar 保持行为，typed/user/history/title 复用现有回归。
+- 覆盖带 per-message effort 的 system scalar 完整 strip 到空、顶层 system、最终 assistant、tool_result/mcp_tool_result scalar 保持行为，typed/user/history/title 复用现有回归。
 - 避免扩大现有全局 functional fixtures；若复用全局矩阵加入 system fixture，则同步修正用 `[system]` 的 `role_disabled` 控制。
-- 先向 `TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip` 加入 system scalar、fold、effort 正例及 false-positive 反例，运行 RED；再精确修改 `oracleClaudeRequiredFieldWouldBeEmpty` 的 scalar 判断，运行 GREEN。
+- 先向 `TestProtocolOracleAcceptsOnlyClaudeRequiredEmptyStrip` 加入无 effort system scalar、fold、空 output_config 正例和带 effort scalar 等 false-positive 反例，运行 RED；再精确修改 `oracleClaudeRequiredFieldWouldBeEmpty` 的 scalar 判断，运行 GREEN。另用伪造 accepted 空输出的负对照先 RED 后 GREEN，确保 `checkProtocolResult` 对本次应拒绝的普通 system scalar 清空强制要求 invalid，而不只检验 Invalid 分支。
 - semantic/raw selector 已支持该路径，保留其独立实现和原有约束结构。
 
 验收：两阶段和 oracle focused 命令通过；保留独立 RED/GREEN 记录，错误模式、partial、no-match、原始空输入、顶层 system 与 effort-only 不误判。
@@ -45,7 +45,7 @@
 
 文件：`integration/http_test.go`，复用 `.github/scripts/testdata/abi_benchmark_test.go` 提供的 native host helper，不手改 `.integration` 生成文件。
 
-- 增加当前源码 DLL native 注册与 BeforeAuth/selected-auth AfterAuth 的 ordinary/effort scalar full-strip rejection，partial 和合法 effort-only/top-level 对照。
+- 增加当前源码 DLL native 注册与 BeforeAuth/selected-auth AfterAuth 的无 effort 普通 scalar full-strip rejection，带 effort scalar 完整 strip 到空、partial 和合法 effort-only/top-level 对照。
 - HTTP fixture 使用 `claude-opus-5-5` 和合法 user -> system 位置，effort 请求携带 `mid-conversation-output-config-2026-07-01`。通过既有 provider mapping 把本地别名映射到该模型。
 - 完整 strip HTTP 必须 canonical 400、JSON invalid-text 响应且 upstream arrival/request 均为零。partial/effort-only/top-level 等合法对照检查实际转发内容和机器字段；考虑 CPA `ensureCacheControl` 正规化，不错误要求 wire body 与入站逐字节相同。
 - runner 自行获取/构建固定 CPA 和固定 model mapper，从当前 worktree 源码构建 DLL、复制源 integration fixtures、运行全部 HTTP/SSE/WS/native。
@@ -57,7 +57,7 @@
 文件：`README.md`、`RELEASE_NOTES.md`。
 
 - 当前兼容版本及当前命令示例使用 v0.3.11，固定 CPA、schema 5、ABI v1 不变。
-- 说明消息内 system scalar 的 Changed-final empty 约束及 effort-only `[]`、顶层 system 边界。
+- 说明无 per-message effort 的消息内 system scalar 的 Changed-final empty 约束及带 effort scalar、effort-only `[]`、顶层 system 边界。
 - RELEASE_NOTES prepend 2026-10-23 的最小 fix section，保留旧历史和无关 pending 原文。
 - bare `pluginVersion` 保持 `0.0.0-dev`。仅在真实命令通过后描述本机已验证范围；不宣称商业 API、CI、其他平台已验收。
 
@@ -70,7 +70,7 @@
 - 对现有六个 fuzz 目标分别运行有界样本：`FuzzRuleEngineAgainstOracle`、`FuzzFoldKMPAgainstOracle`、`FuzzDuplicateWalkerAgainstOracle`、`FuzzProtocolTransform`、`FuzzRebuildBodyAgainstMarshalOracle`、`FuzzByteMatcherAgainstOrderedContains`。仅功能回归，不做安全或 DoS 测试。
 - 运行 `make integration` 完整流程，再运行 `make build VERSION=v0.3.11`。
 - 运行 selected-platform `make package GOOS=windows GOARCH=amd64 VERSION=v0.3.11` 和 aggregate `make package VERSION=v0.3.11`；检查 ZIP CRC、精确成员（DLL、LICENSE）、LICENSE 字节、注入版本、lowercase SHA-256 sidecar、aggregate 内容和 DLL 一致性。
-- 用正式 `dist/windows_amd64/censorship.dll` 运行 runner `-abi-smoke`，验证 active-after 与注册版本。记录源文件 SHA-256、Go build info 和 worktree，按[provenance 说明](../../solutions/workflow-issues/go-worktree-build-provenance.md)区分源码来源和 nested worktree VCS metadata。
+- 从 ZIP 提取同一正式 DLL，以 byte/hash equality 核对 `dist/windows_amd64/censorship.dll`，运行 runner `-abi-smoke` 验证 active-after；另用 native 注册真实断言 `Metadata.Version == "0.3.11"`、Object words、七个字段、schema 5 和 ABI v1。记录源文件 SHA-256、Go build info 和 worktree，按[provenance 说明](../../solutions/workflow-issues/go-worktree-build-provenance.md)区分源码来源和 nested worktree VCS metadata。
 - Bash make 缺 Go cache 环境时，用 Make 参数传入现有 Windows `GOPATH/GOMODCACHE/GOCACHE/USERPROFILE/LOCALAPPDATA/APPDATA/TEMP/TMP`；不调查或修复本机系统问题。长命令同步等待或后台等待通知，不轮询后台输出。
 
 验收：所有命令真实退出 0，未验证项明确列出；本次本机正式包仅 Windows amd64，不用其代替七平台发布验收。
