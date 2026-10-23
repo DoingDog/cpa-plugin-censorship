@@ -1,4 +1,5 @@
 dist/
 .integration/
 .local-verification/claude-system-scalar/
+.local-verification/functional-audit-20261023/
 *.h
