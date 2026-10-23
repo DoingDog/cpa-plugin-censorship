@@ -89,12 +89,15 @@ func handlePluginReconfigure(raw []byte) ([]byte, error) {
 	candidate, err := parseLifecycleSnapshot(raw)
 	if err != nil {
 		logReconfigureRejected(err.Error())
+		if loadedSnapshot() == nil {
+			return errorEnvelope("plugin_error", err.Error()), nil
+		}
 		return okEnvelope(pluginRegistration())
 	}
 	current := loadedSnapshot()
 	oldHasModels := current != nil && len(current.Filter.Models) != 0
 	newHasModels := len(candidate.Filter.Models) != 0
-	if oldHasModels != newHasModels {
+	if current != nil && oldHasModels != newHasModels {
 		logReconfigureRejected("filter.models phase change requires restart")
 		return okEnvelope(pluginRegistration())
 	}

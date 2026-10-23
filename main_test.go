@@ -653,6 +653,194 @@ func TestBeforeAuthBlockIgnoreCaseReturnsYAMLTerm(t *testing.T) {
 	}
 }
 
+func TestInitialRegisterFailureRecoversOnReconfigure(t *testing.T) {
+	for _, models := range []bool{false, true} {
+		t.Run(fmt.Sprintf("models=%t", models), func(t *testing.T) {
+			captureLifecycleLogs(t)
+			installSnapshot(nil)
+			var env pluginabi.Envelope
+			decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, "words: {block: ['']}\n")), &env)
+			if env.OK || env.Error == nil || env.Error.Code != "plugin_error" || loadedSnapshot() != nil {
+				t.Fatalf("invalid register envelope = %#v, snapshot = %#v", env, loadedSnapshot())
+			}
+			config := "words: {block: [BLOCKME]}\n"
+			if models {
+				config += "filter_mode: include\nfilter: {models: [target-model]}\n"
+			}
+			for range 2 {
+				reconfigureConfig(t, config)
+				requireLifecycleBlockPhase(t, models, "BLOCKME")
+			}
+		})
+	}
+}
+
+func requireLifecycleBlockPhase(t *testing.T, models bool, term string) {
+	t.Helper()
+	request := pluginapi.RequestInterceptRequest{
+		RequestID: "lifecycle-test", SourceFormat: "openai", Model: "target-model", RequestedModel: "requested-decoy",
+		Metadata: selectedAuthMetadata(), Headers: http.Header{"X-Preserved": {"BLOCKME header"}},
+		Body: []byte(`{"model":"body-decoy","messages":[{"role":"user","content":"` + term + `"}],"metadata":{"sentinel":"BLOCKME"},"temperature":1.2300e+00}`),
+	}
+	original, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter} {
+		response, err := callInterceptRequestAt(method, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (method == pluginabi.MethodRequestInterceptAfter) == models {
+			if !response.Terminate || response.StatusCode != 400 || response.ResponseHeaders.Get("Content-Type") != "application/json" || gjson.GetBytes(response.ResponseBody, "error.code").String() != "censorship_blocked" || gjson.GetBytes(response.ResponseBody, "error.term").String() != term || gjson.GetBytes(response.ResponseBody, "error.role").String() != "user" || len(response.Body) != 0 || len(response.ClearHeaders) != 0 {
+				t.Fatalf("%s response = %#v, want censorship_blocked %q", method, response, term)
+			}
+		} else {
+			requireNoOpResponse(t, response)
+		}
+	}
+	final, err := json.Marshal(request)
+	if err != nil || !bytes.Equal(original, final) {
+		t.Fatalf("request body/metadata/headers changed: %s -> %s, error=%v", original, final, err)
+	}
+	if models {
+		for _, missingMarker := range []bool{false, true} {
+			bypass := request
+			if missingMarker {
+				bypass.Metadata = nil
+			} else {
+				bypass.Model = "attempt-decoy"
+				bypass.RequestedModel = "target-model"
+				bypass.Body = bytes.Replace(request.Body, []byte(`"body-decoy"`), []byte(`"target-model"`), 1)
+			}
+			before, err := json.Marshal(bypass)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, bypass)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNoOpResponse(t, response)
+			after, err := json.Marshal(bypass)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("after gate mutated input, error=%v", err)
+			}
+		}
+	}
+	request.Body = []byte(`{"model":"BLOCKME","messages":[{"role":"user","content":"clean canary"}],"metadata":{"sentinel":"BLOCKME"}}`)
+	original, err = json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter} {
+		response, err := callInterceptRequestAt(method, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireNoOpResponse(t, response)
+	}
+	final, err = json.Marshal(request)
+	if err != nil || !bytes.Equal(original, final) {
+		t.Fatalf("machine-only request mutated, error=%v", err)
+	}
+}
+
+func lifecycleInvalidRequests(t *testing.T) []struct {
+	name string
+	raw  []byte
+} {
+	t.Helper()
+	return []struct {
+		name string
+		raw  []byte
+	}{
+		{"empty word", lifecycleJSON(t, "words: {block: ['']}\n")},
+		{"missing config_yaml", []byte(`{}`)},
+		{"null config_yaml", []byte(`{"config_yaml":null}`)},
+		{"malformed JSON", []byte(`{"config_yaml":`)},
+		{"invalid YAML", lifecycleJSON(t, "words: [\n")},
+	}
+}
+
+func captureLifecycleLogs(t *testing.T) *[]hostLogRequest {
+	t.Helper()
+	previous := loadedSnapshot()
+	hostAPIMu.RLock()
+	callback := hostCallbackFn
+	hostAPIMu.RUnlock()
+	t.Cleanup(func() {
+		installSnapshot(previous)
+		setHostCallbackForTest(callback)
+	})
+	var logs []hostLogRequest
+	setHostCallbackForTest(func(method string, raw []byte) ([]byte, error) {
+		if method != pluginabi.MethodHostLog {
+			return nil, fmt.Errorf("unexpected host callback %s", method)
+		}
+		var entry hostLogRequest
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return nil, err
+		}
+		logs = append(logs, entry)
+		return okEnvelope(struct{}{})
+	})
+	return &logs
+}
+
+func TestReconfigureRejectsInvalidWithoutLastKnownGood(t *testing.T) {
+	for _, failedRegister := range []bool{false, true} {
+		for _, models := range []bool{false, true} {
+			for _, invalid := range lifecycleInvalidRequests(t) {
+				t.Run(fmt.Sprintf("failed-register=%t/models=%t/%s", failedRegister, models, invalid.name), func(t *testing.T) {
+					logs := captureLifecycleLogs(t)
+					installSnapshot(nil)
+					if failedRegister {
+						var env pluginabi.Envelope
+						decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginRegister, lifecycleJSON(t, "words: {block: ['']}\n")), &env)
+						if env.OK || env.Error == nil || env.Error.Code != "plugin_error" {
+							t.Fatalf("register = %#v", env)
+						}
+					}
+					original := bytes.Clone(invalid.raw)
+					var env pluginabi.Envelope
+					decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginReconfigure, invalid.raw), &env)
+					if env.OK || env.Error == nil || env.Error.Code != "plugin_error" || loadedSnapshot() != nil {
+						t.Fatalf("invalid initial reconfigure = %#v, snapshot=%#v", env, loadedSnapshot())
+					}
+					if len(*logs) != 1 || (*logs)[0].Level != "error" || (*logs)[0].Message != "censorship plugin reconfigure rejected" || (*logs)[0].Fields["error"] == "" {
+						t.Fatalf("rejection logs=%#v", *logs)
+					}
+					if !bytes.Equal(original, invalid.raw) {
+						t.Fatal("lifecycle input mutated")
+					}
+					requireUninitializedInterceptorsNoOp(t)
+					config := "words: {block: [BLOCKME]}\n"
+					if models {
+						config += "filter_mode: include\nfilter: {models: [target-model]}\n"
+					}
+					reconfigureConfig(t, config)
+					requireLifecycleBlockPhase(t, models, "BLOCKME")
+				})
+			}
+		}
+	}
+}
+
+func requireUninitializedInterceptorsNoOp(t *testing.T) {
+	t.Helper()
+	for _, method := range []string{pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter} {
+		raw := []byte(`{"Body":`)
+		original := bytes.Clone(raw)
+		var env pluginabi.Envelope
+		decodeEnvelope(t, mustHandle(t, method, raw), &env)
+		requireNoOpResponse(t, decodeResult[pluginapi.RequestInterceptResponse](t, env))
+		if !bytes.Equal(original, raw) {
+			t.Fatalf("%s mutated input", method)
+		}
+	}
+}
+
 func TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError(t *testing.T) {
 	const rawCredential = "secret-sentinel"
 	intercept := func(model, content string) pluginapi.RequestInterceptResponse {
@@ -779,22 +967,14 @@ func TestReconfigureRejectsModelFilterPhaseClassChanges(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLifecycleLogs(t)
 			registerConfig(t, tc.initialConfigYAML)
-			var logs []hostLogRequest
-			setHostCallbackForTest(func(method string, request []byte) ([]byte, error) {
-				if method == pluginabi.MethodHostLog {
-					var req hostLogRequest
-					if err := json.Unmarshal(request, &req); err != nil {
-						return nil, err
-					}
-					logs = append(logs, req)
-				}
-				return okEnvelope(struct{}{})
-			})
-			t.Cleanup(func() { setHostCallbackForTest(nil) })
-
+			previous := loadedSnapshot()
 			reconfigureConfig(t, tc.reconfigureYAML)
-			requirePhaseClassReconfigureLog(t, logs, "target-model", "old-block", "new-block")
+			requirePhaseClassReconfigureLog(t, *logs, "target-model", "old-block", "new-block")
+			if loadedSnapshot() != previous {
+				t.Fatal("phase change replaced snapshot")
+			}
 
 			response, err := callInterceptRequestAt(tc.method, tc.request)
 			if err != nil {
@@ -809,6 +989,7 @@ func TestReconfigureRejectsModelFilterPhaseClassChanges(t *testing.T) {
 
 func TestReconfigureAllowsSameModelFilterPhaseClass(t *testing.T) {
 	t.Run("empty to empty", func(t *testing.T) {
+		captureLifecycleLogs(t)
 		registerConfig(t, "words:\n  block: [old-block]\n")
 		reconfigureConfig(t, "words:\n  strip: [new-strip]\n")
 		response, err := callInterceptRequest(pluginapi.RequestInterceptRequest{
@@ -825,6 +1006,7 @@ func TestReconfigureAllowsSameModelFilterPhaseClass(t *testing.T) {
 	})
 
 	t.Run("non-empty to non-empty", func(t *testing.T) {
+		captureLifecycleLogs(t)
 		registerConfig(t, "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  block: [old-block]\n")
 		reconfigureConfig(t, "filter_mode: include\nfilter:\n  models: [target-model]\nwords:\n  strip: [new-strip]\n")
 		response, err := callInterceptRequestAt(pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
@@ -910,41 +1092,108 @@ func TestFilterMappingErrorsDoNotDiscloseSourceToken(t *testing.T) {
 }
 
 func TestReconfigureRejectsMissingConfigYAMLAndKeepsLastKnownGood(t *testing.T) {
-	cases := []struct {
+	cases := append(lifecycleInvalidRequests(t), struct {
 		name string
-		raw  string
-	}{
-		{name: "null request", raw: `null`},
-		{name: "empty object", raw: `{}`},
-		{name: "missing config_yaml", raw: `{"schema_version":4}`},
-		{name: "null config_yaml", raw: `{"config_yaml":null,"schema_version":4}`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			registerConfig(t, "mode: block\nwords: [alpha-only]\n")
-			var logs []hostLogRequest
-			setHostCallbackForTest(func(method string, request []byte) ([]byte, error) {
-				if method == pluginabi.MethodHostLog {
-					var req hostLogRequest
-					if err := json.Unmarshal(request, &req); err != nil {
-						return nil, err
-					}
-					logs = append(logs, req)
+		raw  []byte
+	}{"null request", []byte(`null`)})
+	for _, models := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("models=%t/%s", models, tc.name), func(t *testing.T) {
+				logs := captureLifecycleLogs(t)
+				config := "words: {block: [BLOCKME]}\n"
+				if models {
+					config += "filter_mode: include\nfilter: {models: [target-model]}\n"
 				}
-				return okEnvelope(struct{}{})
+				registerConfig(t, config)
+				previous := loadedSnapshot()
+				original := bytes.Clone(tc.raw)
+				var env pluginabi.Envelope
+				decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginReconfigure, tc.raw), &env)
+				_ = decodeResult[registration](t, env)
+				if len(*logs) != 1 || (*logs)[0].Level != "error" || (*logs)[0].Message != "censorship plugin reconfigure rejected" || (*logs)[0].Fields["error"] == "" {
+					t.Fatalf("host logs = %#v", *logs)
+				}
+				if previous == nil || loadedSnapshot() != previous || !bytes.Equal(original, tc.raw) {
+					t.Fatal("invalid reconfigure replaced snapshot or mutated input")
+				}
+				requireLifecycleBlockPhase(t, models, "BLOCKME")
 			})
-			t.Cleanup(func() { setHostCallbackForTest(nil) })
+		}
+	}
+}
 
-			var env pluginabi.Envelope
-			decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginReconfigure, []byte(tc.raw)), &env)
-			_ = decodeResult[registration](t, env)
-			if len(logs) != 1 || logs[0].Level != "error" || logs[0].Message != "censorship plugin reconfigure rejected" || logs[0].Fields["error"] == "" {
-				t.Fatalf("host logs = %#v", logs)
+func TestUninitializedInterceptorsNoOp(t *testing.T) {
+	captureLifecycleLogs(t)
+	installSnapshot(nil)
+	requireUninitializedInterceptorsNoOp(t)
+	body := []byte(`not-json`)
+	original := bytes.Clone(body)
+	result, err := transformRequest(body, "openai", nil)
+	if err != nil || !reflect.DeepEqual(result, transformResult{}) || !bytes.Equal(body, original) {
+		t.Fatalf("nil transform=%#v, error=%v, body=%s", result, err, body)
+	}
+}
+
+func TestInitialSuccessfulRegistrationPhase(t *testing.T) {
+	for _, models := range []bool{false, true} {
+		t.Run(fmt.Sprintf("models=%t", models), func(t *testing.T) {
+			captureLifecycleLogs(t)
+			installSnapshot(nil)
+			config := "words: {block: [BLOCKME]}\n"
+			if models {
+				config += "filter_mode: include\nfilter: {models: [target-model]}\n"
 			}
-			got := interceptRPC(t, "openai", []byte(`{"messages":[{"role":"user","content":"alpha-only"}]}`))
-			if !got.Terminate || !bytes.Contains(got.ResponseBody, []byte(`"term":"alpha-only"`)) {
-				t.Fatalf("malformed reconfigure replaced last-known-good: %#v", got)
+			registerConfig(t, config)
+			requireLifecycleBlockPhase(t, models, "BLOCKME")
+		})
+	}
+}
+
+func TestReconfigureKeepsPhaseForEmptyRules(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		yaml   string
+		models bool
+	}{
+		{"empty YAML", "", false},
+		{"empty words Object", "words: {}\n", false},
+		{"models with empty words", "filter_mode: include\nfilter: {models: [target-model]}\nwords: {}\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureLifecycleLogs(t)
+			installSnapshot(nil)
+			registerConfig(t, tc.yaml)
+			previous := loadedSnapshot()
+			if previous == nil || len(previous.Rules) != 0 {
+				t.Fatalf("valid zero-rule snapshot=%#v", previous)
 			}
+			for _, invalid := range lifecycleInvalidRequests(t) {
+				*logs = nil
+				var env pluginabi.Envelope
+				decodeEnvelope(t, mustHandle(t, pluginabi.MethodPluginReconfigure, invalid.raw), &env)
+				_ = decodeResult[registration](t, env)
+				if loadedSnapshot() != previous || len(*logs) != 1 || (*logs)[0].Message != "censorship plugin reconfigure rejected" || (*logs)[0].Level != "error" || (*logs)[0].Fields["error"] == "" {
+					t.Fatalf("zero-rule last-good changed or rejection missing: %#v", *logs)
+				}
+				requireUninitializedInterceptorsNoOp(t)
+			}
+			*logs = nil
+			opposite := "words: {block: [new-block]}\n"
+			if !tc.models {
+				opposite += "filter_mode: include\nfilter: {models: [target-model]}\n"
+			}
+			reconfigureConfig(t, opposite)
+			requirePhaseClassReconfigureLog(t, *logs, "target-model", "new-block")
+			if loadedSnapshot() != previous {
+				t.Fatal("zero-rule snapshot lost phase protection")
+			}
+			requireUninitializedInterceptorsNoOp(t)
+			same := "words: {block: [BLOCKME]}\n"
+			if tc.models {
+				same += "filter_mode: include\nfilter: {models: [target-model]}\n"
+			}
+			reconfigureConfig(t, same)
+			requireLifecycleBlockPhase(t, tc.models, "BLOCKME")
 		})
 	}
 }

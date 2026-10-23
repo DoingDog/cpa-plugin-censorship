@@ -55,10 +55,6 @@ type parsedWords struct {
 
 var activeConfig atomic.Pointer[configSnapshot]
 
-func init() {
-	activeConfig.Store(defaultSnapshot())
-}
-
 func defaultSnapshot() *configSnapshot {
 	return &configSnapshot{
 		Mode: modeBlock,
