@@ -4,7 +4,7 @@
 
 ## 范围与依据
 
-本规格定义两组已独立复现、可在插件内完成的修复：A，首次注册失败后的合法配置恢复及尚无有效 snapshot 时的错误响应；B，Gemini `generation_config` 下既有 schema description 路径的漏选。另记录跨格式 full-strip 产生 Claude 空 typed text 的已确认兼容限制，不将其列为开发任务。对应责任与执行步骤见[实施计划](../plans/2026-10-23-functional-audit-v0.3.12.md)。
+本规格包含两组已独立复现、可在插件内完成的修复：A，首次注册失败后的合法配置恢复及尚无有效 snapshot 时的错误响应；B，Gemini `generation_config` 下既有 schema description 路径的漏选。C 为独立构建测试修正，处理 Make dry-run 对合法 Go 命令路径和选项的误判，依据其[专属设计](2026-10-23-v0312-go-command-check-design.md)与[专属计划](../plans/2026-10-23-v0312-go-command-check.md)。另记录跨格式 full-strip 产生 Claude 空 typed text 的已确认兼容限制，不将其列为开发任务。总体责任与执行依赖见[实施计划](../plans/2026-10-23-functional-audit-v0.3.12.md)。
 
 首轮九范围扫描已全部回报，`whnjtk2x2.output` 的 `missing` 为空。定向独立核验见 `wrd6p10rx.output`（A 的 native/watcher）、`wedd9lt46.output`（A 的相邻错误响应与跨格式限制）、`w3vu1uq8r.output` 前两份报告（B 的官方 schema 与 native/HTTP）。完整性复核已完成，`wzqrgzwnz.output` 确认 `coverage_complete=true`、`additional_confirmed_fixable_issues=[]`；全部受控实现、测试、构建、依赖及配置均有全文覆盖依据，补读 `go.sum` 后 `go mod verify` 通过，未发现第三组已确认可安全执行的插件修复。文档阶段不重复全文代码审计或已完成的大基线。
 
@@ -144,6 +144,10 @@ watcher 等待必须有截止时间，并确认修正配置已经被观察；同
 
 native no-op 比较 host 聚合后的原 body/headers；公开 RPC 精确比较空 `RequestInterceptResponse`。HTTP oracle 必须考虑固定 converter 仅将 camel `generationConfig.responseSchema` 改名为 `generationConfig.responseJsonSchema`，snake root 保留原路径；不能把整个 upstream body 等同客户端原文，也不能只比较 decode 后的机器值掩盖字节改写。真实本地 upstream 只验证发送内容，不模拟 Google 的商业 schema 校验。
 
+## C. Go 命令覆盖的构建测试修正
+
+C 仅修改 [packager 测试](../../../.github/scripts/package-release_test.go) 的 `TestMakeBuildIgnoresTargetOverrides`：串行 `inherited`、`absolute`、`with-directory` 子测试使默认 CI 覆盖真实 Go 绝对路径和 `go -C .`，两处断言使用原始 `GO` 命令文本，并保留实际库构建行的目标 tuple、`c-shared` 检查及 packager 的平台 helper 检查。Makefile、插件构建目标、产品行为和依赖保持不变。完整验收条件由[专属设计](2026-10-23-v0312-go-command-check-design.md)与[专属计划](../plans/2026-10-23-v0312-go-command-check.md)规定，双平台 TDD、回归及故障注入的完成证据见[主计划最终记录](../plans/2026-10-23-functional-audit-v0.3.12.md#最终执行记录)。
+
 ## 已确认兼容限制：跨格式 full-strip -> Claude 空 typed text
 
 独立诊断已从非空 Gemini/Interactions 文本经插件 full-strip、固定 translator 和真实 `ClaudeExecutor.Execute` 向本地 upstream 复现 `{"type":"text","text":""}`。原文直接转换保留非空文本；改写结果违反 [Messages API 的 `TextBlockParam.text` 最小长度 1](https://platform.claude.com/docs/en/api/http/messages/create)。本地接收器返回 200 只证明请求实际发出；未调用 Anthropic/Google 商用 API，不声称实测提供方拒绝。
@@ -160,6 +164,6 @@ native no-op 比较 host 聚合后的原 body/headers；公开 RPC 精确比较�
 
 A 必须先完成一条初始恢复 RPC 的 RED -> 最小 GREEN，再完成尚无 snapshot 时相邻错误响应的 RED -> GREEN；native/watcher 恢复也保留真实 RED/GREEN。B 在修订目标行为测试、两个 oracle 与真实 native/HTTP fixture 后取得 RED，再作最小 collector 修改并取得 GREEN。各 owner 连续完成相关完整回归、规格自审、修正、复审及英语提交，记录实际命令、退出状态和日志，不把未完成步骤留给主会话。不手改 `.integration/` 或 `dist/`。
 
-A、B 从包含最终 spec/plan 的同一 main 基线开独立 worktree 并行执行，文件责任互不重叠。两者完成并经主会话合并后，独立集成发布 worktree 才顺序更新英语 `README.md`、`RELEASE_NOTES.md`、`main_test.go` 的发行版本断言及 plan 最终记录，目标 v0.3.12。
+A、B 从包含最终 spec/plan 的同一 main 基线开独立 worktree 并行执行，文件责任互不重叠。两者完成并经主会话合并后，独立集成发布 worktree 顺序完成 U2 的英语 `README.md`、`RELEASE_NOTES.md`、`main_test.go` 发行版本断言及 plan 最终记录，目标 v0.3.12。C 在独立 worktree 完成专属文档、测试修正、Windows/WSL 验证及独立审查；U2 与 C 已合并至 `992fd02d6bce2c4db2ffa4756313bc586bf93967`，主记录接续仅更新本规格、主计划及当前发行说明。U3 继续负责最终 main/tag CI 和发行资产验收。
 
 保留完整发布门槛：最终 `make test`、`make race`、`make vet`、`make integration`、`make build`、两种 `make package VERSION=v0.3.12`、独立 packager test/race/vet、六个有界 fuzz；正式 ZIP 的同 DLL 实际注册 version 0.3.12 / schema 5 / ABI 1 / Object words / 七字段及 active-after；最终 main CI 全成功后才 tag，随后 tag CI、七平台 15 assets/checksums/buildinfo/revision 分别验收。v0.3.11 的 main/tag CI 与七平台 15 assets 已核验成功，当前 README 的 pending 历史记录不构成本次新 bug。具体命令、工作区责任、来源核对与发布依赖由[实施计划](../plans/2026-10-23-functional-audit-v0.3.12.md)规定。

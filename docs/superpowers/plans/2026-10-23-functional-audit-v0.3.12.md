@@ -1,14 +1,14 @@
 # v0.3.12 功能修复实施计划
 
-日期：2026-10-23。依据：[设计规格](../specs/2026-10-23-functional-audit-v0.3.12-design.md)。基线 `23fe07f1c4ba2ec23879ec2addc8015b4d7acc6d`，当前 v0.3.11，目标 v0.3.12。固定 CPA v7.2.152 / `c76dfd4e0edabab9000628b1560ab8ab379eadb8`、schema 5、ABI v1。
+日期：2026-10-23。依据：[设计规格](../specs/2026-10-23-functional-audit-v0.3.12-design.md)。基线 `23fe07f1c4ba2ec23879ec2addc8015b4d7acc6d`（v0.3.11），目标 v0.3.12。固定 CPA v7.2.152 / `c76dfd4e0edabab9000628b1560ab8ab379eadb8`、schema 5、ABI v1。
 
 ## 目标与执行依赖
 
-A 修复首次无效注册后的合法空/非空 models 恢复，以及尚无有效 snapshot 时无效 reconfigure 错误返回 OK，行为以规格 L1 至 L9 为准。B 修复 Gemini `generation_config` 下七条既有 schema description 路径的漏选，行为以 G1 至 G7 为准。生产修改限于 `config.go`、`main.go` 与 `selectors_gemini.go` 的已确定位置。
+A 修复首次无效注册后的合法空/非空 models 恢复，以及尚无有效 snapshot 时无效 reconfigure 错误返回 OK，行为以规格 L1 至 L9 为准。B 修复 Gemini `generation_config` 下七条既有 schema description 路径的漏选，行为以 G1 至 G7 为准。生产修改限于 `config.go`、`main.go` 与 `selectors_gemini.go` 的已确定位置。C 为独立构建测试修正，仅处理 `TestMakeBuildIgnoresTargetOverrides` 对合法 Go 命令路径和选项的误判，按[专属设计](../specs/2026-10-23-v0312-go-command-check-design.md)与[专属计划](2026-10-23-v0312-go-command-check.md)完成。
 
 跨格式 full-strip -> Claude 空 typed text 已确认存在官方 schema 冲突和真实 executor 向本地 upstream 发送的证据；在固定 host/阶段/源格式行为边界下没有完整安全的纯插件修复，按规格保留为兼容限制，仅由 U2 写入 accepted limits，不分配开发任务。
 
-执行顺序：补全 spec -> 补全本计划 -> 独立文档复审并合并最终 spec/plan -> 从同一 main SHA 开 A、B 独立 worktree 并行完成 -> 主会话逐项审查并合并 -> 独立集成发布 worktree 完成 U2 -> 主会话合并 U2 并执行 U3。文档任务不 push、不 tag、不合并 main。
+执行顺序：补全 spec -> 补全本计划 -> 独立文档复审并合并最终 spec/plan -> 从同一 main SHA 开 A、B 独立 worktree 并行完成 -> 主会话逐项审查并合并 -> 独立集成发布 worktree 完成 U2。C 使用自己的文档、测试与验证 worktree，和 U2 无文件冲突；两者均完成、审查并合并，主记录接入 C 后，主会话执行 U3。文档任务不 push、不 tag、不合并 main。
 
 ### 已完成覆盖与审查依赖
 
@@ -43,6 +43,8 @@ A、B 必须从已合并最终 spec/plan 的同一 main SHA 创建各自独立 w
 | A，生命周期 | `config.go`、`main.go`、`main_test.go` 的 lifecycle 区域、新增 `integration/lifecycle_recovery_test.go` | 最终 spec/plan 已复审合并 |
 | B，Gemini | `selectors_gemini.go`、`selectors_gemini_test.go`、`fuzz_test.go`、`functional_corrections_test.go`、新增 `integration/gemini_generation_config_test.go` | 与 A 相同，无 A 代码依赖 |
 | U2，顺序集成发布 | `README.md`、`RELEASE_NOTES.md`、`main_test.go` 的版本 guard、本计划最终记录、设计规格第 9 行覆盖完成段的精确更新 | A、B 完成、审查并合并 |
+| C，独立构建测试修正（已完成） | `.github/scripts/package-release_test.go` 的 `TestMakeBuildIgnoresTargetOverrides`、C 专属 spec/plan | 从 `013e84afa1e7155567522e689ee1c13812dacd7b` 开独立 worktree，专属文档先提交；与 U2 无文件冲突，完成后独立审查并合并 |
+| C 主记录接续 | `RELEASE_NOTES.md`、本计划、主设计规格 | U2 与 C 已完成、审查并合并至 `992fd02d6bce2c4db2ffa4756313bc586bf93967`；仅补齐文档，不重跑已完成的大套件 |
 
 B 可复用 `integration/http_test.go` 与 `integration/harness_test.go` 的现有 helper，在自己的新 fixture 编排 native/HTTP 测试，不修改共享文件或 A 的文件。U2 不与 A、B 并行修改。主会话只合并已完整完成且确认无文件冲突的任务；新增独立任务在前置依赖满足后立即派发，现有 workflow 无空闲时新增 workflow。
 
@@ -129,7 +131,7 @@ B 可复用 `integration/http_test.go` 与 `integration/harness_test.go` 的现�
 
 ## U3. 主会话 main CI、tag 与七平台发行验收
 
-依赖：整轮审查覆盖已收齐、所有已确认可执行修复及 U2 均完成。此节由主会话在获得发布授权的范围内执行；修复子任务不 push、不 tag、不合并主仓库，不创建 PR 或另发 issue。
+依赖：整轮审查覆盖已收齐、A/B 插件修复、独立构建测试修正 C、U2 及 C 主记录接续均完成并合并。此节由主会话在获得发布授权的范围内执行；修复子任务不 push、不 tag、不合并主仓库，不创建 PR 或另发 issue。
 
 1. 独立复核各 worktree 的规格覆盖、提交、命令证据与路径冲突，全部完成后合并 main。对最终 main SHA 运行并等待 [Build workflow](../../../.github/workflows/build.yml) 全部必需 job 成功，包括 Linux test/race/vet/integration、Windows amd64 DLL smoke 与七平台构建。main 分支包按现有 workflow 使用 `0.0.0-dev`，不把它误报成 v0.3.12 发行包。
 2. 核对 local/remote v0.3.12 tag 尚未占用；最终 main CI 全部成功后才创建并推送 tag。等待相应 tag CI 和 release job 全部成功，不以本地成功代替远端成功。
@@ -167,6 +169,16 @@ U2 工作区为 `C:/Users/user/Downloads/cpa-plugin-censorship/.claude/worktrees
 
 `native-acceptance.py` 直接读取初始化 ABI table 与 register envelope，实际为 ABI 1、schema 5、`Metadata.Version=0.3.12`、Object `words`、七个 `ConfigFields`，仅 `request_interceptor=true`。before、缺 marker 与 model miss 均 no-op，selected-auth after 实际 strip，输入和机器字段保持；固定 host 的 `TestDynamicABIActiveAfter` 也通过。`source-and-artifacts.json` 与编译 trace 证明实际输入属于 U2 工作区，生产与依赖 blob 未变，同 DLL 重建一致。本地 VCS 查询来自父仓库，记录 `vcs.revision=013e84afa1e7155567522e689ee1c13812dacd7b`、`vcs.modified=false`；它不能替代 U3 最终远端 revision 验收。Go 1.26.5 Windows amd64、GCC、CPA v7.2.152/固定 commit、schema 5、ABI 1 与同步 `C.GoBytes` 均保持。
 
-Linux 独立验证也已完成，报告为 `wnx7u3lk5.output`。固定 `013e84afa1e7155567522e689ee1c13812dacd7b` 在 Debian、Go 1.26.0、GCC 14.2.0、glibc 2.41 下的根 test/race/vet、完整 integration、dev build 和真实 `.so` active-after smoke 均退出 0，包含 A/B 的完整 native/HTTP 矩阵。Unix packager 首次在 `GO` 为绝对路径时 test/race 各退出 1、vet 退出 0；报告定位到 `TestMakeBuildIgnoresTargetOverrides` 的命令文本断言，`GO=go` 解析到同一 executable 后 test/race/vet 各退出 0。首轮总脚本退出 1，对照重跑脚本退出 0；原失败保留，未修改产品或测试，该断言的独立核验由主会话另行负责，U2 不修改 packager。Linux 临时 clone 和脚本已清理，本次 dev `.so` 不代替 U3 正式 tag `.so` 验收。
+Linux 独立验证也已完成，报告为 `wnx7u3lk5.output`。固定 `013e84afa1e7155567522e689ee1c13812dacd7b` 在 Debian、Go 1.26.0、GCC 14.2.0、glibc 2.41 下的根 test/race/vet、完整 integration、dev build 和真实 `.so` active-after smoke 均退出 0，包含 A/B 的完整 native/HTTP 矩阵。Unix packager 首次在 `GO` 为绝对路径时 test/race 各退出 1、vet 退出 0；报告定位到 `TestMakeBuildIgnoresTargetOverrides` 的命令文本断言，`GO=go` 解析到同一 executable 后 test/race/vet 各退出 0。首轮总脚本退出 1，对照重跑脚本退出 0；原失败保留，U2 未修改产品或 packager 测试。该断言已由独立任务 C 完成修正及双平台验收，证据见下文。Linux 临时 clone 和脚本已清理，本次 dev `.so` 不代替 U3 正式 tag `.so` 验收。
 
-U2 仅提交本节分配的五个文档/guard 文件，提交由本文件 Git 历史标识；复用脚本与证据留在上述忽略目录。U3 仍负责最终 main 合并及 CI、随后 tag/CI、七平台 main/tag buildinfo/revision、15 assets/checksums、正式 Linux `.so` 注册和 active-after，以及合并后 worktree 清理。本地 upstream 200 不代表商用 API 接收；跨格式空 Claude typed text、末尾 assistant scalar 与 prefill 接受性边界均未改变。
+U2 提交为 `a9dc53b`，仅包含分配的五个文档/guard 文件；复用脚本与证据留在上述忽略目录。
+
+C 已完成，owner 工作区为 `C:/Users/user/Downloads/cpa-plugin-censorship/.claude/worktrees/wf_e244a29b-c6a-1`。专属 spec/plan 前置提交为 `445c83157230f3e119d3bf3a2a030b4734094e60`，测试提交为 `04421180bedeeb4a18834e6f7f2b5063f9f3a8c4`；独立审查 `findings=[]`、`ready=true`，与 U2 一并包含于 `992fd02d6bce2c4db2ffa4756313bc586bf93967`。完整报告为 `wtogjdfpp.output` 的 `result.owner` 与 `result.review`。
+
+`TestMakeBuildIgnoresTargetOverrides` 新增串行 `inherited`、`absolute`、`with-directory` 子测试，默认 CI 自动覆盖真实 Go 绝对路径和 `go -C .`；仅未定义 `GO` 时采用默认值。Windows 在正式修正前观察到原 helper 断言的 RED 1，再用仅修 helper 的 overlay 观察原 build 断言的 RED 1，正式修正后 focused GREEN 0。Debian WSL 使用保存的 RED 源码 overlay 重放这两个阶段，再验证正式 GREEN；Linux 重放不作为正式修改前的 RED。两平台完整 packager test/race/vet 均退出 0，六种合法外部 `GO` 正例全部退出 0，显式空 `GO` 仍退出 1。四种 stdout 故障注入分别改变实际库构建行的 OS、ARCH、buildmode 或移除 helper，两平台均触发真实断言失败，退出 1。
+
+C 证据保存在该工作区 `.local-verification/functional-audit-20261023/C/`：`windows-red-commands.json`、`linux-red-commands.json` 对应两阶段 RED；`windows-commands.json`、`linux-commands.json` 对应完整回归、正负例和逐命令退出码；`self-review.json` 对应自审。正式测试源码 SHA-256 为 `069ac5f9e9f96b4f91049991b5794e788ba09a4696df2368107d5a86f13e956b`，Windows/WSL 字节一致，目标函数之外字节未变，无新增 import、helper 或依赖，Makefile 和产品未改。
+
+格式检查保留原有 CRLF，对规范化换行后的源码运行 gofmt，输出一致。首次 WSL 验收的测试通过，但末尾默认 `git diff --check` 将 CRLF 识别为尾随空白，驱动退出 2；保留源码字节，单次命令采用 `cr-at-eol` 后重新完整执行，最终退出 0，Git 配置文件未改。Windows 和提交差异的 `git diff --check` 通过。C 的临时 clone、overlay、数据和 bundle 已清理，必要脚本与日志保留在其忽略目录。
+
+U3 尚未执行，仍负责最终 main 合并及 CI、随后 tag/CI、七平台 main/tag buildinfo/revision 与实际版本注入、15 assets/checksums、正式 tag 的 Linux `.so` 与 Windows amd64 DLL 真实注册及 active-after，以及合并后 worktree 清理。本地 upstream 200 不代表商用 API 接收；跨格式空 Claude typed text、末尾 assistant scalar 与 prefill 接受性边界均未改变。
