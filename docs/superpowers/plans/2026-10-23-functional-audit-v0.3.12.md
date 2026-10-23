@@ -4,59 +4,109 @@
 
 ## 目标与执行依赖
 
-首次无效注册后，operator 修正为合法空或非空 models 配置即可恢复实际拦截。已有有效配置继续遵守原 phase 保护。行为以规格 L1 至 L8 为准，生产修改限于初始化状态与 phase guard。
+A 修复首次无效注册后的合法空/非空 models 恢复，以及尚无有效 snapshot 时无效 reconfigure 错误返回 OK，行为以规格 L1 至 L9 为准。B 修复 Gemini `generation_config` 下七条既有 schema description 路径的漏选，行为以 G1 至 G7 为准。生产修改限于 `config.go`、`main.go` 与 `selectors_gemini.go` 的已确定位置。
 
-已完成的两次独立验证包含真实 DLL、固定 `Host.ApplyConfig`、watcher HTTP 复现。本稿未把其余全面扫描记为完成，也未把未证实候选列为修复。已报告通过的基线 test/race/vet/integration/build/package 与正式 DLL 注册不必在文档阶段重跑；实施和最终合并后仍须执行下列回归。
+跨格式 full-strip -> Claude 空 typed text 已确认存在官方 schema 冲突和真实 executor 向本地 upstream 发送的证据；在固定 host/阶段/源格式行为边界下没有完整安全的纯插件修复，按规格保留为兼容限制，仅由 U2 写入 accepted limits，不分配开发任务。
 
-执行顺序：完成规格与本计划 -> 收齐相关完整性核验并补充同一文档 -> 独立 worktree 完成 U1 及其他最终确认的互不冲突修复 -> 主会话逐项审查并合并 -> 独立集成发布 worktree 完成 U2 -> 主会话合并 U2 并执行 U3。
+执行顺序：补全 spec -> 补全本计划 -> 独立文档复审并合并最终 spec/plan -> 从同一 main SHA 开 A、B 独立 worktree 并行完成 -> 主会话逐项审查并合并 -> 独立集成发布 worktree 完成 U2 -> 主会话合并 U2 并执行 U3。文档任务不 push、不 tag、不合并 main。
 
-### 完整性核对清单
+### 已完成覆盖与审查依赖
 
-- 收齐初始全面审查的全部分工与报告，逐项核对配置/lifecycle、RPC/ABI、规则引擎、五种 provider selectors/transform、filter/phase、integration、packager/CI/发行说明的覆盖；缺项继续交由对应审查者补查。不以本 lifecycle 规格代替整轮扫描结论。
-- 收回尚无成功 snapshot 时再次收到无效 reconfigure 的独立核验，核对实际 envelope、host active 状态与后续合法恢复。该结论可能影响同一 lifecycle 函数，正式编码派发前统一其规格与文件责任；本稿不预设 error/OK 响应或新增修复。
-- 其他报告仅在独立复现、反证与插件侧可执行修复均成立后，增补本规格和本计划；新增项写明 caller、测试归属、最小差异与验收，不另建重复规格，不加入网络安全扫描、CPA core 修改或无关重构。
+首轮 `whnjtk2x2.output` 的九份报告均已返回，`missing=[]`。覆盖逐项如下，文档阶段不重做扫描。
+
+| 报告分工 | 已检查范围 |
+|---|---|
+| `config-filter-lifecycle` | 严格配置、snapshot、请求 filter、phase、caller/model 语义 |
+| `matcher-transform-json` | matcher、规则顺序、JSON 验证/重建、carrier 与独立 oracle |
+| `openai-selectors` | Chat/Responses selectors、相关固定 consumer 与协议依据 |
+| `claude-selectors` | Claude selectors、非空/长度/保护文本边界及相关 executor |
+| `gemini-interactions-selectors` | Gemini/Interactions selectors、转换与 full-strip wire |
+| `native-abi-host-boundary` | RPC、ABI、ownership、固定 host lifecycle 与 native 调用 |
+| `build-package-release` | Make/packager/CI、发行说明、v0.3.11 七平台资产 |
+| `integration-baseline` | runner、HTTP/SSE/WS/native harness、构建及正式 DLL smoke |
+| `external-protocol-crosscheck` | 五种 provider 的明确路径、官方 schema、相关 host hook |
+
+定向核验也已返回：`wrd6p10rx.output` 两份独立报告确认 A 的真实 DLL 与 watcher HTTP；`wedd9lt46.output` 的第一份报告确认 A 的初始无效 reconfigure，第二份给出跨格式限制的 `diagnosed-no-fix`；`w3vu1uq8r.output` 前两份确认 B 的官方既有 root 与 native/HTTP，第三份补齐 matcher 定向诊断且未发现新修复项。
+
+完整性 critic 仍在核对覆盖，当前未发现第三组可安全修复问题；其结论须在发布前收齐并记录。A、B 的相关事实与文件责任已经确定，可在文档复审完成后并行执行，不把 critic 的覆盖复核写成已经完成。已通过的基线 test/race/vet/integration/build/package 与正式 DLL 注册不在文档阶段重跑；v0.3.11 main/tag CI 与七平台 15 assets 已核验成功，不把 README 的 pending 历史记录误当新 bug。实施与最终合并仍执行下列完整回归。
+
+仅在新的独立复现与完整安全插件修复均成立时，才精确修订同一 spec/plan 和任务责任；不加入猜测、撤销方案、网络安全扫描、CPA core 修改或无测量性能优化。
 
 ### 工作区责任
 
 每项编码任务由一个独立 worktree 的执行者连续完成 TDD、实现、测试、规格自审、修正、复审及英语提交，达到完成条件后主动回报。主会话仅在任务完成且确认修改位置无冲突后合并；不能接收未完成的实现或测试步骤。
 
-U1 负责 `config.go`、`main.go`、`main_test.go` 的 lifecycle 区域及新增 `integration/lifecycle_test.go`。后续 provider 任务使用各自已有行为测试位置，避免同时修改这些文件；确需同文件时按依赖顺序执行。发行文档与 `main_test.go` 的版本 guard 留给代码合并后的 U2，不能与 U1 并行修改。前置依赖满足且文件不冲突的修复并行执行；新增独立任务在前置依赖满足后立即派发，现有 workflow 无空闲时新增 workflow。
+A、B 必须从已合并最终 spec/plan 的同一 main SHA 创建各自独立 worktree，并行连续完成；派发前记录共同 SHA 与各自绝对路径。文件所有权如下，未列出的共享文件保持只读。
+
+| 任务 | 独占修改文件 | 依赖 |
+|---|---|---|
+| A，生命周期 | `config.go`、`main.go`、`main_test.go` 的 lifecycle 区域、新增 `integration/lifecycle_recovery_test.go` | 最终 spec/plan 已复审合并 |
+| B，Gemini | `selectors_gemini.go`、`selectors_gemini_test.go`、`fuzz_test.go`、`functional_corrections_test.go`、新增 `integration/gemini_generation_config_test.go` | 与 A 相同，无 A 代码依赖 |
+| U2，顺序集成发布 | `README.md`、`RELEASE_NOTES.md`、`main_test.go` 的版本 guard、本计划最终记录 | A、B 完成、审查并合并 |
+
+B 可复用 `integration/http_test.go` 与 `integration/harness_test.go` 的现有 helper，在自己的新 fixture 编排 native/HTTP 测试，不修改共享文件或 A 的文件。U2 不与 A、B 并行修改。主会话只合并已完整完成且确认无文件冲突的任务；新增独立任务在前置依赖满足后立即派发，现有 workflow 无空闲时新增 workflow。
 
 各执行者在自己的 `.local-verification/functional-audit-20261023/<task>/` 保存复用脚本、命令、退出码和日志，使用本次预先加入的精确 ignore 规则，不并行修改 `.gitignore`。一次性临时文件使用 OS 临时目录。所有 shell/Go 命令显式核对自己的绝对 worktree 路径；路径消失或隔离工具无法访问时报告实际限制，不切回原仓库或修改其他 worktree。不轮询后台 workflow/subagent 输出，等待完成通知。
 
-## U1. 生命周期恢复与真实调用回归
+## A. 生命周期恢复、初始错误响应与真实调用回归
 
-依赖：规格、自审及上述相关完整性核对完成。文件：`config.go`、`main.go`、`main_test.go`，新增 `integration/lifecycle_test.go`。行为范围：L1 至 L8。
+依赖：最终 spec/plan 已复审合并。文件仅为 `config.go`、`main.go`、`main_test.go`，新增 `integration/lifecycle_recovery_test.go`。行为范围：L1 至 L9。
 
-### 公开 RPC 的 TDD
+### 公开 RPC 的两轮 TDD
 
-1. 在 `main_test.go` 的 lifecycle 测试处复用 `lifecycleJSON`、`mustHandle`、`decodeEnvelope`、`decodeResult`、`callInterceptRequestAt` 和 selected-auth helpers。每个 case 保存并恢复全局 snapshot/callback，明确从未安装状态开始，不依赖测试顺序，不对这些全局状态测试使用 `t.Parallel`。
-2. 先加入 `TestInitialRegisterFailureRecoversOnReconfigure`：空词 register 失败后，合法非空 models reconfigure 应在 selected-auth after 拦截 `BLOCKME`。在当前实现运行 focused 命令取得 RED，确认实际失败是成功响应后仍未拦截；同时加入空 models 恢复及重复合法非空 models 对照。
-3. 完成下节 native/watcher 测试的 RED 后，才删除启动预装默认 snapshot 的 `init()`，保留 `defaultSnapshot()`；仅在 current 非 nil 时限制 phase 切换。保留原 parser、atomic store、已有有效配置的拒绝分支、nil gate 和同步 `C.GoBytes`。
-4. 运行同一 focused 命令取得 GREEN，再补齐 L3 至 L7 的边界与原有 lifecycle 回归。无效候选保留 last-good 使用既有测试；nil gate 对 malformed raw envelope 要求精确空 RPC response，并检查输入未变。
-5. 成功安装零规则配置后，分别尝试两个方向的 phase 变化并检查原拒绝日志；随后在原 phase 加入规则，以公开请求实际拦截证明 phase 未切换，不能只断言内部指针或布尔值。
+1. 在 `main_test.go` 的 lifecycle 测试处复用 `lifecycleJSON`、`mustHandle`、`decodeEnvelope`、`decodeResult`、`callInterceptRequestAt` 和 selected-auth helpers。使用公开 `plugin.register`、`plugin.reconfigure`、`request.intercept_before`、`request.intercept_after` 验证。每个 case 保存并恢复全局 snapshot/callback，不依赖测试顺序，不对这些全局状态测试使用 `t.Parallel`。单元 case 可设置 nil 表示未安装；初始化是否真的为 nil 必须另由 fresh-process native 验证。
+2. 第一轮 RED：加入 `TestInitialRegisterFailureRecoversOnReconfigure`，空词 register 返回 `plugin_error` 后，合法非空 models reconfigure 应在 selected-auth after 拦截 `BLOCKME`。先运行这条 focused RPC 测试，记录成功响应后仍未拦截的真实失败；再加入空 models 恢复与重复合法非空 models 对照，并完成下节 native/watcher 恢复测试的 RED。
+3. 第一轮最小 GREEN：仅取消 `init()` 预装 snapshot，保留 `defaultSnapshot()`；只在 `current != nil` 时拒绝 models phase 变化。重跑同一 focused RPC 与恢复 native/watcher 测试取得 GREEN。此时不提前修改无效 reconfigure 的错误分支，不把本轮 GREEN 视为 A 完成。
+4. 第二轮 RED：在第一轮 GREEN 后新增 `TestReconfigureRejectsInvalidWithoutLastKnownGood`。从未安装或首次空词 register 失败后，分别提交空词、缺失/null `config_yaml`、malformed JSON 与无效 YAML，要求 `OK:false`、`Error.Code=="plugin_error"`、拒绝日志、两阶段 no-op；随后合法空/非空 models 均能恢复。记录现有错误分支仍返回 OK 的真实失败，再加入 native 的重复无效配置仍 inactive 对照。
+5. 第二轮最小 GREEN：解析失败时 nil current 返回现有 `plugin_error` envelope，已有 current 继续拒绝日志、保留 last-good、返回 OK。保留原 parser、atomic store、已有 phase 拒绝分支、nil gate 与同步 `C.GoBytes`；不加初始化 boolean 或用 `len(Rules)` 判断初始化。重跑第二轮 RPC/native 取得 GREEN，再运行第一轮恢复回归。
+6. 补齐 L3 至 L7、L9：首次合法注册两个 phase、同 phase 更新、两个 phase 的 malformed envelope/缺失/null/无效 YAML last-good，以及 nil intercept/transform gate。nil interceptor 对 malformed raw envelope 必须返回精确空 RPC response，输入不变；私有状态断言只作辅助。
+7. 空 YAML、`words: {}`、非空 models 零规则均是有效 snapshot。验证无效更新仍 OK/保留，再分别尝试两个方向的 phase 变化并检查原拒绝日志；随后在原 phase 加入规则，用公开请求实际拦截证明 phase 未切换。
 
-建议 focused 测试名为 `TestInitialRegisterFailureRecoversOnReconfigure`、`TestUninitializedInterceptorsNoOp`、`TestReconfigureKeepsPhaseForEmptyRules`。执行者记录实际采用名称及命令，例如 `go -C "$W" test -count=1 -run '^TestInitialRegisterFailureRecoversOnReconfigure$' .`；`$W` 必须是自己的已核对绝对路径。RED/GREEN 均保留真实退出码与失败断言，不把计划中的输出写成已发生结果。
+建议 focused 测试名为 `TestInitialRegisterFailureRecoversOnReconfigure`、`TestReconfigureRejectsInvalidWithoutLastKnownGood`、`TestUninitializedInterceptorsNoOp`、`TestReconfigureKeepsPhaseForEmptyRules`；扩展既有 `TestReconfigureStoresValidSnapshotAndKeepsLastKnownGoodOnError`、`TestReconfigureRejectsModelFilterPhaseClassChanges` 与 same-phase 测试。执行者记录实际名称及命令，例如 `go -C "$W" test -count=1 -run '^TestInitialRegisterFailureRecoversOnReconfigure$' .`，第二轮替换成相应 focused 名称；`$W` 为自己的已核对绝对路径。两轮 RED/GREEN 均保留实际退出码、失败断言与改动顺序，不在修复后补写推断的 RED。
 
 ### Native 与 watcher HTTP 的 TDD
 
-1. 在专属 `integration/lifecycle_test.go` 复用 [harness](../../../integration/harness_test.go) 的 `startCPA`、`writePluginConfig`、`postChat`、upstream capture 与清理。native case 直接使用固定 `pluginhost.New` / `Host.ApplyConfig`；[既有 `withDynamicABIHost`](../../../.github/scripts/testdata/abi_benchmark_test.go) 要求首次成功注册，仅继续用于成功路径与 active-after 对照。
-2. native 每个初始状态由测试父进程启动独立子进程，使用绝对测试程序路径和有界退出等待。一个子进程内依次保留同一 host、DLL 路径与实例，执行失败 -> 合法恢复 -> 重复合法配置。其他子进程覆盖首次合法注册、已有有效 snapshot 的双向拒绝、零规则 phase 保护、同 phase 更新与无效 candidate 保留。`ShutdownAll` 仅做资源清理，不能用来重置 DLL 静态 snapshot。
+1. 在专属 `integration/lifecycle_recovery_test.go` 复用 [harness](../../../integration/harness_test.go) 的 `startCPA`、`writePluginConfig`、`postChat`、upstream capture 与清理。native case 直接使用固定 `pluginhost.New` / `Host.ApplyConfig`；[既有 `withDynamicABIHost`](../../../.github/scripts/testdata/abi_benchmark_test.go) 要求首次成功注册，仅继续用于成功路径与 active-after 对照。
+2. native 每个初始状态由测试父进程启动独立子进程，使用绝对测试程序路径和有界退出等待。一个子进程内保留同一 host、DLL 路径与实例，执行失败 -> 再次无效 -> 合法恢复 -> 重复合法配置。第一轮 TDD 先验证失败 -> 合法恢复；再次无效时 `PluginRegistered==false` / `RegisteredPlugins` 无有效条目的断言在第二轮加入并记录 RED/GREEN。其他子进程覆盖首次合法注册、已有有效 snapshot 的双向拒绝、零规则 phase 保护、同 phase 更新与无效 candidate 保留。malformed raw envelope 留给 RPC；native 仅发送固定 host 实际可表达的配置。`ShutdownAll` 仅做资源清理，不能用来重置 DLL 静态 snapshot。
 3. HTTP 对空与非空 models 分别启动独立 CPA 进程。初始配置含空词，确认首次 register 错误日志；clean canary 必须能正常到达 mock upstream。保持进程、DLL 与模型配置不变，使用 `writePluginConfig` 写入合法规则，并以有截止时间的 watcher 观察确认新规则生效。
 4. 就绪探针与 clean canary 不计入最终请求基线。确认新配置生效后记录 upstream arrival/request 基线，再发送 `BLOCKME`，要求 canonical HTTP 400 `censorship_blocked` 且两种计数增量均为零。模型 case 用 harness 的可执行 `censorship-integration-model`，不引入无效 model/provider 对照。
-5. 在公开 RPC 第 3 步修改生产代码前，让新增 native/watcher 恢复测试先得到 RED；修复后相同场景得到 GREEN。保存实际失败日志，不能在修复后用推断补写 RED。
+5. 第一轮公开 RPC 第 3 步修改生产代码前，新增 native/watcher 恢复测试须先得到 RED；最小修复后相同场景得到 GREEN。第二轮增加重复无效配置仍 inactive 的 native RED，再修错误响应并取得 GREEN。保留 clean canary 与无效配置日志的前后对照，不能用启动失败、路由失败或 watcher 尚未观察到配置代替预期 RED。
 
 [runner](../../../.github/scripts/integration-runner.go) 已自动复制 `integration/*.go` 与 ABI fixture，无须新增通用 runner。准备顺序必须保持：清理 runner 自己的旧生成夹具 -> 核对固定 CPA checkout -> 构建干净 CPA -> 构建当前 worktree 插件及固定 model-mapper -> 复制源夹具 -> 运行测试。CPA 必须满足已有 `vcs.revision` 与 `vcs.modified=false` 检查，不手改 `.integration/`。
 
-完成条件：RPC、native、watcher 均有有效 RED/GREEN；L1 至 L8 逐项对应测试与输出；`make test`、`make race`、`make vet`、`make integration`、`make build` 通过。自审实际 diff 后完成必要修正和受影响回归，`git diff --check` 通过，只提交相关代码与测试。向主会话主动返回 commit、stat、测试证据和剩余限制。
+完成条件：两轮 RPC TDD 及 native/watcher 对应场景均有真实 RED/GREEN；L1 至 L9 逐项对应测试与输出；`make test`、`make race`、`make vet`、`make integration`、`make build` 通过。自审实际 diff 后完成必要修正、受影响回归与复审，`git diff --check` 通过，英语提交仅包含 A 的四个文件。向主会话主动返回 commit、stat、实际命令/退出码、逐项规格证据和剩余限制，不移交未完成步骤。
+
+## B. Gemini generation_config 的明确 schema 路径
+
+依赖：与 A 相同的最终 spec/plan main SHA，无 A 代码依赖。文件仅为 `selectors_gemini.go`、`selectors_gemini_test.go`、`fuzz_test.go`、`functional_corrections_test.go`，新增 `integration/gemini_generation_config_test.go`。行为范围：G1 至 G7。README 路径文案与 accepted limits 全部留给 A、B 合并后的 U2。
+
+### 明确路径与独立 oracle 的 TDD
+
+1. 复用 `TestGeminiGenerationSchemaAliases` 的七条子路径与现有 description helper 规则，增加 `generationConfig`/`generation_config` root 维度。每例单 root、单 schema 表示与正确 MIME，覆盖根/嵌套 description、三动作 × literal/fold、developer scope 开关、machine-only、unknown root/schema、非字符串 description、no-match、取消与输入不变。先运行 focused 测试记录 snake root 的真实 RED；camel 对照须通过。
+2. 修订 `TestGeminiGenerationSchemaExcludesMachineFieldsAndUndocumentedRoot`，将已确认正式的 snake root 移入选中矩阵，保留真正未知 root、`response_format`、机器字段的排除断言。新增跨入口与双 root 本地 token 顺序、规则优先级和 `block -> strip -> obfs` 对照，不把双 root 当作两份正式独立配置，也不新增 alias precedence。
+3. `fuzz_test.go` 的 `TestProtocolOracleCompatibleSchemaAliases` 覆盖 7 × 2，先用明确预期证明旧 semantic/raw oracle 漏选。分别修改 `oracleGeminiSpans` 与 `oracleRawGeminiSpans` 的 root 入口，保留独立 parser 与描述白名单，不调用生产 collector/helper。修订原 snake-root excluded case，保留未知路径排除与伪造 machine enum 改写反例；补齐 `FuzzProtocolTransform` 小型正常 seeds。oracle 自身选中断言应通过，尚未修生产时 production-vs-oracle 对照仍应 RED。
+4. 在 `functional_corrections_test.go` 的 Gemini fixture 扩展两 root/七子路径，复用 `functionalCall` 与既有矩阵核对两阶段、selected-auth/model/filter/role/format gate、取消和 metadata/headers/原 body 不变性。`RequestedModel` 与 body model 使用相反 decoy，model-bearing before 与 model-free after 精确 no-op。
+5. 完成下节 native/HTTP 的 RED 后，生产代码仅将原七条子路径在两个明确 root 下复用现有 `appendJSONSchemaDescriptions`；沿用既有 `systemInstruction`/`system_instruction` 等显式 alias 惯例。禁止 generic walker、alias parser、键名 normalization、配置/依赖增加或共享 transform 重构。运行相同 focused、oracle、functional、native/HTTP 命令取得 GREEN。
+
+执行者记录实际测试名与 focused 命令，例如 `go -C "$W" test -count=1 -run '^TestGeminiGenerationSchema' .`、`go -C "$W" test -count=1 -run '^TestProtocolOracleCompatibleSchemaAliases$' .` 与对应 functional 测试。每次 RED 须说明实际失败的 path/断言，保留退出码；既有被误写为 excluded 的断言不能继续充当正确行为 oracle。
+
+### 真实 native 与本地 HTTP 的 TDD
+
+1. 在独占新 fixture 中复用现有 `withDynamicABIHost`、`functionalHTTPFixture`、`newFunctionalDirectUpstream`、`startFunctionalDirectCPA`、`postJSON`、`decodeCensorshipError` 等 helper。可在新文件声明 B 专属 fixture，不修改 `integration/http_test.go`、harness、runner 或 A 的生命周期文件。runner 自动复制新 `integration/*.go`；使用与 A 相同的干净固定 CPA 构建顺序，不能手改 generated 文件。
+2. 从自己的 worktree 构建并证明实际加载同一 DLL；native 两阶段覆盖 7 × 2 × 三动作。每个正式请求只含一个 root/schema，`response_schema` 使用正确 `OBJECT`/`STRING` 类型和 JSON MIME；其他既有兼容 alias 不额外宣称 Google 在线接收。native block 返回 canonical 400，strip/obfs 比较完整预期 body、machine bytes 与输入不变；host no-op 比较合并后的原 body/headers。保留 model/selected-auth/scope gates 对照。
+3. HTTP 使用本地真实 CPA 与 Gemini upstream，两个 phase 都覆盖全部 7 × 2 × 三动作；模型使用可执行的 `censorship-integration-model`。clean canary 正常转发后另记计数基线，block 要求 canonical 400、arrival/request 增量均为零；strip/obfs 要求恰好一次实际转发、description 预期值和机器字段原字节正确。保留 developer-disabled、filter bypass、machine-only、no-match 与最终取消对照，探针不计入目标计数。
+4. HTTP oracle 按固定 converter 规则处理 camel `generationConfig.responseSchema` -> `generationConfig.responseJsonSchema` 的改名；snake root 原路径保留。逐字段 raw bytes 比较属性名、enum/default/required、MIME、stop sequences、metadata、`1.2300e+00` 等机器值，不能仅比较 decode 后的值或假定整个 wire body 不变。提供方固定响应仅隔离在线服务，不证明商业 Google API 接受。
+5. 在生产 collector 修改前运行新增 native/HTTP，取得 snake 漏选的真实 RED，camel 与 machine-only 对照必须可用；最小实现后运行同一命令取得 GREEN。自己完成必要运行时/构建来源检查，不把这些步骤留给主会话。
+
+完成条件：G1 至 G7 逐项对应测试与实际证据；`make test`、`make race`、`make vet`、`make integration`、`make build` 及有界 `FuzzProtocolTransform`（`-fuzztime=3000x -parallel=2`）通过。完成规格自审、修正、受影响回归及复审，`git diff --check` 通过，英语提交仅包含 B 的五个文件。向主会话主动返回 commit、stat、实际命令/退出码、RED/GREEN 与 runtime/native/HTTP 来源证据及剩余限制。A、B 的成功不能表述为已修复跨格式空 typed text。
 
 ## U2. 顺序集成、英语发行说明与正式包
 
-依赖：U1 及其他最终确认修复均完成、经审查且已合并；不存在同文件并行修改。独立集成发布 worktree 从合并结果开始，连续完成本节全部工作。
+依赖：A、B 均完成、经审查且已合并；不存在同文件并行修改。独立集成发布 worktree 从合并结果开始，连续完成本节全部工作。
 
-修改文件：`README.md`、`RELEASE_NOTES.md`、`main_test.go` 的文档/当前发行版本断言。执行者核查生产代码、CI 与 packager 的合并状态，不为本任务顺手修改它们。
+修改文件：`README.md`、`RELEASE_NOTES.md`、`main_test.go` 的当前发行版本断言及本计划最终记录。执行者核查生产代码、CI 与 packager 的合并状态，不为本任务顺手修改它们。
 
-1. 英语 README 说明首次无效注册后的合法恢复与已有 phase 限制；更新当前版本示例至 v0.3.12。RELEASE_NOTES 新增实际修复及固定兼容版本，保留 v0.3.11 等历史段落与 glibc 2.34+ 要求。bare `pluginVersion` 保持 `0.0.0-dev`。
+1. 英语 README 说明首次无效注册后的合法恢复、尚无有效 snapshot 时无效 reconfigure 的错误响应、已有 phase 限制，以及 Gemini 两个明确 root 下的七条现有 schema description 路径；更新当前版本示例至 v0.3.12。accepted limits 准确记录跨格式 full-strip 经固定 CPA 可生成违反 Claude typed-text 非空 schema 的请求、BeforeAuth 目标不可知与缺少完整纯插件修复边界；保留最末 assistant scalar 行为及 prefill 接受性未核实，不声称商用 API 实测拒绝或 A/B 已修复该限制。README 直接写最终现状，历史 spec 保留原审计记录。RELEASE_NOTES 新增 A/B 实际修复及固定兼容版本，保留 v0.3.11 等历史段落与 glibc 2.34+ 要求；baseline CI/发行成功不作为新修复。bare `pluginVersion` 保持 `0.0.0-dev`。
 2. `main_test.go` 的 current-release guard 改为 v0.3.12，新边界是 v0.3.11 历史标题；把 v0.3.11 compatibility 句加入历史断言，保留其余历史检查。先记录旧 guard 对新增发行段的 RED，再修改 guard 并取得 GREEN。
 3. 从最终集成源码完成下表验证。项目根 suite 不包含隐藏 `.github/scripts` 的 packager tests，必须独立执行。
 
@@ -75,7 +125,7 @@ U1 负责 `config.go`、`main.go`、`main_test.go` 的 lifecycle 区域及新增
 
 正式包验收前记录 worktree HEAD、状态、源码/依赖 blob 与 SHA-256、工具链、命令、构建输出与 `go version -m`。按 [nested worktree provenance 说明](../../solutions/workflow-issues/go-worktree-build-provenance.md) 分别核查实际编译源码、VCS metadata 和产物一致性；本地 metadata 差异按证据解释，不能替代远端最终 revision 验收。
 
-完成条件：完整命令真实通过，正式 ZIP 的同 DLL 实际注册与 active-after 通过，英语说明仅陈述已核实范围。执行者自审、修正、复审并用英语提交，仅包含本节必要文档/guard 修改；向主会话返回全部证据，不把远端 CI、七平台运行或发布写成已完成。
+完成条件：完整命令真实通过，正式 ZIP 的同 DLL 实际注册与 active-after 通过，英语说明仅陈述已核实范围。更新本计划最终记录，列明 A 的两轮 TDD、B 的 RED/GREEN 与 runtime/native/HTTP 证据、实际完成的本地命令/提交及仍待 U3 的检查；主会话提供完整性 critic 的最终结论，由 U2 据实记录，未收到时标记待验收，U3 不能按覆盖复核已完成放行。执行者自审、修正、复审并用英语提交，仅包含本节必要文档/guard 修改；向主会话返回全部证据，不把远端 CI、七平台运行或发布写成已完成。
 
 ## U3. 主会话 main CI、tag 与七平台发行验收
 
