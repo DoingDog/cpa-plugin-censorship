@@ -1,3 +1,19 @@
+# Censorship v0.3.12
+
+## v0.3.12 fixes
+
+Release date: 2026-10-23.
+
+- After an initial invalid registration, a valid reconfiguration with either empty or non-empty `filter.models` installs the first valid snapshot and activates its processing phase. Invalid reconfiguration returns `plugin_error` while no valid snapshot exists. Once a valid snapshot exists, invalid updates retain the last-known-good configuration, and same-instance updates retain the existing phase-class restrictions, including zero-rule snapshots.
+- Gemini schema `description` leaves under both `generationConfig` and `generation_config` use canonical `developer` scope at the seven supported subpaths: `responseSchema`, `response_schema`, `_responseJsonSchema`, `response_json_schema`, `responseJsonSchema`, `response_json_schema_ordered`, and `responseFormat.text.schema`. Machine schema values and other request bytes remain unchanged.
+- Fresh-process native lifecycle, real watcher HTTP recovery, independent protocol oracles, and two-phase RPC/native/HTTP matrices cover these behaviors, including scope/filter bypass and zero-upstream blocking.
+
+v0.3.12 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
+Local acceptance covers Windows amd64 tests/race/vet, independent Windows packager checks, six bounded fuzz targets, fixed-host integration, both formal package recipes, ZIP/CRC/license/checksum inspection, and the extracted formal DLL's actual ABI registration and selected-auth active-after behavior. Bare source and integration builds retain `0.0.0-dev`; formal VERSION injection uses `0.3.12`. Local upstream fixtures establish request bytes and forwarding behavior, with no commercial provider API acceptance or native-loading claim for other platforms.
+
+Accepted limit: a legal Gemini/Interactions full-strip result can become an empty Claude `TextBlockParam.text` through the pinned CPA translator and real `ClaudeExecutor`, violating the official non-empty schema. BeforeAuth has no target `ToFormat`; AfterAuth/opaque-executor coverage and missing rewrite provenance prevent a complete regression-free pure-plugin correction within the current boundaries. Source-format full-strip semantics remain unchanged. Final assistant scalar full-strip behavior also remains unchanged, and provider prefill acceptance is unverified.
+
 # Censorship v0.3.11
 
 ## v0.3.11 fixes

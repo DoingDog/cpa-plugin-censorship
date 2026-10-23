@@ -6,7 +6,7 @@
 
 本规格定义两组已独立复现、可在插件内完成的修复：A，首次注册失败后的合法配置恢复及尚无有效 snapshot 时的错误响应；B，Gemini `generation_config` 下既有 schema description 路径的漏选。另记录跨格式 full-strip 产生 Claude 空 typed text 的已确认兼容限制，不将其列为开发任务。对应责任与执行步骤见[实施计划](../plans/2026-10-23-functional-audit-v0.3.12.md)。
 
-首轮九范围扫描已全部回报，`whnjtk2x2.output` 的 `missing` 为空。定向独立核验见 `wrd6p10rx.output`（A 的 native/watcher）、`wedd9lt46.output`（A 的相邻错误响应与跨格式限制）、`w3vu1uq8r.output` 前两份报告（B 的官方 schema 与 native/HTTP）。完整性 critic 仍在复核覆盖，当前没有第三组已确认可安全执行的插件修复；发布前须收齐其结论。文档阶段不重复全文代码审计或已完成的大基线。
+首轮九范围扫描已全部回报，`whnjtk2x2.output` 的 `missing` 为空。定向独立核验见 `wrd6p10rx.output`（A 的 native/watcher）、`wedd9lt46.output`（A 的相邻错误响应与跨格式限制）、`w3vu1uq8r.output` 前两份报告（B 的官方 schema 与 native/HTTP）。完整性复核已完成，`wzqrgzwnz.output` 确认 `coverage_complete=true`、`additional_confirmed_fixable_issues=[]`；全部受控实现、测试、构建、依赖及配置均有全文覆盖依据，补读 `go.sum` 后 `go mod verify` 通过，未发现第三组已确认可安全执行的插件修复。文档阶段不重复全文代码审计或已完成的大基线。
 
 固定 CLIProxyAPI v7.2.152、commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`、schema 5、native ABI v1，版本依据为 [go.mod](../../../go.mod) 与 [integration runner](../../../.github/scripts/integration-runner.go)。仅修改 censorship plugin，不修改 CPA core，不执行网络安全扫描，不做无关重构。
 
