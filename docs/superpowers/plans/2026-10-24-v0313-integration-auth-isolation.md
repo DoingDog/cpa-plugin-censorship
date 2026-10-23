@@ -43,6 +43,10 @@
 
 本地执行依赖 Go 1.26、当前 Windows amd64 可用的 CGO compiler、Make/Git Bash、固定 CPA 与 model-mapper checkout。使用已有工具链和认证，不修复本机系统，不改权限或 Claude 配置。远端发布步骤另依赖主会话的发布授权和现有 GitHub 认证。
 
+## 实施核实与等价测试调整
+
+Go 的 `t.TempDir` 在同一测试中复用首次创建的父目录，Go 1.26 还优先使用 `GOTMPDIR`；已核对本机 `testing.go` 并由 RED 确认只修改 TEMP 不会改变后续实例目录。因此在父测试设置带空格的 `GOTMPDIR`、TEMP/TMP/TMPDIR 与合成 home，再在串行子测试调用真实启动 helper，使生成 YAML 实际包含空格。加载同步等待固定 CPA 的 `full client load complete`、`file watcher started` 和本地模型注册；隔离实例另核对扫描为零个 auth files，未隔离 RED/单项变异必须等到 ambient alias 实际注册后请求本地 CONNECT 502 代理。该组织保留配置、真实路由正负对照、加载时序和无商业请求四项证明。Direct Claude `/v1/messages` 的真实未知模型响应为 HTTP 400、`error.type=invalid_request_error`、精确 `unknown provider for model <alias>`，该协议不输出 `error.code`；测试保留其精确响应并额外通过同一实例的 `/v1/chat/completions` 断言 HTTP 400/`model_not_found`，两个入口各自使用独立计数基线。此协议调整不修改生产响应或放宽既有测试。
+
 ## U1. OpenAI compatibility helper 的纵向 TDD
 
 依赖：最终文档已合并，fix worker 从记录的 SHA 启动。覆盖 S1、S3、S4、S5。修改文件为 `integration/auth_isolation_test.go` 和 `integration/harness_test.go` 的指定区域。
@@ -174,3 +178,21 @@ go -C "$W" test -count=1 -run '^TestReleaseNotesCompatibilityTargetsCurrentAndHi
 - 生产源码、依赖、CPA revision、ABI 1、schema 5、同步 `C.GoBytes` 和机器字段处理未变；两处配置隔离均满足规格，既有调用语义完整保留。
 - 主会话独立审查后合并，最终 main CI 全部成功后才 tag；tag CI/release、精确 15 资产、七库最终 revision/平台/CGO/依赖与正式 Windows DLL 注册分别有本次真实证据。
 - 报告区分沿用基线、本次本地验证、远端验证和 `not_run`；不加入无关历史问题或未经证实的安全/生产错误结论，仅清理本次已完成任务内容。
+
+## U1 至 U3 本地执行记录
+
+Fix owner 工作区为 `C:/Users/user/Downloads/cpa-plugin-censorship/.claude/worktrees/wf_244a498c-6e9-1`，分支 `worktree-wf_244a498c-6e9-1`，从干净 `30b1d8e75230a17bb654429dfface8aaad0709df` 开始。证据位于该工作区 `.local-verification/integration-auth-isolation-20261024/fix-owner/`，其局部 `.gitignore` 已用 `git check-ignore` 核实；逐命令 `command.json`/`output.log` 保留实际 argv、cwd、源码 hash、环境、起止时间和退出码。
+
+| 规格 | 本次真实验证 |
+|---|---|
+| S1、S3 | `u1-red-final` 的完整 `make integration VERSION=v0.3.13` 退出 2，两个插件开关对照均缺少 auth-dir、加载 ambient alias、canary 200，目标请求 500、本地 CONNECT 增量 1。仅修第一处后 `u1-green` 退出 0。 |
+| S2、S3 | 第一处已修时 `u2-red-protocol-exact` 退出 2，direct helper 独立出现同类字段与路由失败。仅修第二处后 `u2-green-final` 退出 0；两个聚焦测试 `-count=3` 的 `isolation-repeat` 退出 0。 |
+| S3 敏感性 | 分别把一处 auth-dir 注释掉，`mutation-u1`、`mutation-u2` 各退出 2；对应测试稳定发现缺字段、真实 alias 注册及 CONNECT arrival，另一 helper 仍通过。变异已恢复，`final-integration` 退出 0。 |
+| S4 | 最终 `make test/race/vet/integration VERSION=v0.3.13` 全部退出 0，完整运行既有 HTTP/SSE/WS/native/watcher/lifecycle/mapper/direct-provider 测试，未改 readiness 或既有断言。 |
+| S5、发行 | 版本 guard 先 `version-red` 退出 1，再 `version-green` 退出 0。正式 build、Windows packager 四文件 test/race/vet、selected/aggregate 两个 package 入口各退出 0；生产、依赖、ABI、runner、Makefile、CI 与基线 blob 一致。 |
+
+两入口正式 ZIP 字节一致，SHA-256 为 `44e801e26f248c804ac013920fc09237566e9942fbdff2ad3df2a22e699c47ea`。标准 ZIP parser 核对 CRC、精确 DLL/`LICENSE` 成员、LICENSE 字节、0755/0666 权限、1980-01-01 时间、lowercase sidecar 和只含本次 Windows amd64 的 aggregate。dist、两次包内、提取、实际加载、runner staged 及同路径强制重建 DLL 字节一致，SHA-256 为 `547824377f65c374547a866821f871bbc1165b503ca32b6090705f30a53dd24f`。
+
+`formal-native` 实际读取 ABI 1、schema 5、Version 0.3.13、七个 ConfigFields、Object words、request-only；before、缺 marker、model miss 均 no-op，selected-auth after 实际 strip，输入、metadata、headers 和机器字段保持。提取 DLL 的 `formal-abi-smoke`、编译 trace、源码来源核对均退出 0。Go 1.26.5 Windows amd64、GCC 16.1.0；本地 metadata 的 revision 为文档基线 30b1d8e、modified=false，编译 trace 核对实际输入来自当前 worktree，不代替最终远端 revision 验收。
+
+保留的中间失败包括首次 runner junction 检查收到正斜线 TEMP、两次空格路径设置尚未包含 GOTMPDIR、首次 direct 回归错误地要求 Claude error.code，以及证据检查器把自身尚未结束的 receipt 当作已完成记录。均已依据实际结果修正测试组织或本地驱动并重跑成功，未改系统、生产或 runner；最终 `evidence-selfcheck-final` 退出 0。六个 bounded fuzz 沿用本计划记录的基线。未合并 main、未 push/tag；远端 CI、七平台资产及其他平台 runtime 为 `not_run`，留给 U4。工作区保留供独立审查。

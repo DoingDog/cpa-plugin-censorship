@@ -20,7 +20,7 @@ Copy the native library to the CPA platform plugin directory, then start or rest
 
 Linux release libraries require glibc 2.34+.
 
-v0.3.12 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
+v0.3.13 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+. The registered logo is `https://raw.githubusercontent.com/DoingDog/cpa-plugin-censorship/main/logo.png`.
 
 ## Configuration
 
@@ -225,17 +225,17 @@ Direct and aggregate packaging rejects library/archive/checksum input/output ali
 Direct CLI calls pass the main source and exactly one helper for the running platform. Windows uses:
 
 ```powershell
-go run ./.github/scripts/package-release.go ./.github/scripts/package-release_windows.go -version v0.3.12 -library dist/windows_amd64/censorship.dll -archive dist/censorship_0.3.12_windows_amd64.zip -checksum dist/censorship_0.3.12_windows_amd64.zip.sha256
+go run ./.github/scripts/package-release.go ./.github/scripts/package-release_windows.go -version v0.3.13 -library dist/windows_amd64/censorship.dll -archive dist/censorship_0.3.13_windows_amd64.zip -checksum dist/censorship_0.3.13_windows_amd64.zip.sha256
 ```
 
 Unix uses:
 
 ```bash
-go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go -version v0.3.12 -library dist/linux_amd64/censorship.so -archive dist/censorship_0.3.12_linux_amd64.zip -checksum dist/censorship_0.3.12_linux_amd64.zip.sha256
+go run ./.github/scripts/package-release.go ./.github/scripts/package-release_other.go -version v0.3.13 -library dist/linux_amd64/censorship.so -archive dist/censorship_0.3.13_linux_amd64.zip -checksum dist/censorship_0.3.13_linux_amd64.zip.sha256
 ```
 
 Choose the helper by the running host, independently of the library target. Explicit Go source lists do not filter the two helpers by build tags or platform filenames. From a cwd outside the repository, use absolute paths to both source files in their shared repository directory and keep the original cwd: relative flags, output paths, optional `LICENSE`, and Git version lookup still resolve from the caller cwd. The packager uses only the standard library and requires no CGO. Both Make package recipes compile and run it with `GOHOSTOS`/`GOHOSTARCH`, while the library build keeps its selected target.
 
 The release workflow overwrites assets only for an existing draft. A published-release rerun updates notes, downloads the remote assets, compares their exact files and bytes with `release/`, and verifies every sidecar checksum plus aggregate `checksums.txt` without overwriting public assets.
 
-v0.3.12 local verification covers Windows amd64 tests, race, vet, independent Windows packager checks, six bounded fuzz targets, both package recipes, fixed-host HTTP/SSE/WebSocket/native integration, and the extracted formal DLL's actual ABI registration and selected-auth active-after behavior. Lifecycle recovery and Gemini schema-description fixtures verify request handling and upstream counts using local receivers. CI checks Linux test/race/vet/integration, Windows amd64 DLL smoke, and seven-platform builds; release acceptance separately checks the final main/tag revisions and all 15 assets. Commercial provider API acceptance and native loading on other platforms are outside this local verification scope.
+v0.3.13 local verification covers Windows amd64 tests, race, vet, independent Windows packager checks, both package recipes, fixed-host HTTP/SSE/WebSocket/native integration, and the extracted formal DLL's actual ABI registration and selected-auth active-after behavior. Both integration startup helpers use independent absolute auth-dir paths; synthetic-home regressions verify that ambient accounts and aliases cannot change fixture routing, with plugin-enabled/disabled controls and working local canaries. The six bounded fuzz targets retain their verified baseline results because production code and their oracles are unchanged. Lifecycle recovery and Gemini schema-description fixtures verify request handling and upstream counts using local receivers. CI checks Linux test/race/vet/integration, Windows amd64 DLL smoke, and seven-platform builds; release acceptance separately checks the final main/tag revisions and all 15 assets. Commercial provider API acceptance and native loading on other platforms are outside this local verification scope.

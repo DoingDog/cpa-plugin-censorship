@@ -532,9 +532,14 @@ func startCPAWithOptions(t *testing.T, options cpaStartOptions) *cpaInstance {
 	}
 
 	runDir := t.TempDir()
+	authDir, err := filepath.Abs(filepath.Join(runDir, "auths"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(runDir, "config.yaml")
 	baseConfig := fmt.Sprintf(`host: "127.0.0.1"
 port: %d
+auth-dir: %q
 api-keys:
   - %q
 openai-compatibility:
@@ -543,7 +548,7 @@ openai-compatibility:
     api-key-entries:
       - api-key: "censorship-upstream-key"
     models:
-`, port, downstreamKey, options.upstreamURL)
+`, port, authDir, downstreamKey, options.upstreamURL)
 	for _, model := range options.providerModels {
 		baseConfig += fmt.Sprintf("      - name: %q\n        alias: %q\n", model, model)
 	}

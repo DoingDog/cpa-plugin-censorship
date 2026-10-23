@@ -1,3 +1,17 @@
+# Censorship v0.3.13
+
+## v0.3.13 fixes
+
+Release date: 2026-10-24.
+
+- Both integration startup helpers set an explicit, instance-local absolute `auth-dir`, keeping accounts and model aliases in the developer's default home directory out of fixture routing.
+- Synthetic-home regressions cover generated YAML, separate instance directories, plugin-enabled/disabled controls, unknown-model responses, and working local fixture canaries. A local CONNECT proxy refuses synthetic account requests without forwarding them.
+- Plugin production behavior, dependencies, request-only registration, native ABI, and configuration fields are unchanged.
+
+v0.3.13 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
+Local acceptance covers Windows amd64 tests/race/vet, independent Windows packager checks, fixed-host HTTP/SSE/WebSocket/native integration, both formal package recipes, ZIP/CRC/license/checksum inspection, and the extracted formal DLL's actual registration and selected-auth active-after behavior. The six bounded fuzz results are inherited from the unchanged production baseline, not rerun for this test-infrastructure fix. Source and integration builds retain `0.0.0-dev`; formal VERSION injection uses `0.3.13`. Local fixtures do not establish commercial provider API acceptance or native loading on other platforms. Final main/tag CI and release asset acceptance are separate gates.
+
 # Censorship v0.3.12
 
 ## v0.3.12 fixes

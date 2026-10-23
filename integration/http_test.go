@@ -990,12 +990,16 @@ func startFunctionalDirectCPA(t *testing.T, upstreamURL, provider, censorshipYAM
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
+	authDir, err := filepath.Abs(filepath.Join(runDir, "auths"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(runDir, "config.yaml")
 	providerModel := modelName
 	if provider == "claude" {
 		providerModel = "claude-opus-5-5"
 	}
-	base := fmt.Sprintf("host: 127.0.0.1\nport: %d\napi-keys: [%q]\ndisable-claude-cloak-mode: true\n%s-api-key:\n  - api-key: local-fixture-key\n    base-url: %q\n    models:\n      - name: %q\n        alias: %q\nplugins:\n  enabled: true\n  dir: %q\n  configs:\n", port, downstreamKey, provider, upstreamURL, providerModel, modelName, paths.pluginDir)
+	base := fmt.Sprintf("host: 127.0.0.1\nport: %d\nauth-dir: %q\napi-keys: [%q]\ndisable-claude-cloak-mode: true\n%s-api-key:\n  - api-key: local-fixture-key\n    base-url: %q\n    models:\n      - name: %q\n        alias: %q\nplugins:\n  enabled: true\n  dir: %q\n  configs:\n", port, authDir, downstreamKey, provider, upstreamURL, providerModel, modelName, paths.pluginDir)
 	if err := os.WriteFile(configPath, []byte(base), 0o600); err != nil {
 		t.Fatal(err)
 	}
