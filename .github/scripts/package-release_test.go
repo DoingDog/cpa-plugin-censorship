@@ -1854,61 +1854,88 @@ func withoutEnvironment(base []string, keys ...string) []string {
 }
 
 func TestMakeBuildIgnoresTargetOverrides(t *testing.T) {
-	forcedOS := "plan9"
-	if runtime.GOOS == forcedOS {
-		forcedOS = "linux"
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	forcedArch := "386"
-	if runtime.GOARCH == forcedArch {
-		forcedArch = "amd64"
+	goPath, err = filepath.Abs(goPath)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	cmd := exec.Command("make", "-n", "build", "GOOS="+forcedOS, "GOARCH="+forcedArch)
-	cmd.Dir = filepath.Join("..", "..")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("make -n build: %v\n%s", err, output)
-	}
-	want := `build-platform GOOS="` + runtime.GOOS + `" GOARCH="` + runtime.GOARCH + `"`
-	if !strings.Contains(string(output), want) {
-		t.Fatalf("make build did not select host tuple %s/%s:\n%s", runtime.GOOS, runtime.GOARCH, output)
-	}
+	for _, tc := range []struct {
+		name, goCommand string
+	}{
+		{"inherited", ""},
+		{"absolute", `"` + filepath.ToSlash(goPath) + `"`},
+		{"with-directory", "go -C ."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.goCommand != "" {
+				t.Setenv("GO", tc.goCommand)
+			}
+			goCommand, ok := os.LookupEnv("GO")
+			if !ok {
+				goCommand = "go"
+			}
 
-	cmd = exec.Command("make", "-n", "package-platform", "GOOS=linux", "GOARCH=amd64", "VERSION=v1.2.3")
-	cmd.Dir = filepath.Join("..", "..")
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("make -n package-platform: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), `-version "$PACKAGER_VERSION" -library`) {
-		t.Fatalf("make package-platform did not read the raw version from the environment:\n%s", output)
-	}
-	if !strings.Contains(string(output), `go run ./.github/scripts/package-release.go "$helper"`) {
-		t.Fatalf("make package-platform omits the running-platform helper:\n%s", output)
-	}
-	if !strings.Contains(string(output), `GOOS="linux" GOARCH="amd64" go build`) {
-		t.Fatalf("library build did not retain the requested target:\n%s", output)
-	}
+			forcedOS := "plan9"
+			if runtime.GOOS == forcedOS {
+				forcedOS = "linux"
+			}
+			forcedArch := "386"
+			if runtime.GOARCH == forcedArch {
+				forcedArch = "amd64"
+			}
 
-	cmd = exec.Command("make", "-n", "package", "GOOS=linux", "GOARCH=amd64", "VERSION=vv")
-	cmd.Dir = filepath.Join("..", "..")
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("make -n package VERSION=vv: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), `-version "$PACKAGER_VERSION" -library "dist/linux_amd64/censorship.so" -archive "dist/censorship_v_linux_amd64.zip"`) {
-		t.Fatalf("make package did not carry raw vv to the packager and use v in the artifact name:\n%s", output)
-	}
+			cmd := exec.Command("make", "-n", "build", "GOOS="+forcedOS, "GOARCH="+forcedArch)
+			cmd.Dir = filepath.Join("..", "..")
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n build: %v\n%s", err, output)
+			}
+			want := `build-platform GOOS="` + runtime.GOOS + `" GOARCH="` + runtime.GOARCH + `"`
+			if !strings.Contains(string(output), want) {
+				t.Fatalf("make build did not select host tuple %s/%s:\n%s", runtime.GOOS, runtime.GOARCH, output)
+			}
 
-	cmd = exec.Command("make", "-n", "package", "VERSION=vv")
-	cmd.Dir = filepath.Join("..", "..")
-	cmd.Env = withEnvironment(withEnvironment(os.Environ(), "GOOS", ""), "GOARCH", "")
-	output, err = cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("make -n package VERSION=vv without target tuple: %v\n%s", err, output)
-	}
-	if !strings.Contains(string(output), `-dist dist -out dist -version "$PACKAGER_VERSION"`) {
-		t.Fatalf("make package aggregate command did not carry raw vv to the packager:\n%s", output)
+			cmd = exec.Command("make", "-n", "package-platform", "GOOS=linux", "GOARCH=amd64", "VERSION=v1.2.3")
+			cmd.Dir = filepath.Join("..", "..")
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n package-platform: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), `-version "$PACKAGER_VERSION" -library`) {
+				t.Fatalf("make package-platform did not read the raw version from the environment:\n%s", output)
+			}
+			if !strings.Contains(string(output), goCommand+` run ./.github/scripts/package-release.go "$helper"`) {
+				t.Fatalf("make package-platform omits the running-platform helper:\n%s", output)
+			}
+			if !strings.Contains(string(output), `GOOS="linux" GOARCH="amd64" `+goCommand+` build -trimpath -buildmode=c-shared `) {
+				t.Fatalf("library build did not retain the requested target:\n%s", output)
+			}
+
+			cmd = exec.Command("make", "-n", "package", "GOOS=linux", "GOARCH=amd64", "VERSION=vv")
+			cmd.Dir = filepath.Join("..", "..")
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n package VERSION=vv: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), `-version "$PACKAGER_VERSION" -library "dist/linux_amd64/censorship.so" -archive "dist/censorship_v_linux_amd64.zip"`) {
+				t.Fatalf("make package did not carry raw vv to the packager and use v in the artifact name:\n%s", output)
+			}
+
+			cmd = exec.Command("make", "-n", "package", "VERSION=vv")
+			cmd.Dir = filepath.Join("..", "..")
+			cmd.Env = withEnvironment(withEnvironment(os.Environ(), "GOOS", ""), "GOARCH", "")
+			output, err = cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n package VERSION=vv without target tuple: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(output), `-dist dist -out dist -version "$PACKAGER_VERSION"`) {
+				t.Fatalf("make package aggregate command did not carry raw vv to the packager:\n%s", output)
+			}
+		})
 	}
 }
 
