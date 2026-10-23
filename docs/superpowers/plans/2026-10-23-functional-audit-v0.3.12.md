@@ -191,4 +191,35 @@ C 证据保存在该工作区 `.local-verification/functional-audit-20261023/C/`
 
 格式检查保留原有 CRLF，对规范化换行后的源码运行 gofmt，输出一致。首次 WSL 验收的测试通过，但末尾默认 `git diff --check` 将 CRLF 识别为尾随空白，驱动退出 2；保留源码字节，单次命令采用 `cr-at-eol` 后重新完整执行，最终退出 0，Git 配置文件未改。Windows 和提交差异的 `git diff --check` 通过。C 的临时 clone、overlay、数据和 bundle 已清理，必要脚本与日志保留在其忽略目录。
 
-U3 尚未执行，仍负责最终 main 合并及 CI、随后 tag/CI、七平台 main/tag buildinfo/revision 与实际版本注入、15 assets/checksums、正式 tag 的 Linux `.so` 与 Windows amd64 DLL 真实注册及 active-after，以及合并后 worktree 清理。本地 upstream 200 不代表商用 API 接收；跨格式空 Claude typed text、末尾 assistant scalar 与 prefill 接受性边界均未改变。
+### U3 验收工具自检
+
+owner 工作区为 `C:/Users/user/Downloads/cpa-plugin-censorship/.claude/worktrees/wf_f9f761de-5c7-1`，从 `a52b40af1fc14f9db3879498b6712b67d4f8269a` 接续并保留门槛提交 `0943bd68eea358043856fa94545cff81a29b774d`。可复用工具、数据和证据只保存在自己的 `.local-verification/functional-audit-20261023/acceptance/`，tracked 修改仅为本计划和主设计规格。产品、Makefile、workflow、依赖、发行成员及 15 资产集合均未改变。
+
+专家恢复 manifest 的 transcript SHA 与四个脚本 hash 已核对；原始 API、日志和下载字节没有恢复，本次通过现有 `gh` 认证重新获取。`collect-source.py` 复用其命令捕获与来源模板，`validate-source.py` 复用并扩展逐 job 关联检查；`validate-assets.py` 保留 U2 的 ZIP/buildinfo 检查，`native-probe.py` 保留原真实断言，仅增加实际执行与 hash 记录，`run-native.py` 保存子进程 receipt。新输入只能匹配已经审查的生产/构建 Git blob；七目标实际 `go list -json` 均选同一 `main.go`、`abi_cgo.go` 和对应 GOMOD，源码有变化时仍须重新审查。
+
+| 真实基线检查 | 实际结果 |
+|---|---|
+| main 来源及实物 | run `39841414473` / attempt 1 / SHA `23fe07f1c4ba2ec23879ec2addc8015b4d7acc6d`，七个唯一构建 job、七个原始外层 artifact 与内层 ZIP/sidecar、14 文件、版本 `0.0.0-dev`，最终 validator 退出 `0`，七平台 runtime 均为 `not_run`。 |
+| tag/release 来源及实物 | run `39849483776` / attempt 1 / 同 SHA，tag `v0.3.11` 实际解析到该 commit，七个外层 artifact 与 release API 的 15 项 ID/digest/实际字节逐项关联，最终 validator 退出 `0`。 |
+| 共同检查 | 十四库 ZIP/CRC、成员、LICENSE raw/normalized hash、0755、固定时间、sidecar、target、c-shared、CGO 1、compiler gc、CPA v7.2.152 无 Replace、revision、modified=false 与对应 job 的 GoVersion `go1.26.0` 均通过；tag aggregate 精确七条。四个 Linux 库经标准 `readelf --version-info --wide` 核对最高需求均为 `GLIBC_2.34`。 |
+| 版本证明 | 十四库均保留 `actual_ldflags=null` 和 metadata `unobservable`，独立 `ci_build_source` 关联均为 `verified`。六平台实际 Make/packager/上传路径、Windows arm64 固定 action/合并 Flags/输出改名及源码资格均被核对。 |
+| Windows amd64 正式 native | 本次 tag 包内、提取及实际加载 DLL 的 SHA-256 同为 `352339ce66a1a95bedbd203c7b4ed788e00b87ee9b884f28ca1d001ab88893e8`；原 ABI/RPC probe 与子进程均退出 `0`。 |
+| Linux amd64 正式 native | 同包 `.so` 的 SHA-256 为 `1d772a0ca89ddfd75fd685708ccae49ce9ec170d38d49982c21c2672bb8ee432`；Debian Python 真实加载，原 probe 与子进程均退出 `0`。 |
+
+两份 native 报告真实断言 ABI 1、schema 5、Version 0.3.11、七字段、Object words、request-only、active-after、before/缺 marker/model miss no-op，以及输入和机器字段字节保持。tag 其余五平台 runtime 均为 `not_run`。Windows 使用现有 LibreOffice `program/python.exe` 启动器，Linux 使用 WSL Python；验收使用真实 Go 1.26.0，未使用 `/usr/bin/go` 的旧版本。
+
+`selfcheck.py` 的最终 `evidence/selfcheck-final.json` 退出 `0`，含两项真实七平台正例及下列二十三项明示工具故障注入。每项保存实际 argv、退出码、报告和输出 hash；故障数据使用 OS 临时目录，最终已清理，不作为产品或新发行结果。
+
+| 故障输入 | 实际退出码 |
+|---|---|
+| 无完整替代来源链；tag 缺 native；缺一个平台日志；API 缺 digest | 各 `2` |
+| 同 SHA 的 main/tag 混用 | `1` |
+| 错 run、attempt、job ID、artifact ID、digest、下载 bytes | 各 `1` |
+| 只有 workflow success、tag、`Main.Version`、普通版本字符串 | 各 `2` |
+| 实际 `-X` 指向错误 symbol | `1` |
+| 源码 symbol 缺失、不被引用、类型错误、被后续赋值覆盖，均未匹配已审查 blob | 各 `2` |
+| checksums 全对但 CI 实际版本输入错；Windows arm64 合并 Flags 错；旧 native 库 hash 错 | 各 `1` |
+
+新 CLI 的 focused RED 为原 validator 不接受来源参数、退出 `2`，测试驱动退出 `1`；Linux glibc 证据断言也观察到缺失字段的 RED `1`。完成来源验收与标准工具检查、按实际 API/多行日志形式修正后，最终完整自检通过。WSL Go 1.26.0 的本工作区 `make test` 退出 `0`。`evidence/acceptance-index.json` 保存六个活动脚本 SHA-256、两份完整正例、逐 tuple job/artifact/outer/ZIP/library hash、native 报告及每个故障结果；原始记录在 `data/main-39841414473/`、`data/tag-39849483776/`，native 子进程 receipt 与完整断言在 `evidence/native-windows.json*`、`evidence/native-linux.json*`。证明仍以前述 GitHub 托管记录、经审查构建程序与标准 Go 工具链可信为前提。
+
+U3 的最终远端发布步骤尚未执行，仍负责最终 main 合并及 CI、随后 tag/CI、七平台 main/tag buildinfo/revision 与实际版本注入、15 assets/checksums、正式 tag 的 Linux `.so` 与 Windows amd64 DLL 真实注册及 active-after，以及合并后 worktree 清理。本次未 push、tag、合并 main、创建 PR 或 issue。本地 upstream 200 不代表商用 API 接收；跨格式空 Claude typed text、末尾 assistant scalar 与 prefill 接受性边界均未改变。
