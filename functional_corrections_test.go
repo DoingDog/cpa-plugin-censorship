@@ -84,15 +84,21 @@ func functionalFixtures() []functionalFixture {
 		{"decode_Interactions", "interactions", "user", `"input":%s`, false},
 		{"Interactions_caller_annotations", "interactions", "user", `"input":{"type":"text","text":%s,"annotations":[{"type":"url_citation","url":"https://example.test/SECRET"}]}`, false},
 	}
-	for _, alias := range []string{"response_schema", "_responseJsonSchema", "response_json_schema", "response_json_schema_ordered"} {
-		for _, property := range []bool{false, true} {
-			schema := `{"description":%s,"enum":["SECRET enum"]}`
-			name := "root"
-			if property {
-				schema = `{"properties":{"SECRET key":{"description":%s,"default":"SECRET default"}}}`
-				name = "property"
+	for _, root := range []string{"generationConfig", "generation_config"} {
+		for _, alias := range []string{"responseSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "responseJsonSchema", "response_json_schema_ordered", "responseFormat.text.schema"} {
+			for _, property := range []bool{false, true} {
+				schema := `{"type":"OBJECT","description":%s,"enum":["SECRET enum"]}`
+				name := "root"
+				if property {
+					schema = `{"type":"OBJECT","properties":{"SECRET key":{"type":"STRING","description":%s,"default":"SECRET default"}}}`
+					name = "property"
+				}
+				field := `"` + alias + `":` + schema
+				if alias == "responseFormat.text.schema" {
+					field = `"responseFormat":{"text":{"mimeType":"application/json","schema":` + schema + `}}`
+				}
+				fixtures = append(fixtures, functionalFixture{"Gemini_" + root + "_" + alias + "_" + name, "gemini", "developer", `"contents":[{"role":"user","parts":[{"text":"safe"}]}],"` + root + `":{"responseMimeType":"application/json",` + field + `}`, false})
 			}
-			fixtures = append(fixtures, functionalFixture{"Gemini_" + alias + "_" + name, "gemini", "developer", `"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generationConfig":{"responseMimeType":"application/json","` + alias + `":` + schema + `}`, false})
 		}
 	}
 	return fixtures
@@ -182,6 +188,12 @@ func TestFunctionalCorrectionsBothInterceptionPhases(t *testing.T) {
 				body := functionalBody(t, fixture, "a​b tail")
 				requireNoOpResponse(t, functionalCall(t, phase.method, functionalRequest(fixture.format, body)))
 			})
+			if fixture.format == "gemini" {
+				t.Run(fixture.name+"/"+phase.name+"/no_match", func(t *testing.T) {
+					registerConfig(t, "words:\n  block: [ABSENT]\nscope:\n  roles: [developer]\n"+phase.filter)
+					requireNoOpResponse(t, functionalCall(t, phase.method, functionalRequest(fixture.format, functionalBody(t, fixture, "SECRET tail"))))
+				})
+			}
 		}
 		for _, bypass := range []string{"model_BeforeAuth", "model_free_AfterAuth", "unselected_AfterAuth", "filter_miss", "role_disabled", "format_disabled"} {
 			t.Run(fixture.name+"/"+bypass, func(t *testing.T) {
@@ -198,6 +210,9 @@ func TestFunctionalCorrectionsBothInterceptionPhases(t *testing.T) {
 				case "filter_miss":
 					request.Model = "model-decoy"
 					request.RequestedModel = "target-model"
+					if fixture.format == "gemini" {
+						request.Body = bytes.Replace(request.Body, []byte("body-decoy"), []byte("target-model"), 1)
+					}
 				case "role_disabled":
 					disabledRole := "system"
 					if fixture.role == "system" {
@@ -493,6 +508,34 @@ func TestClaudeSystemScalarUnchangedBoundariesBothPhases(t *testing.T) {
 					requireNoOpResponse(t, response)
 				} else {
 					requireFunctionalRewrite(t, response, []byte(`{"model":"claude-opus-5-5",`+tc.want+`}`))
+				}
+			})
+		}
+	}
+}
+
+func TestGeminiGenerationSchemaOrderingBothPhases(t *testing.T) {
+	for _, phase := range []struct{ method, filter string }{
+		{pluginabi.MethodRequestInterceptBefore, ""},
+		{pluginabi.MethodRequestInterceptAfter, "filter_mode: include\nfilter:\n  models: [target-model]\n"},
+	} {
+		for _, tc := range []struct{ name, body, words, term, role, want string }{
+			{"snake_before_user", `{"generation_config":{"response_schema":{"description":"SECRET"}},"contents":[{"role":"user","parts":[{"text":"SECRET"}]}],"generationConfig":{"responseSchema":{"description":"SECRET"}}}`, "  block: [SECRET]\n", "SECRET", "developer", ""},
+			{"user_before_snake", `{"contents":[{"role":"user","parts":[{"text":"SECRET"}]}],"generation_config":{"response_schema":{"description":"SECRET"}},"generationConfig":{"responseSchema":{"description":"SECRET"}}}`, "  block: [SECRET]\n", "SECRET", "user", ""},
+			{"rule_major", `{"generation_config":{"response_schema":{"description":"EARLY"}},"generationConfig":{"responseSchema":{"description":"LATE"}}}`, "  block: [LATE, EARLY]\n", "LATE", "developer", ""},
+			{"no_cross_node", `{"generation_config":{"response_schema":{"description":"SEC"}},"generationConfig":{"responseSchema":{"description":"RET"}}}`, "  block: [SECRET]\n", "", "", ""},
+			{"block_precedes_rewrite", `{"generation_config":{"response_schema":{"description":"SECRET"}}}`, "  obfs: [SECRET]\n  strip: [SECRET]\n  block: [SECRET]\n", "SECRET", "developer", ""},
+			{"strip_then_obfs", `{"generation_config":{"response_schema":{"description":"aXb tail"}},"generationConfig":{"responseSchema":{"description":"aXb tail"}}}`, "  obfs: [ab, ab]\n  strip: [X]\n", "", "", `{"generation_config":{"response_schema":{"description":"a​b tail"}},"generationConfig":{"responseSchema":{"description":"a​b tail"}}}`},
+		} {
+			t.Run(phase.method+"/"+tc.name, func(t *testing.T) {
+				registerConfig(t, "words:\n"+tc.words+phase.filter)
+				response := functionalCall(t, phase.method, functionalRequest("gemini", []byte(tc.body)))
+				if tc.term != "" {
+					requireFunctionalBlock(t, response, tc.term, tc.role)
+				} else if tc.want != "" {
+					requireFunctionalRewrite(t, response, []byte(tc.want))
+				} else {
+					requireNoOpResponse(t, response)
 				}
 			})
 		}

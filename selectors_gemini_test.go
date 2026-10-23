@@ -322,44 +322,60 @@ func TestGeminiGenerationSchemaAliases(t *testing.T) {
 	schemas := []struct {
 		name, body string
 	}{
-		{name: "root", body: `{"type":"object","description":"SECRET tail","properties":{"SECRET_key":{"type":"string","description":"safe property","enum":["SECRET enum"],"default":"SECRET default"}},"required":["SECRET_key"],"metadata":{"description":"SECRET schema metadata"}}`},
-		{name: "property", body: `{"type":"object","description":"safe root","properties":{"SECRET_key":{"type":"string","description":"SECRET tail","enum":["SECRET enum"],"default":"SECRET default"}},"required":["SECRET_key"],"metadata":{"description":"SECRET schema metadata"}}`},
-		{name: "machine-only", body: `{"type":"object","description":"safe root","properties":{"SECRET_key":{"type":"string","description":"safe property","enum":["SECRET enum"],"default":"SECRET default"}},"required":["SECRET_key"],"metadata":{"description":"SECRET schema metadata"}}`},
+		{name: "root", body: `{"type":"OBJECT","description":"SECRET tail","properties":{"SECRET_key":{"type":"STRING","description":"safe property","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"required":["SECRET_key"],"metadata":{"description":"SECRET schema metadata"}}`},
+		{name: "property", body: `{"type":"OBJECT","description":"safe root","properties":{"SECRET_key":{"type":"STRING","description":"SECRET tail","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"required":["SECRET_key"],"metadata":{"description":"SECRET schema metadata"}}`},
+		{name: "machine-only", body: `{"type":"OBJECT","description":"safe root","properties":{"SECRET_key":{"type":"STRING","description":"safe property","enum":["SECRET enum"],"const":"SECRET const","default":"SECRET default"}},"required":["SECRET_key"],"metadata":{"description":"SECRET schema metadata"}}`},
+		{name: "non-string", body: `{"type":"OBJECT","description":{"text":"SECRET"},"properties":{"SECRET_key":{"description":7}},"metadata":{"description":"SECRET metadata"}}`},
+		{name: "no-match", body: `{"type":"OBJECT","description":"clean root","properties":{"answer":{"type":"STRING","description":"clean property"}}}`},
 	}
 	actions := []struct {
 		mode, replacement string
 	}{
 		{mode: "block"},
 		{mode: "strip", replacement: `" tail"`},
-		{mode: "obfs", replacement: "\"S​ECRET tail\""},
+		{mode: "obfs"},
 	}
-	for _, tc := range cases {
-		for _, action := range actions {
-			for _, schema := range schemas {
-				t.Run(tc.name+"/"+action.mode+"/"+schema.name, func(t *testing.T) {
-					body := []byte(`{
-						"contents":[{"role":"user","parts":[{"text":"safe"}]}],
-						"generationConfig":{` + tc.prefix + schema.body + tc.suffix + `,"temperature":1.2300e+00,"metadata":{"description":"SECRET config metadata"}},
-						"metadata":{"description":"SECRET request metadata"}
-					}`)
-					registerConfig(t, "words:\n  "+action.mode+": [SECRET]\nscope:\n  roles: [developer]\n")
-					resp := interceptRPC(t, "gemini", body)
-					switch {
-					case schema.name == "machine-only":
-						requireNoOpResponse(t, resp)
-					case action.mode == "block":
-						if !resp.Terminate || resp.StatusCode != 400 || gjson.GetBytes(resp.ResponseBody, "error.code").Str != "censorship_blocked" || gjson.GetBytes(resp.ResponseBody, "error.role").Str != "developer" || gjson.GetBytes(resp.ResponseBody, "error.term").Str != "SECRET" {
-							t.Fatalf("response = %#v", resp)
-						}
-					default:
-						want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET tail"`, After: action.replacement})
-						if resp.Terminate || !bytes.Equal(resp.Body, want) {
-							t.Fatalf("response = %#v", resp)
-						}
+	for _, matching := range []struct{ name, token, obfs, config string }{
+		{"literal", `"SECRET tail"`, `"S​ECRET tail"`, ""},
+		{"fold", `"secret tail"`, `"s​ecret tail"`, "ignore_case: true\n"},
+	} {
+		for _, root := range []string{"generationConfig", "generation_config"} {
+			for _, tc := range cases {
+				for _, action := range actions {
+					for _, schema := range schemas {
+						t.Run(matching.name+"/"+root+"/"+tc.name+"/"+action.mode+"/"+schema.name, func(t *testing.T) {
+							body := []byte(`{
+								"contents":[{"role":"user","parts":[{"text":"safe"}]}],
+								"` + root + `":{` + tc.prefix + schema.body + tc.suffix + `,"temperature":1.2300e+00,"stopSequences":["SECRET stop"],"metadata":{"description":"SECRET config metadata"}},
+								"metadata":{"description":"SECRET request metadata"}
+							}`)
+							body = bytes.ReplaceAll(body, []byte(`"SECRET tail"`), []byte(matching.token))
+							original := bytes.Clone(body)
+							registerConfig(t, matching.config+"words:\n  "+action.mode+": [SECRET]\nscope:\n  roles: [developer]\n")
+							resp := interceptRPC(t, "gemini", body)
+							switch {
+							case schema.name != "root" && schema.name != "property":
+								requireNoOpResponse(t, resp)
+							case action.mode == "block":
+								requireFunctionalBlock(t, resp, "SECRET", "developer")
+							default:
+								replacement := action.replacement
+								if action.mode == "obfs" {
+									replacement = matching.obfs
+								}
+								want := replaceRawTokens(t, body, rawReplacement{Before: matching.token, After: replacement})
+								requireFunctionalRewrite(t, resp, want)
+							}
+							registerConfig(t, matching.config+"words:\n  "+action.mode+": [SECRET]\nscope:\n  roles: [user]\n")
+							requireNoOpResponse(t, interceptRPC(t, "gemini", body))
+							registerConfig(t, matching.config+"words:\n  "+action.mode+": [SECRET]\nscope:\n  roles: [developer]\n  formats: [openai]\n")
+							requireNoOpResponse(t, interceptRPC(t, "gemini", body))
+							if !bytes.Equal(body, original) {
+								t.Fatal("original input changed")
+							}
+						})
 					}
-					registerConfig(t, "words:\n  "+action.mode+": [SECRET]\nscope:\n  roles: [user]\n")
-					requireNoOpResponse(t, interceptRPC(t, "gemini", body))
-				})
+				}
 			}
 		}
 	}
@@ -381,7 +397,7 @@ func TestGeminiGenerationSchemaDescriptionsStripOnlyDescriptions(t *testing.T) {
 
 func TestGeminiGenerationSchemaExcludesMachineFieldsAndUndocumentedRoot(t *testing.T) {
 	registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
-	body := []byte(`{"generationConfig":{"responseSchema":{"type":"object","properties":{"SECRET_key":{"type":"string","enum":["SECRET"],"default":"SECRET"}}},"responseJsonSchema":{"type":"object","enum":["SECRET"],"default":"SECRET"},"responseFormat":{"text":{"schema":{"type":"object","properties":{"SECRET_key":{"type":"string","default":"SECRET"}}}}},"response_format":{"text":{"schema":{"type":"object","description":"SECRET ignored format"}}}},"generation_config":{"response_schema":{"type":"object","description":"SECRET ignored root"}}}`)
+	body := []byte(`{"generationConfig":{"responseSchema":{"type":"object","properties":{"SECRET_key":{"type":"string","enum":["SECRET"],"default":"SECRET"}}},"responseJsonSchema":{"type":"object","enum":["SECRET"],"default":"SECRET"},"responseFormat":{"text":{"schema":{"type":"object","properties":{"SECRET_key":{"type":"string","default":"SECRET"}}}}},"response_format":{"text":{"schema":{"type":"object","description":"SECRET ignored format"}}}},"generationUnknown":{"response_schema":{"type":"object","description":"SECRET ignored root"}},"generation_config":{"unknown_schema":{"description":"SECRET ignored schema"},"response_format":{"text":{"schema":{"description":"SECRET ignored format"}}}}}`)
 	resp := interceptRPC(t, "gemini", body)
 	if resp.Terminate || len(resp.Body) != 0 || len(resp.ResponseBody) != 0 {
 		t.Fatalf("response = %#v", resp)
