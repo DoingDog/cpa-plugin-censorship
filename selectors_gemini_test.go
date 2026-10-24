@@ -2,11 +2,195 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
 )
+
+func TestGeminiTypedSchemaAnyOf(t *testing.T) {
+	registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"safe"}]}],"generation_config":{"response_mime_type":"application/json","response_schema":{"type":"OBJECT","properties":{"answer":{"any_of":[{"type":"STRING","description":"SECRET branch"}]}}}}}`)
+	for _, keyword := range []string{"any_of", "anyOf"} {
+		t.Run(keyword, func(t *testing.T) {
+			requireFunctionalBlock(t, interceptRPC(t, "gemini", bytes.Replace(body, []byte("any_of"), []byte(keyword), 1)), "SECRET", "developer")
+		})
+	}
+}
+
+func geminiSchemaFixtures(typed bool) []functionalFixture {
+	var fixtures []functionalFixture
+	for _, declarations := range []string{"functionDeclarations", "function_declarations"} {
+		keys := []string{"parametersJsonSchema", "parameters_json_schema", "responseJsonSchema", "response_json_schema"}
+		if typed {
+			keys = []string{"parameters", "response"}
+		}
+		for _, key := range keys {
+			fixtures = append(fixtures, functionalFixture{name: declarations + "/" + key, format: "gemini", role: "developer", fragment: `"tools":[{"` + declarations + `":[{"name":"SECRET_lookup","` + key + `":%s}]}],"contents":[{"role":"user","parts":[{"text":"safe"}]}]`})
+		}
+	}
+	for _, root := range []string{"generationConfig", "generation_config"} {
+		keys := []string{"_responseJsonSchema", "response_json_schema", "responseJsonSchema", "response_json_schema_ordered", "responseFormat.text.schema"}
+		if typed {
+			keys = []string{"responseSchema", "response_schema"}
+		}
+		for _, key := range keys {
+			field := `"` + key + `":%s`
+			if key == "responseFormat.text.schema" {
+				field = `"responseFormat":{"text":{"mimeType":"application/json","schema":%s}}`
+			}
+			fixtures = append(fixtures, functionalFixture{name: root + "/" + key, format: "gemini", role: "developer", fragment: `"` + root + `":{"responseMimeType":"application/json",` + field + `,"temperature":1.2300e+00,"stopSequences":["SECRET stop"]},"contents":[{"role":"user","parts":[{"text":"safe"}]}]`})
+		}
+	}
+	return fixtures
+}
+
+func geminiLegacySchemaBranches() []struct{ name, template string } {
+	var branches []struct{ name, template string }
+	for _, key := range []string{"patternProperties", "$defs", "definitions", "dependentSchemas"} {
+		branches = append(branches, struct{ name, template string }{key, `{"` + key + `":{"entry":%s}}`})
+	}
+	for _, key := range []string{"additionalProperties", "unevaluatedProperties", "propertyNames", "contains", "not", "if", "then", "else"} {
+		branches = append(branches, struct{ name, template string }{key, `{"` + key + `":%s}`})
+	}
+	for _, key := range []string{"prefixItems", "allOf", "oneOf"} {
+		branches = append(branches, struct{ name, template string }{key, `{"` + key + `":[%s]}`})
+	}
+	return branches
+}
+
+func TestGeminiTypedSchemaPaths(t *testing.T) {
+	for _, fixture := range geminiSchemaFixtures(true) {
+		for _, keyword := range []string{"anyOf", "any_of"} {
+			for _, shape := range []struct{ name, schema string }{
+				{"root", `{"type":"STRING","description":"SECRET tail"}`},
+				{"branch", `{"` + keyword + `":[{"type":"STRING","description":"SECRET tail"}]}`},
+				{"property", `{"type":"OBJECT","properties":{"any_of":{"` + keyword + `":[{"type":"STRING","description":"SECRET tail"}]}}}`},
+				{"items", `{"type":"ARRAY","items":{"` + keyword + `":[{"type":"STRING","description":"SECRET tail"}]}}`},
+				{"mixed", `{"` + keyword + `":[{"type":"OBJECT","properties":{"description":{"type":"ARRAY","items":{"anyOf":[{"any_of":[{"type":"STRING","description":"SECRET tail"}]}]}}}}]}`},
+			} {
+				for _, fold := range []bool{false, true} {
+					for _, action := range []string{"block", "strip", "obfs"} {
+						t.Run(fmt.Sprintf("%s/%s/%s/%t/%s", fixture.name, keyword, shape.name, fold, action), func(t *testing.T) {
+							token, obfs := `"SECRET tail"`, `"S​ECRET tail"`
+							if fold {
+								token, obfs = `"secret tail"`, `"s​ecret tail"`
+							}
+							schema := strings.ReplaceAll(shape.schema, `"SECRET tail"`, token)
+							// 每个 schema 带相同结构的机器对象，整段 raw body 比较检查其不变。
+							schema = strings.TrimSuffix(schema, "}") + `,"enum":["SECRET enum"],"const":"SECRET const","default":{"any_of":[{"description":"SECRET machine"}]},"example":{"description":"SECRET example"},"required":["description"],"propertyOrdering":["any_of"],"format":"SECRET format","pattern":"SECRET pattern","title":"SECRET title","metadata":{"any_of":[{"description":"SECRET metadata"}]}}`
+							body := functionalRawBody(fixture, schema)
+							original := bytes.Clone(body)
+							config := fmt.Sprintf("ignore_case: %t\nwords:\n  %s: [SECRET]\nscope:\n  roles: [developer]\n", fold, action)
+							registerConfig(t, config)
+							response := interceptRPC(t, "gemini", body)
+							if action == "block" {
+								requireFunctionalBlock(t, response, "SECRET", "developer")
+							} else {
+								replacement := `" tail"`
+								if action == "obfs" {
+									replacement = obfs
+								}
+								requireFunctionalRewrite(t, response, replaceRawTokens(t, body, rawReplacement{Before: token, After: replacement}))
+							}
+							for _, gate := range []string{"  roles: [user]\n", "  roles: [developer]\n  formats: [openai]\n"} {
+								registerConfig(t, strings.Split(config, "scope:\n")[0]+"scope:\n"+gate)
+								requireNoOpResponse(t, interceptRPC(t, "gemini", body))
+							}
+							if !bytes.Equal(body, original) {
+								t.Fatal("input changed")
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestGeminiTypedSchemaTokenOrder(t *testing.T) {
+	for _, fixture := range geminiSchemaFixtures(true) {
+		for _, reverse := range []bool{false, true} {
+			first, second := `"any_of":[{"description":"snake"}]`, `"anyOf":[{"description":"camel"}]`
+			want := []string{"snake", "camel"}
+			if reverse {
+				first, second = second, first
+				want[0], want[1] = want[1], want[0]
+			}
+			spans, err := selectTextSpans(functionalRawBody(fixture, "{"+first+","+second+"}"), "gemini", scopeSet{"developer": {}})
+			if err != nil || len(spans) != 2 || spans[0].Text != want[0] || spans[1].Text != want[1] {
+				t.Fatalf("%s reverse=%t spans=%#v error=%v, want %v", fixture.name, reverse, spans, err, want)
+			}
+		}
+	}
+}
+
+func TestGeminiTypedSchemaLegacyBoundaries(t *testing.T) {
+	for _, fixture := range geminiSchemaFixtures(true) {
+		for _, branch := range geminiLegacySchemaBranches() {
+			for _, tc := range []struct {
+				name, schema string
+				selected     bool
+			}{
+				{"legacy", fmt.Sprintf(branch.template, `{"description":"SECRET tail"}`), true},
+				{"legacy_anyOf", fmt.Sprintf(branch.template, `{"anyOf":[{"description":"SECRET tail"}]}`), true},
+				{"legacy_any_of", fmt.Sprintf(branch.template, `{"any_of":[{"description":"SECRET tail"}]}`), false},
+				{"cannot_regain_typed", fmt.Sprintf(branch.template, `{"properties":{"answer":{"items":{"anyOf":[{"any_of":[{"description":"SECRET tail"}]}]}}}}`), false},
+				{"typed_then_legacy", `{"any_of":[` + fmt.Sprintf(branch.template, `{"description":"SECRET tail","any_of":[{"description":"SECRET hidden"}]}`) + `]}`, false},
+			} {
+				t.Run(fixture.name+"/"+branch.name+"/"+tc.name, func(t *testing.T) {
+					registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: [developer]\n")
+					body := functionalRawBody(fixture, tc.schema)
+					response := interceptRPC(t, "gemini", body)
+					if tc.selected {
+						requireFunctionalRewrite(t, response, replaceRawTokens(t, body, rawReplacement{Before: `"SECRET tail"`, After: `" tail"`}))
+					} else {
+						requireNoOpResponse(t, response)
+					}
+				})
+			}
+		}
+		for _, schema := range []string{
+			`{"any_of":null}`, `{"any_of":"SECRET"}`, `{"any_of":{"description":"SECRET"}}`,
+			`{"any_of":[null,1,"SECRET",[ {"description":"SECRET"} ],{"description":7},{"description":{"description":"SECRET"}}]}`,
+			`{"properties":[{"any_of":[{"description":"SECRET"}]}]}`, `{"items":[{"any_of":[{"description":"SECRET"}]}]}`,
+			`{"anyOf":{"any_of":[{"description":"SECRET"}]}}`,
+			`{"metadata":{"any_of":[{"description":"SECRET"}]},"default":{"any_of":[{"description":"SECRET"}]},"example":{"any_of":[{"description":"SECRET"}]},"enum":[{"any_of":[{"description":"SECRET"}]}]}`,
+		} {
+			t.Run(fixture.name+"/invalid_or_machine/"+schema, func(t *testing.T) {
+				registerConfig(t, "words:\n  block: [SECRET]\nscope:\n  roles: [developer]\n")
+				requireNoOpResponse(t, interceptRPC(t, "gemini", functionalRawBody(fixture, schema)))
+			})
+		}
+	}
+}
+
+func TestGeminiTypedSchemaRawAndOtherProviderExclusions(t *testing.T) {
+	fixtures := geminiSchemaFixtures(false)
+	if len(fixtures) != 18 || len(geminiSchemaFixtures(true)) != 8 || len(geminiLegacySchemaBranches()) != 15 {
+		t.Fatal("schema fixture coverage changed")
+	}
+	fixtures = append(fixtures,
+		functionalFixture{name: "Chat", format: "openai", role: "developer", fragment: `"tools":[{"type":"function","function":{"name":"lookup","parameters":%s}}]`},
+		functionalFixture{name: "Responses", format: "openai-response", role: "developer", fragment: `"text":{"format":{"type":"json_schema","schema":%s}}`},
+		functionalFixture{name: "Claude", format: "claude", role: "system", fragment: `"tools":[{"name":"lookup","input_schema":%s}]`},
+		functionalFixture{name: "Interactions", format: "interactions", role: "developer", fragment: `"tools":[{"type":"function","name":"lookup","parameters":%s}]`},
+	)
+	for _, fixture := range fixtures {
+		for _, keyword := range []string{"anyOf", "any_of"} {
+			t.Run(fixture.name+"/"+keyword, func(t *testing.T) {
+				registerConfig(t, "words:\n  strip: [SECRET]\nscope:\n  roles: ["+fixture.role+"]\n")
+				body := functionalRawBody(fixture, `{"description":"SECRET root","`+keyword+`":[{"description":"SECRET tail"}]}`)
+				want := replaceRawTokens(t, body, rawReplacement{Before: `"SECRET root"`, After: `" root"`})
+				if keyword == "anyOf" {
+					want = replaceRawTokens(t, want, rawReplacement{Before: `"SECRET tail"`, After: `" tail"`})
+				}
+				requireFunctionalRewrite(t, interceptRPC(t, fixture.format, body), want)
+			})
+		}
+	}
+}
 
 func TestGeminiSnakeFunctionDeclarations(t *testing.T) {
 	body := []byte(`{"tools":[{"function_declarations":[{"name":"SECRET_lookup","description":"SECRET lookup","parameters_json_schema":{"type":"object","description":"SECRET parameters","enum":["SECRET enum"]},"response_json_schema":{"type":"object","description":"SECRET response","enum":["SECRET enum"]}}]}],"contents":[{"role":"user","parts":[{"text":"safe"}]}]}`)

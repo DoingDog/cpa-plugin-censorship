@@ -14,6 +14,31 @@ func appendGeminiTextPart(spans *[]textSpan, part gjson.Result, role string, rol
 	}
 }
 
+func appendGeminiSchemaAnyOfDescriptions(spans *[]textSpan, schema gjson.Result, roles scopeSet, underAnyOf bool) {
+	if !schema.IsObject() {
+		return
+	}
+	// 既有 description 由 JSON Schema helper 收集；这里只补完整 typed 路径经过 any_of 的部分。
+	if underAnyOf {
+		appendStringSpan(spans, schema.Get("description"), "developer", roles)
+	}
+	if properties := schema.Get("properties"); properties.IsObject() {
+		properties.ForEach(func(_, child gjson.Result) bool {
+			appendGeminiSchemaAnyOfDescriptions(spans, child, roles, underAnyOf)
+			return true
+		})
+	}
+	appendGeminiSchemaAnyOfDescriptions(spans, schema.Get("items"), roles, underAnyOf)
+	for _, key := range []string{"anyOf", "any_of"} {
+		if children := schema.Get(key); children.IsArray() {
+			children.ForEach(func(_, child gjson.Result) bool {
+				appendGeminiSchemaAnyOfDescriptions(spans, child, roles, underAnyOf || key == "any_of")
+				return true
+			})
+		}
+	}
+}
+
 func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 	collectParts := func(content gjson.Result, role string) {
 		if !roles.has(role) {
@@ -47,7 +72,11 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 						}
 						appendStringSpan(spans, declaration.Get("description"), "developer", roles)
 						for _, key := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
-							appendJSONSchemaDescriptions(spans, declaration.Get(key), "developer", roles)
+							schema := declaration.Get(key)
+							appendJSONSchemaDescriptions(spans, schema, "developer", roles)
+							if key == "parameters" || key == "response" {
+								appendGeminiSchemaAnyOfDescriptions(spans, schema, roles, false)
+							}
 						}
 						return true
 					})
@@ -57,7 +86,11 @@ func collectGemini(root gjson.Result, roles scopeSet, spans *[]textSpan) {
 		}
 		for _, configKey := range []string{"generationConfig", "generation_config"} {
 			for _, key := range []string{"responseSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "responseJsonSchema", "response_json_schema_ordered", "responseFormat.text.schema"} {
-				appendJSONSchemaDescriptions(spans, root.Get(configKey+"."+key), "developer", roles)
+				schema := root.Get(configKey + "." + key)
+				appendJSONSchemaDescriptions(spans, schema, "developer", roles)
+				if key == "responseSchema" || key == "response_schema" {
+					appendGeminiSchemaAnyOfDescriptions(spans, schema, roles, false)
+				}
 			}
 		}
 	}

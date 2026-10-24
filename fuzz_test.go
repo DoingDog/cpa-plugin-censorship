@@ -671,6 +671,91 @@ func TestProtocolOracleCompatibleSchemaAliases(t *testing.T) {
 	}
 }
 
+func TestProtocolOracleGeminiTypedSchemaAnyOf(t *testing.T) {
+	for _, typed := range []bool{true, false} {
+		for _, fixture := range geminiSchemaFixtures(typed) {
+			cases := []struct {
+				name, schema string
+				selected     bool
+			}{
+				{"anyOf", `{"anyOf":[{"description":"SECRET tail"}]}`, true},
+				{"any_of", `{"any_of":[{"description":"SECRET tail"}]}`, typed},
+				{"mixed", `{"properties":{"any_of":{"items":{"anyOf":[{"any_of":[{"description":"SECRET tail"}]}]}}}}`, typed},
+				{"machine", `{"metadata":{"any_of":[{"description":"SECRET machine"}]},"default":{"any_of":[{"description":"SECRET machine"}]},"enum":[{"description":"SECRET machine"}]}`, false},
+				{"wrong_types", `{"any_of":[null,"SECRET",[{"description":"SECRET machine"}],{"description":7}],"items":[{"any_of":[{"description":"SECRET machine"}]}]}`, false},
+			}
+			for _, branch := range geminiLegacySchemaBranches() {
+				cases = append(cases, struct {
+					name, schema string
+					selected     bool
+				}{branch.name, fmt.Sprintf(branch.template, `{"description":"SECRET tail"}`), true},
+					struct {
+						name, schema string
+						selected     bool
+					}{branch.name + "/any_of", fmt.Sprintf(branch.template, `{"properties":{"answer":{"items":{"anyOf":[{"any_of":[{"description":"SECRET machine"}]}]}}}}`), false},
+					struct {
+						name, schema string
+						selected     bool
+					}{"any_of/" + branch.name, `{"any_of":[` + fmt.Sprintf(branch.template, `{"description":"SECRET machine"}`) + `]}`, false})
+			}
+			for _, tc := range cases {
+				t.Run(fixture.name+"/"+tc.name, func(t *testing.T) {
+					body := functionalRawBody(fixture, tc.schema)
+					want := []oracleProtocolSpan(nil)
+					if tc.selected {
+						want = []oracleProtocolSpan{{Text: "SECRET tail", Role: "developer"}}
+					}
+					semantic, ok := oracleProtocolSpans("gemini", body)
+					if !ok {
+						t.Fatal("semantic parser rejected fixture")
+					}
+					var selected []oracleProtocolSpan
+					for _, span := range semantic {
+						if strings.Contains(span.Text, "SECRET") {
+							selected = append(selected, span)
+						}
+					}
+					if !reflect.DeepEqual(selected, want) {
+						t.Errorf("semantic spans=%v, want=%v", selected, want)
+					}
+					raw, ok := oracleRawProtocolSpans("gemini", body)
+					if !ok {
+						t.Fatal("raw parser rejected fixture")
+					}
+					selected = nil
+					for _, span := range raw {
+						var text string
+						if err := json.Unmarshal(body[span.Start:span.End], &text); err != nil || text != span.Text {
+							t.Fatalf("raw span=%#v error=%v", span, err)
+						}
+						if strings.Contains(span.Text, "SECRET") {
+							selected = append(selected, oracleProtocolSpan{Text: span.Text, Role: span.Role})
+						}
+					}
+					if !reflect.DeepEqual(selected, want) {
+						t.Errorf("raw spans=%v, want=%v", selected, want)
+					}
+					for _, action := range []mode{modeBlock, modeStrip, modeObfs} {
+						got, err := transformRequest(body, "gemini", mustConfig(t, "mode: "+string(action)+"\nwords: [SECRET]\n"))
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := checkProtocolResult("gemini", body, action, false, got); err != nil {
+							t.Errorf("production/oracle %s: %v", action, err)
+						}
+					}
+					if bytes.Contains(body, []byte("SECRET machine")) {
+						forged := transformResult{Body: bytes.ReplaceAll(body, []byte("SECRET machine"), []byte("changed machine"))}
+						if err := checkProtocolResult("gemini", body, modeStrip, false, forged); err == nil {
+							t.Fatal("oracles accepted a machine-only rewrite")
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestProtocolOracleCoversDefaultScopeOpenAIDefinitions(t *testing.T) {
 	for _, tc := range []struct {
 		name, format, body, role string
@@ -1337,6 +1422,40 @@ func FuzzDuplicateWalkerAgainstOracle(f *testing.F) {
 	})
 }
 
+func geminiTypedSchemaSeeds() [][]byte {
+	var seeds [][]byte
+	for _, typed := range []bool{true, false} {
+		for _, fixture := range geminiSchemaFixtures(typed) {
+			for _, schema := range []string{
+				`{"any_of":[{"type":"STRING","description":"SECRET tail","enum":["SECRET machine"]}]}`,
+				`{"properties":{"description":{"items":{"anyOf":[{"any_of":[{"description":"SECRET tail"}]}]}}},"default":{"any_of":[{"description":"SECRET machine"}]}}`,
+			} {
+				seeds = append(seeds, functionalRawBody(fixture, schema))
+			}
+		}
+	}
+	fixture := geminiSchemaFixtures(true)[0]
+	for _, branch := range geminiLegacySchemaBranches() {
+		seeds = append(seeds, functionalRawBody(fixture, fmt.Sprintf(branch.template, `{"description":"SECRET tail","any_of":[{"description":"SECRET machine"}]}`)),
+			functionalRawBody(fixture, `{"any_of":[`+fmt.Sprintf(branch.template, `{"description":"SECRET machine"}`)+`]}`))
+	}
+	return seeds
+}
+
+func TestProtocolOracleGeminiTypedSeeds(t *testing.T) {
+	for i, body := range geminiTypedSchemaSeeds() {
+		for _, action := range []mode{modeBlock, modeStrip, modeObfs} {
+			got, err := transformRequest(body, "gemini", mustConfig(t, "mode: "+string(action)+"\nwords: [SECRET]\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := checkProtocolResult("gemini", body, action, false, got); err != nil {
+				t.Errorf("seed %d action %s: %v", i, action, err)
+			}
+		}
+	}
+}
+
 func FuzzProtocolTransform(f *testing.F) {
 	seeds := []struct {
 		format string
@@ -1396,6 +1515,12 @@ func FuzzProtocolTransform(f *testing.F) {
 				body   []byte
 			}{"gemini", []byte(`{"` + root + `":{"responseMimeType":"application/json",` + schema + `,"temperature":1.2300e+00}}`)})
 		}
+	}
+	for _, body := range geminiTypedSchemaSeeds() {
+		seeds = append(seeds, struct {
+			format string
+			body   []byte
+		}{"gemini", body})
 	}
 	for _, fixture := range protocolFlatCustomFixtures() {
 		seeds = append(seeds, struct {
@@ -2606,6 +2731,23 @@ func oracleClaudeSpans(root []byte, spans *[]oracleProtocolSpan) {
 	})
 }
 
+func oracleGeminiAnyOfSpans(schema json.RawMessage, spans *[]oracleProtocolSpan, underAnyOf bool) {
+	oracleForEachObject(schema, func(key string, value json.RawMessage) {
+		switch key {
+		case "description":
+			if underAnyOf {
+				oracleAppendString(spans, value, "developer")
+			}
+		case "properties":
+			oracleForEachObject(value, func(_ string, child json.RawMessage) { oracleGeminiAnyOfSpans(child, spans, underAnyOf) })
+		case "items":
+			oracleGeminiAnyOfSpans(value, spans, underAnyOf)
+		case "anyOf", "any_of":
+			oracleForEachArray(value, func(child json.RawMessage) { oracleGeminiAnyOfSpans(child, spans, underAnyOf || key == "any_of") })
+		}
+	})
+}
+
 func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 	if tools, ok := oracleFirstField(root, "tools"); ok {
 		oracleForEachArray(tools, func(tool json.RawMessage) {
@@ -2618,6 +2760,9 @@ func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 						for _, field := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
 							if schema, ok := oracleFirstField(declaration, field); ok {
 								oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+								if field == "parameters" || field == "response" {
+									oracleGeminiAnyOfSpans(schema, spans, false)
+								}
 							}
 						}
 					})
@@ -2633,6 +2778,9 @@ func oracleGeminiSpans(root []byte, spans *[]oracleProtocolSpan) {
 		for _, key := range []string{"responseSchema", "responseJsonSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "response_json_schema_ordered"} {
 			if schema, ok := oracleFirstField(config, key); ok {
 				oracleAppendJSONSchemaDescriptions(spans, schema, "developer")
+				if key == "responseSchema" || key == "response_schema" {
+					oracleGeminiAnyOfSpans(schema, spans, false)
+				}
 			}
 		}
 		if format, ok := oracleFirstField(config, "responseFormat"); ok {
@@ -3461,6 +3609,34 @@ func oracleRawClaudeSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	}
 }
 
+func oracleRawGeminiAnyOfSpans(schema *oracleRawValue, spans *[]oracleRawStringToken, underAnyOf bool) {
+	if schema == nil || schema.kind != 'o' {
+		return
+	}
+	for _, member := range schema.object {
+		switch member.key {
+		case "description":
+			if underAnyOf {
+				oracleRawAppendString(spans, member.value, "developer")
+			}
+		case "properties":
+			if member.value.kind == 'o' {
+				for _, property := range member.value.object {
+					oracleRawGeminiAnyOfSpans(property.value, spans, underAnyOf)
+				}
+			}
+		case "items":
+			oracleRawGeminiAnyOfSpans(member.value, spans, underAnyOf)
+		case "anyOf", "any_of":
+			if member.value.kind == 'a' {
+				for _, child := range member.value.array {
+					oracleRawGeminiAnyOfSpans(child, spans, underAnyOf || member.key == "any_of")
+				}
+			}
+		}
+	}
+}
+
 func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 	if tools, ok := root.firstField("tools"); ok && tools.kind == 'a' {
 		for _, tool := range tools.array {
@@ -3476,6 +3652,9 @@ func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 					for _, field := range []string{"parameters", "parametersJsonSchema", "parameters_json_schema", "response", "responseJsonSchema", "response_json_schema"} {
 						if schema, ok := declaration.firstField(field); ok {
 							oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+							if field == "parameters" || field == "response" {
+								oracleRawGeminiAnyOfSpans(schema, spans, false)
+							}
 						}
 					}
 				}
@@ -3490,6 +3669,9 @@ func oracleRawGeminiSpans(root *oracleRawValue, spans *[]oracleRawStringToken) {
 		for _, key := range []string{"responseSchema", "responseJsonSchema", "response_schema", "_responseJsonSchema", "response_json_schema", "response_json_schema_ordered"} {
 			if schema, ok := config.firstField(key); ok {
 				oracleRawAppendJSONSchemaDescriptions(spans, schema, "developer")
+				if key == "responseSchema" || key == "response_schema" {
+					oracleRawGeminiAnyOfSpans(schema, spans, false)
+				}
 			}
 		}
 		if format, ok := config.firstField("responseFormat"); ok {
