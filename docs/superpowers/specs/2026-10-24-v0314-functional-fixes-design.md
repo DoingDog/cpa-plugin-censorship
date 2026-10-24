@@ -6,7 +6,7 @@
 
 本轮包含三个已有实际复现的可执行修复：G1，Gemini typed `Schema.any_of` 下的 description 漏选；R1，Make integration 将合法 `GO` 命令文本交给仅接受 executable 的 runner；R2，完整串行集成矩阵可能超过 Go 默认十分钟总预算。G1 属于插件请求处理，R1/R2 属于本仓库开发与验收入口。
 
-本轮初始九分区扫描均已回报，`wuavn3cvf.output` 的九个执行者状态均为 done；本 owner 核对了完成索引，未重复读取全部长报告。G1、R1 的三方独立复核及 R2 的独立预算核对已读取。协调者另已回报独立历史文档全文阅读 53 份，逐文件依据、九分区内容及整体协议报告正由主会话汇总，独立完整性 critic 和文档审查仍为 pending。本设计不能据此启动实现；主会话须核对全部覆盖、候选与既有边界，记录门槛的实际结论，再审查并确定实现共同起点。新事实影响范围、方案或验收时，更新同一 spec/plan 后才能实施；不能预填 `coverage_complete=true` 或「无其他问题」。
+本轮初始九分区扫描已完成，`wuavn3cvf.output` 的九个执行者均为 done。独立完整性 critic `wlhsct59c.output` 已完整解析五份报告的 17 个结果正文，核对源码基线全部 107 个 tracked 文件和 53 份历史 docs 的全文阅读 owner 或合理排除依据；唯一缺少明确阅读记录的 `go.sum` 已补读，`go mod verify` 退出 0。其覆盖结论支持进入 G1/R1/R2 三项修复，另将 README 的 WebSocket completion 时限文案纠正纳入 U3，不存在尚待补查的文件覆盖缺口。G1/R1 独立复核、R2 预算复核及文档审查 `wgveys0re.output` 已读取，本次按文档审查修订选择兼容性与分支顺序；唯一剩余启动门槛为修订文档复审。通过后在本轮独立集成分支确定共同起点，再启动 G/R。新事实影响范围、方案或验收时，须更新同一 spec/plan 并复审。
 
 仅开发 censorship plugin；不修改 CPA core，不执行安全扫描，不增加未测量的性能优化、新功能、依赖、配置项或公共接口。固定 CLIProxyAPI v7.2.152 / `c76dfd4e0edabab9000628b1560ab8ab379eadb8`、model-mapper revision `8fe4839dd2c39a4b0537447c4ac35a9f1d699bbf`、schema 5、native ABI v1 与现有 Go 依赖。
 
@@ -16,7 +16,7 @@
 
 | 项目 | 实际证据与结论 | 仍待完成 |
 |---|---|---|
-| G1 | finder `a2ed8eb63423fc996` 的 `cpa-gemini-interactions-audit-esb37oa5/http-evidence.json` 全部 12 项结果与 `wcgc5223x.output` 三方最终报告已完整读取。独立 RPC/真实 HTTP 各 312 项：8 typed roots 的 any_of 在两阶段三动作均漏选，anyOf 正常；18 JSON Schema roots 的 anyOf 正常、未知 any_of 保持不选。block 漏选为 200、upstream 增加一；strip/obfs description 仍含 SECRET。新构建 DLL 与固定 CPA provenance、generated ProtoJSON parser、clean/active canary 均有独立证据。 | 正式回归、两个独立 fuzz oracle 的修订及新实现 RED/GREEN；完整扫描汇总仍待完成。 |
+| G1 | finder `a2ed8eb63423fc996` 的 `cpa-gemini-interactions-audit-esb37oa5/http-evidence.json` 全部 12 项结果与 `wcgc5223x.output` 三方最终报告已完整读取。独立 RPC/真实 HTTP 各 312 项：8 typed roots 的 any_of 在两阶段三动作均漏选，anyOf 正常；18 JSON Schema roots 的 anyOf 正常、未知 any_of 保持不选。block 漏选为 200、upstream 增加一；strip/obfs description 仍含 SECRET。新构建 DLL 与固定 CPA provenance、generated ProtoJSON parser、clean/active canary 均有独立证据。 | 正式回归、两个独立 fuzz oracle 的修订及新实现 RED/GREEN；启动前须完成修订文档复审。 |
 | R1 | `aae181b4eaaac7fe1.output` 最终报告及 `wi5o1f51h.output` 三份独立报告已完整核对。真实 `make integration 'GO=go -C .'` 连续退出 2：runner 单测成功，随后 `exec: "go -C .": executable file not found in %PATH%`。quoted executable 同样失败；同环境 make build 成功。独立反例证明裸 driver 替代会丢失 wrapper 每次调用行为；literal 直接执行、复杂文本由现有 sh 逐参数 quote 的 prototype 已通过相关对照。 | 正式修复自身的 TDD、Windows standalone/跨平台参数边界及完整真实入口回归，不能用 prototype 代替。 |
 | R2 | `wqhzsh92v.output` 已完整读取。独立重算三份日志：默认 full 在 `600.489s` 超时；原样生成源码/DLL 的直接 `-timeout=30m` full 在 `602.803s` 通过；正式 Make 入口 `GOFLAGS=-timeout=30m` 在 `487.988s` 通过。成功日志的全部测试名称、状态、层级和顺序一致，失败日志的已完成顶层测试是其前缀。 | 只给 full 默认预算的实现、有效 GOFLAGS 覆盖测试及合并后完整回归。 |
 
@@ -38,7 +38,7 @@ R2 证据支持串行场景累计预算不足，未证明每次默认运行均�
 
 ### 明确选择范围
 
-仍使用 canonical `developer`，沿用现有 role/format gate、原 token 顺序和 description 字符串门控。下表 8 个 typed 入口使用 Generative Language v1beta Schema 的明确递归；18 个 JSON Schema 入口及其他 provider 保留原有 JSON Schema helper 语义。
+仍使用 canonical `developer`，沿用现有 role/format gate、原 token 顺序和 description 字符串门控。下表 8 个 typed 输入入口保留全部基线 description 选择，并仅沿 Generative Language v1beta Schema 的明确递归边补充 `any_of`；18 个 JSON Schema 入口及其他 provider 保留原有 JSON Schema helper 语义。
 
 | 入口 | 本次新增 any_of 递归 |
 |---|---|
@@ -50,26 +50,26 @@ R2 证据支持串行场景累计预算不足，未证明每次默认运行均�
 | 两种 generation root 下的 `_responseJsonSchema`、`response_json_schema`、`responseJsonSchema`、`response_json_schema_ordered`、`responseFormat.text.schema` | 否；保留现有 JSON Schema description 选择 |
 | OpenAI、Claude、Interactions 的 schema 入口 | 否；全部既有选择范围不变 |
 
-typed 模式在每个对象只选 string `description`，递归对象映射 `properties` 的属性值、对象 `items`，以及数组 `anyOf`/`any_of` 的对象元素；四类边持续携带 typed 模式，支持任意合法嵌套和 mixed spelling。null、scalar、错误数组形状及非对象元素不产生新的选中路径。属性名恰好为 `any_of` 或 `description` 时仍按 properties 的属性值处理，不改写属性名。
+选中集合保留基线全部 description，并补充从这 8 个入口仅经对象映射 `properties` 的属性值、对象 `items`、数组 `anyOf`/`any_of` 的对象元素可达的 string `description`。新增路径支持多层合法嵌套和 mixed spelling；null、scalar、错误数组形状及非对象元素不产生新的选中路径。属性名恰好为 `any_of` 或 `description` 时仍按 properties 的属性值处理，不改写属性名。
 
-typed Schema 不递归共享 JSON Schema helper 中的 15 个其他 keyword：`patternProperties`、`$defs`、`definitions`、`dependentSchemas`、`additionalProperties`、`unevaluatedProperties`、`propertyNames`、`contains`、`not`、`if`、`then`、`else`、`prefixItems`、`allOf`、`oneOf`。这些字段在本次核对的 Generative Language v1beta typed Schema 中没有递归定义，现有误选不作为需保留的行为。`title`、format、pattern、metadata、example、default、enum、required、propertyOrdering 等机器值及任意嵌套对象仍排除；不借用 Vertex 的不同 Schema 定义扩大范围。
+八个入口的既有 description 递归全部保留，包括共享 helper 的 15 个其他 keyword：`patternProperties`、`$defs`、`definitions`、`dependentSchemas`、`additionalProperties`、`unevaluatedProperties`、`propertyNames`、`contains`、`not`、`if`、`then`、`else`、`prefixItems`、`allOf`、`oneOf`。这些既有路径作为不回归正例；新增 `any_of` 选择不能经这些 JSON Schema 专属分支传播，即使分支内再出现 properties/items/anyOf 也不恢复新增路径资格。所有新增 description 都必须满足上一段的完整路径条件。`title`、format、pattern、metadata、example、default、enum、required、propertyOrdering 等机器值及任意非目标嵌套对象继续排除。
 
-共享 `appendJSONSchemaDescriptions` 的现有 caller 默认保持原行为。最小实现复用一份递归机制并区分 typed/JSON Schema keyword 集合，仅 8 个 Gemini typed 入口启用 typed 模式；不把 any_of 无条件加入共享 JSON Schema 白名单，不复制整份 walker，不编写通用 alias parser、键名 normalization 或递归字符串扫描。允许修改 `selectors_openai.go` 顶部共享 helper 的必要内部组织，OpenAI caller 和默认 keyword 集合保持不变。
+共享 `appendJSONSchemaDescriptions` 的默认 keyword 集合及行为保持不变，现有 JSON Schema caller 保留原语义。G owner 按上述选中集合选择最少且完整的实现，验证基线选择保留和新增路径边界；不预定单一内部组织，不把 any_of 无条件加入共享 JSON Schema 白名单，不复制整份 walker，不编写通用 alias parser、键名 normalization 或递归字符串扫描。仅在实现确有需要时修改 `selectors_openai.go` 顶部共享 helper 的内部组织，其他 provider 生产 caller 不变。
 
-semantic/raw 两个 fuzz oracle 各自独立表达 typed/JSON Schema 的入口区别与递归，不调用生产 collector/helper，不合并两套 parser。为新增行为补齐小型正常 seed 与明确排除反例。
+semantic/raw 两个 fuzz oracle 各自独立表达基线选中集合与 typed 新增路径，不调用生产 collector/helper，不合并两套 parser。补齐新增路径正例、15 种既有递归正例，以及 JSON Schema 入口和专属分支中未知 any_of 的排除反例。
 
 ### G 验收条件
 
 | ID | 可观察结果 |
 |---|---|
 | G-A1 | 全部 typed 入口 × `anyOf`/`any_of`，包括根、properties、items 和多层混合组合子下的 string description，block/strip/obfs × literal/fold 均正确；block 保留原规则词和 developer role。每个正式请求只有一个 generation root 和一个互斥 schema 表示。 |
-| G-A2 | 全部 18 个 Gemini JSON Schema 入口和其他 provider 的未知 any_of 子树保持不选；合法 anyOf/原有 description 路径继续正常。8 个 typed 入口均不递归上述 15 个非 typed keyword，保留全部已有合法 typed 选择；机器字段、错误类型、developer disabled、format disabled、no-match 维持精确 no-op。 |
+| G-A2 | 全部 18 个 Gemini JSON Schema 入口和其他 provider 的未知 any_of 子树保持不选；合法 anyOf/原有 description 路径继续正常。8 个 typed 入口的全部基线 description 选择保持，包括上述 15 个 keyword 的不回归正例；这些 JSON Schema 专属分支中的未知 any_of 仍不选，新路径只经规定的 typed 边可达。机器字段、错误类型、developer disabled、format disabled、no-match 维持精确 no-op。 |
 | G-A3 | 只有被选中的 description token 可以改写；名称、keys、enum/const/default/example/required、MIME、stop sequences、metadata、媒体/签名、数字 `1.2300e+00` 等非目标字节保持。原 body、metadata、headers 不被原地修改；改写时沿用 ClearHeaders，no-op/完全取消不提供 replacement。 |
 | G-A4 | 原 JSON token 顺序、规则词优先、`block -> strip -> obfs`、跨节点不匹配、最终文本取消、immutable-text 与长度/非空限制保持。公开 RPC 两阶段、model-bearing before、model-free after、缺 selected-auth marker、filter miss 和相反 RequestedModel/body model decoy 均保持既有阶段行为。 |
-| G-A5 | semantic/raw oracle 的 typed 正例与 JSON Schema 负例先有直接预期断言；修订 oracle 后旧 production 仍失败。伪造机器字段改写结果被独立 oracle 拒绝，FuzzProtocolTransform 包含对应 seed。 |
+| G-A5 | semantic/raw oracle 对 typed 新增路径、15 种既有递归正例及 JSON Schema 入口/专属分支的 any_of 负例均有独立预期断言；修订 oracle 后旧 production 在新增路径上仍失败。伪造机器字段改写结果被独立 oracle 拒绝，FuzzProtocolTransform 包含对应 seed。 |
 | G-A6 | 从当前 worktree 新构建且核对 hash 的 DLL，通过固定 host native 两阶段及真实 CPA HTTP 验证全部 typed 入口 × 两种 keyword × 三动作。block 为 canonical 400/censorship_blocked、upstream arrival/request 增量均为零；strip/obfs 为一次转发、目标 description 正确、机器字段 raw bytes 保持；clean canary、JSON Schema 排除和 gate 对照可用。 |
 
-独立复核已实际执行固定 converter：两种 declaration 拼写下的 parameters 改到 `function_declarations[*].parametersJsonSchema`，response 改到 `function_declarations[*].response`；`generationConfig.responseSchema` 改到 responseJsonSchema，其余三个 typed generation 入口保持原路径，内部 any_of 不归一化。HTTP oracle 按这些实际 wire 路径核对 description/机器字节，dialect 由插件收到的输入入口决定。被改成 JSON Schema 外层字段的 any_of 转发结果不能证明 Google 会按 typed Schema 解释，也不修改 CPA 转换来解决此限制。
+独立复核已实际执行固定 converter：两种 declaration 拼写下的 parameters 改到 `function_declarations[*].parametersJsonSchema`，response 改到 `function_declarations[*].response`；`generationConfig.responseSchema` 改到 responseJsonSchema，其余三个 typed generation 入口保持原路径，内部 any_of 不归一化。parameters 和 camel-case responseSchema 的原对象被转入 JSON Schema 字段，没有 typed Schema 校验；这些 source 入口的基线 description 选择保持。HTTP oracle 按实际 wire 路径核对 description/机器字节，新增选择资格由插件输入入口及完整递归路径决定。转发结果不证明 Google 按 typed Schema 解释或接受这些对象，也不修改 CPA 转换来解决此限制。
 
 不能仅比较 decode 后的机器值，也不能假定整个 upstream body 等于客户端原文。两个 generation root 或同一 proto 字段的两种拼写同时出现，仅可作为本地排序回归，不新增 provider 接受性或合并优先级保证。
 
@@ -117,15 +117,15 @@ R1/R2 由同一 owner 核验组合行为。用户 wrapper 每次主动设置、�
 
 G 独占 `selectors_gemini.go`、`selectors_openai.go` 顶部共享 helper 的必要内部改动、`selectors_gemini_test.go`、`fuzz_test.go`、`functional_corrections_test.go` 与新增 `integration/gemini_typed_schema_test.go`。R 独占 `.github/scripts/integration-runner.go`、`.github/scripts/integration-runner_test.go`；负责核对 Makefile，但目前没有证据要求改动其 recipe，保持只读。共享生产 caller、现有 harness、通用 Git runCommand 与 packager 保持原语义。
 
-G、R 从收齐扫描/复核且最终文档已审查合并的同一 SHA 创建独立 worktree 并行执行。各 owner 在自己的 worktree 连续完成规格审查、单条纵向测试真实 RED、最小 GREEN、剩余验收、完整相关回归、简化、自审、修正、复审及英语提交；完成后主动回报，不把未完成步骤留给主会话。G 验证时若尚无 R，允许显式 `GOFLAGS=-timeout=30m` 运行旧 runner，并记录这是开发期覆盖；最终集成必须验证修正后的默认入口。
+修订文档复审通过后，主会话在本轮独立集成分支合并文档并记录共同 baseline SHA；G、R 从该 SHA 创建各自独立 worktree 并行执行。各 owner 在自己的 worktree 连续完成规格审查、单条纵向测试真实 RED、最小 GREEN、剩余验收、完整相关回归、简化、自审、修正、复审及英语提交；完成后主动回报，不把未完成步骤留给主会话。G 验证时若尚无 R，允许显式 `GOFLAGS=-timeout=30m` 运行旧 runner，并记录这是开发期覆盖；最终集成必须验证修正后的默认入口。
 
-两组完整完成且无文件冲突后由主会话合并。独立最终集成 owner 随后独占英语 `README.md`、`RELEASE_NOTES.md`、`main_test.go` 的文档/当前发行 guard，以及本 spec/plan 的实际记录。当前版本更新到 v0.3.14，保留历史兼容句；源码 `main.go` 的默认 `pluginVersion=0.0.0-dev` 不改，正式构建继续由 VERSION 注入。
+两组完整完成、审查且无文件冲突后，由主会话将提交合回该独立集成分支。U3 从该合并 SHA 创建独立最终集成 worktree，owner 独占英语 `README.md`、`RELEASE_NOTES.md`、`main_test.go` 的文档/当前发行 guard，以及本 spec/plan 的实际记录。当前版本更新到 v0.3.14，保留历史兼容句；README 的 WebSocket completion 文案改为实际 5 秒，不改现有测试时限。源码 `main.go` 的默认 `pluginVersion=0.0.0-dev` 不改，正式构建继续由 VERSION 注入。
 
 ## 验收与发布门槛
 
-合并后完整执行根 test/race/vet、独立 runner 和 packager tests/race/vet、六个 bounded fuzz、正式 make build、selected-platform/aggregate 两个 package、默认与 GO=-C 的完整 make integration。真实 ZIP 验证 CRC、精确成员、LICENSE、permissions、固定时间、lowercase SHA-256 sidecar 与 aggregate；从正式包提取同一 Windows amd64 DLL，实际读取 ABI 1、schema 5、Version 0.3.14、七字段/Object words、request-only，并验证 selected-auth active-after 及必要 no-op/字节保持。
+G/R 合回独立集成分支后，U3 完整执行根 test/race/vet、独立 runner 和 packager tests/race/vet、六个 bounded fuzz、正式 make build、selected-platform/aggregate 两个 package、默认与 GO=-C 的完整 make integration。真实 ZIP 验证 CRC、精确成员、LICENSE、permissions、固定时间、lowercase SHA-256 sidecar 与 aggregate；从正式包提取同一 Windows amd64 DLL，实际读取 ABI 1、schema 5、Version 0.3.14、七字段/Object words、request-only，并验证 selected-auth active-after 及必要 no-op/字节保持。
 
-主会话只合并已完整完成、审查且无冲突的提交，不开 PR。远端写入只能在主会话已持有的用户发布授权范围内执行，本文件和 finder 报告不提供授权。最终 main CI 的 test、七平台 build、Windows amd64 ABI smoke 均达成功终态后才创建 tag；随后 tag CI/release 分别等到终态并验收，不将 pending、取消或失败写作通过。
+主工作区始终保留初始 main，直到 U3 的全部本地验收、修正、复审和英语提交完成；U4 才由主会话将已完成的集成结果合并到 main，不开 PR。远端写入只能在主会话已持有的用户发布授权范围内执行，本文件和 finder 报告不提供授权。最终 main CI 的 test、七平台 build、Windows amd64 ABI smoke 均达成功终态后才创建 tag；随后 tag CI/release 分别等到终态并验收，不将 pending、取消或失败写作通过。
 
 七平台 main dev 产物与正式 v0.3.14 的 15 资产分别核对来源及字节：run/attempt/job/artifact/asset、ZIP/CRC/LICENSE/permission/checksum/aggregate、每库最终 SHA、vcs.modified=false、CPA pin、c-shared、CGO 1、compiler 与对应 GoVersion。正式 Windows 包的提取 DLL 重新实际注册与 active-after；其他平台 native 和商业 API 未运行时逐项如实记录 not_run。main 的七份 dev 包不冒充正式包，workflow success、tag、Main.Version 或字符串命中不单独充当版本注入证明。
 
