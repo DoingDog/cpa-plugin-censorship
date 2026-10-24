@@ -1,3 +1,17 @@
+# Censorship v0.3.14
+
+## v0.3.14 fixes
+
+Release date: 2026-10-24.
+
+- Gemini typed Schema descriptions support nested `any_of` alongside `anyOf` under the eight typed roots, through `properties`, object `items`, and either array spelling. All existing description paths remain selected. Raw JSON Schema roots, JSON Schema-only branches, and other providers retain their unknown `any_of` exclusions; machine fields remain unchanged.
+- Make integration preserves complete `GO` commands, including quoted executables, `go -C .`, and environment wrappers, for every Go invocation. Literal executables retain direct execution; complex commands use the existing `sh`, with child cwd, environment, arguments, and exit status preserved.
+- Full integration tests default to 30 minutes using effective `GOFLAGS`, preserving explicit timeout overrides and wrapper environment behavior. ABI smoke, benchmarks, and existing local deadlines retain their budgets. README now states the actual 5-second WebSocket completion deadline.
+
+v0.3.14 targets CLIProxyAPI v7.2.152, schema 5, at host commit `c76dfd4e0edabab9000628b1560ab8ab379eadb8`. It uses native ABI v1. Linux artifacts require glibc 2.34+.
+
+Local acceptance covers Windows amd64 root, runner, and Windows packager tests/race/vet; Unix packager tests/race/vet on Debian; all six bounded fuzz targets at `3000x` with two workers; and the complete fixed-host integration matrix through default and `GO='go -C .'` Make entry points. Both formal package recipes pass ZIP/CRC/LICENSE/permission/timestamp/checksum and byte-equality checks. The same packaged Windows DLL reports Version `0.3.14`, ABI 1, schema 5, and the seven configuration fields, and passes selected-auth active-after checks and runner ABI smoke. Source and integration builds retain `0.0.0-dev`. Existing pure-plugin limits, phase/LKG behavior, request-only registration, Object words, and synchronous `C.GoBytes` input copying remain unchanged. Final main/tag CI and seven-platform release asset acceptance remain pending; local receivers do not establish commercial provider API acceptance or native loading on other platforms.
+
 # Censorship v0.3.13
 
 ## v0.3.13 fixes

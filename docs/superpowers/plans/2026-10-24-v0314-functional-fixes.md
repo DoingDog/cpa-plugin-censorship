@@ -8,7 +8,7 @@ G 完成 Gemini typed Schema `any_of` description 的明确选择，保留全部
 
 文档 owner 已完整读取 G1/R1/R2 指定基线证据、G1 的 `wcgc5223x.output` 三方复核、R1 的 `wi5o1f51h.output` 三方复核和 R2 的独立预算报告，并核对相关正式来源。本轮初始九分区 `wuavn3cvf.output` 均为 done；独立完整性 critic `wlhsct59c.output` 已收齐，完整解析五份报告的全部 17 个结果正文，逐组核对基线 107 个 tracked 文件和 53 份历史 docs。其唯一阅读记录缺口 `go.sum` 已补读且 `go mod verify` 退出 0，覆盖门槛完成；去重仅 G1/R1/R2 三项功能修复，另有 U3 的 README 时限文案纠正。G1/R1 定向独立复核、R2 预算复核、完整性核查和七平台工具预检均已完成；前次文档审查 `wgveys0re.output` 的两项阻塞已修订并通过本次独立复审，U0 完成。复审者全文核对两份文档、前次审查与新修订 diff，并对照相关源码和 critic 覆盖表，未重复九分区扫描或全部历史 docs 的全文阅读，未运行 v0.3.14 产品测试。
 
-U0 已完成，当前 spec/plan 可以启动 G/R。共同 baseline 为包含本次独立复审通过记录的准备就绪提交本身，完整 SHA 取该提交完成后的 HEAD；主会话将该提交快进到本轮独立集成分支，G/R 均从这个 SHA 创建独立 worktree，不更新 main。新报告新增可执行修复或改变已定边界时，先更新同一 spec/plan、测试责任与验收，再审查并记录新的共同起点。没有新证据时，不添加新功能、性能优化、重试、通用 parser 或 CPA core 修改，不做安全扫描。
+U0 已完成。共同 baseline 为准备就绪提交 `16d9a1be299496ec00536856fc7d42f7f29bb30c`；G/R 已从该 SHA 在各自独立 worktree 完成实施及独立复审，合并提交为 `f9de24a09d56b7b633a5c8e41b36a1a156d1fed2`，期间未更新 main。U3 已完成版本 guard、完整本地回归、正式包与同包 DLL 验收，实际结果见本文末及[规格的完成记录](../specs/2026-10-24-v0314-functional-fixes-design.md#u0gru3-实际完成记录)；U4 仍为 pending。新报告新增可执行修复或改变已定边界时，先更新同一 spec/plan、测试责任与验收，再审查并记录新的共同起点。没有新证据时，不添加新功能、性能优化、重试、通用 parser 或 CPA core 修改，不做安全扫描。
 
 ## U0. 收齐扫描、独立复核与文档审查
 
@@ -159,7 +159,7 @@ go -C "$W" test -count=1 -run '^TestReleaseNotesCompatibilityTargetsCurrentAndHi
 
 ### 合并后的完整命令
 
-下表全部为 pending，只有实际执行后才能在本计划末尾登记结果；owner 记录实际参数和退出码，不沿用 v0.3.13 的 fuzz 或包通过记录。
+下表要求已由 U3 逐项实际执行，命令、退出码及证据登记于本计划末尾；六个 fuzz 与正式包均为本轮重新取得的结果。
 
 | 检查 | 命令及完成条件 |
 |---|---|
@@ -213,8 +213,39 @@ go -C "$W" run ./.github/scripts/integration-runner.go -abi-smoke "$EXTRACTED_DL
 
 ## 最终完成条件与尚未完成依赖
 
-- U0 已完成：九分区、53 份历史 docs、107 个 tracked 文件覆盖及全部定向独立复核已有依据，本次独立文档复审通过，当前 spec/plan 可以启动 G/R。
-- G/R 从独立集成分支的共同 baseline SHA 创建各自 worktree，该 SHA 为本次准备就绪提交完成后的 HEAD；完成全部规格、TDD、相关回归、简化、修正、复审及英语提交后合回集成分支。当前未启动实现，修复后验收仍为 pending。
-- U3 从 G/R 合并 SHA 独立完成共享文档/版本 guard、WebSocket 时限文案纠正及全量本地验收，目标 v0.3.14、源码默认 dev 不变；六 fuzz、两 package、正式 ZIP 同 DLL 注册和 active-after 均须有本次实际结果。全部复审并提交前保持主工作区及初始 main 不变；当前 pending。
+- U0 已完成：九分区、53 份历史 docs、107 个 tracked 文件覆盖及全部定向独立复核已有依据，独立文档复审已解除 G/R 启动门槛。
+- G/R 已从共同 baseline `16d9a1be299496ec00536856fc7d42f7f29bb30c` 完成全部规格、TDD、相关回归、简化、修正、独立复审及英语提交。G 为 `024515f5fc67cd6a5db5edffe7ef5ad8d01e30d2`，R 为 `e700f8e6f9d155ceda3641145dc93721360ecec1`，两项独立复审均 accepted=true、findings=[]；原始结果为任务证据目录的 `w62xsak34.output`。主会话已无冲突合回独立集成提交 `f9de24a09d56b7b633a5c8e41b36a1a156d1fed2`。
+- U3 已从该合并 SHA 在独立 worktree 完成共享文档/版本 guard、WebSocket 5 秒文案纠正、六 fuzz、全量本地回归、两 package 及正式 ZIP 同 DLL 注册/active-after/smoke。生产代码、其他 tests、runner、Makefile 与局部截止时间保持只读；源码默认 dev 不变。规格映射、自审及复审未发现需返回 G/R 修复的新集成缺陷，英语提交只包含允许的五个文件，最终 SHA 见交付记录。主工作区和初始 main 仍未更新。
 - U4 在 U3 完成后更新 main，最终 main CI 成功后才 tag；tag CI/release、七平台 dev/正式资产来源、精确 15 assets/checksums/buildinfo、Windows 正式 DLL 动态验收分别有证据。其他 native/商业 API 未运行范围明示；当前 pending。
-- 本次准备就绪提交只更新本文与 spec 的 U0/当前状态，已完成独立复审；自查链接、事实/未来状态、文件责任与验收覆盖，运行 `git diff --check` 后英语提交，不 push、不清理本 worktree。本次通过仅解除扫描/规格启动门槛，不预填 G/R/U3/U4 的实现、测试、构建、CI 或发布结果。
+- 准备就绪提交只更新本文与 spec 的 U0 记录并解除实施门槛；本次 U3 补充实际已完成的 G/R/U3 结果，未预填 U4 的最终 SHA、CI、七平台或发布结果。保留 U3 已提交 worktree，交由主会话完成 U4 门槛后按原规则清理。
+
+## U3 本地执行结果
+
+执行 worktree 为 `C:/Users/user/Downloads/cpa-plugin-censorship/.claude/worktrees/wf_62ec092e-0a0-1`，branch 为 `worktree-wf_62ec092e-0a0-1`，起点/构建 source HEAD 为 `f9de24a09d56b7b633a5c8e41b36a1a156d1fed2`。下表的 `$W` 指该目录，`$WSL_W` 为其 Debian 路径 `/mnt/c/Users/user/Downloads/cpa-plugin-censorship/.claude/worktrees/wf_62ec092e-0a0-1`；证据根目录为 `$W/.local-verification/functional-fixes-20261024/U3/`，各命令的同名 JSON 保存实际 argv、cwd、env、起止时间、退出码和日志 hash，局部 ignore 已核实。没有修改用户 GoENV；需要持久 flags 的 runner 测试只使用 t.TempDir 专属 GOENV。
+
+| 实际检查 | 退出及结果 | 本轮证据 |
+|---|---|---|
+| `go test -count=1 -run '^TestReleaseNotesCompatibilityTargetsCurrentAndHistoricalVersions$' .`，文档更新前/后 | 真实 RED 1，随后相同命令 GREEN 0；当前 v0.3.14 与全部历史兼容断言保留 | `version-guard-red.json/.log`、`version-guard-green.json/.log` |
+| `make -C "$W" test`、`race`、`vet` | 均为 0 | `root-test`、`root-race`、`root-vet` 的 JSON/log |
+| runner 两文件显式 `go test -count=1 -v`、`go test -race -count=1`、`go vet` | 均为 0；真实 argv/cwd/env、无 shell Windows、有效 flags 查询与 wrapper/GOENV/短 timeout 对照通过 | `runner-test`、`runner-race`、`runner-vet` 的 JSON/log |
+| Windows packager 四文件显式 test/race/vet | 均为 0；保留原 Make GO 覆盖与 host-helper 断言 | `windows-packager-test`、`windows-packager-race`、`windows-packager-vet` 的 JSON/log |
+| Debian 上 Unix packager 三文件显式 `go -C "$WSL_W" test -count=1 -v`、`test -race -count=1`、`vet` | 均为 0；实际 Go 1.26.0 linux/amd64，未把 Windows helper 加入 source list | `unix-packager.json` 与三个 `unix-packager-*.log` |
+| 六个 `go test -run '^$' -fuzz '^<target>$' -fuzztime=3000x -parallel=2 .` | 均为 0；按 U3 原列表顺序实际 execs 为 3000、3000、3010、3000、3000、3000 | 六个 `fuzz-*.json/.log` |
+| `make -C "$W" integration` | 0；总耗时 424.239 秒，suite 346.824 秒；无 timeout 覆盖，实际 30m argv | `integration-default.json/.log`、`identity-default.json` |
+| `make -C "$W" integration 'GO=go -C .'` | 0；总耗时 427.677 秒，suite 363.607 秒；无 timeout 覆盖，实际 30m argv | `integration-go-C.json/.log`、`identity-go-C.json` |
+| `make -C "$W" build VERSION=v0.3.14` | 0；Go 1.26.5 windows/amd64，CGO 1，`C:/msys64/ucrt64/bin/gcc.exe` 16.1.0 | `formal-build.json/.log` |
+| `make -C "$W" package GOOS=windows GOARCH=amd64 VERSION=v0.3.14` | 0；selected 正式 ZIP 与 sidecar 已保存并由标准 parser 验收 | `package-selected-command.json/.log`、`package-selected.json` |
+| 未设置 GOOS/GOARCH 的 `make -C "$W" package VERSION=v0.3.14` | 0；实际只存在 Windows amd64，aggregate 精确一条，ZIP/DLL/sidecar 与 selected 字节一致 | `package-aggregate-command.json/.log`、`package-aggregate.json` |
+| 正式参数 `go build -a -x -trimpath -buildmode=c-shared -ldflags='-s -w -X main.pluginVersion=0.3.14' -o dist/windows_amd64/censorship.dll .` | 0；重建字节与两个包及提取库一致，trace 的 compile/CGO 输入位于当前 worktree | `formal-rebuild.json/.log`、`package-rebuild-equality.json`、`source-provenance.json` |
+| 从 selected ZIP 提取的同包 DLL 实际 native 注册及两阶段调用 | 0；ABI 1/schema 5/Version 0.3.14/七字段类型/Object words/request-only/精确无菜单或 OAuth；no-op、selected-auth strip、输入/headers/metadata/机器字节保持 | `native-windows-command.json`、`native-windows.json`、`native-exact-keys.json` |
+| `go run ./.github/scripts/integration-runner.go -abi-smoke "$EXTRACTED_DLL"` | 0；同包 DLL 的真实 active-after smoke；不替代上一行的实际注册读取 | `formal-abi-smoke.json/.log`、`identity-smoke.json` |
+
+最终文档状态下已再次执行根、runner、Windows/Unix packager 的完整 test/race/vet，并补跑文档/当前及历史 guard，全部命令退出 0；证据为对应 `*-final` 记录。Windows packager 的既有 `TestPathsAliasCaseRules/existing_case-distinct_files` 在默认不区分大小写的临时目录按原条件 SKIP，未记为通过；同一子例在 Debian 实际 PASS，Windows 专属 `TestUnicodeNamesAliasWindowsCaseRules/case-sensitive_directory` 矩阵也实际 PASS。测试源码、skip 条件和全部断言均未改动。
+
+两个 full 都使用临时 GOENV=off、GOFLAGS=-x，只有 full 的子进程取得默认 `-test.timeout=30m0s`。`full-matrix-proof.json` 对照 Go 实际列出的 74 个顶层测试，核对两次顺序和全部成功终态，无 FAIL/SKIP；每次 typed native、HTTP 各有 96 个核心场景及 26 个对照。该文件另保留两个相同 cwd/driver 的 effective-flags query 独立重放，R 的真实 query/test 调用 trace 仍见 runner 测试日志。十份源/生成夹具 hash 一致，两个 full 实际 DLL 均为 `9fa8fe31b1dbe8f015a001d63c565cee1990cc9b4921f323d30258a7818a485f`；固定 CPA/mapper 身份保持。
+
+正式 ZIP SHA-256 为 `4786a769d3908abcadec395c126363d3c6f84fe453b66f9e66b84c247c26d399`；标准 ZIP parser 已核对 CRC、精确 `censorship.dll`/`LICENSE` 成员、普通文件类型、0755/0666 权限、1980-01-01 时间、LICENSE 原始字节、lowercase sidecar 与 aggregate。selected/aggregate 各使用新空数据/提取目录，Python 均以 `-I` 执行，脚本目录独立。包内、提取、dist、重新构建、native 实际加载及 smoke staged DLL 的 SHA-256 均为 `95cc37ea3e88a13cda31945ed4546620e07f41c4bae568547b11e7b55bb2ecb8`。
+
+`source-provenance.json` 区分本轮实际 cwd/GOMOD/源码 hash 与嵌入 metadata。正式 DLL 的 buildinfo 保留父仓库 module v0.3.13、revision `a270cc658c6cd178c19324faa4caa759d648298d`、vcs.modified=false；trace 中 VCS 查询位于父仓库，compile/CGO 输入位于 U3 worktree。没有修改 metadata，未将其用作本轮 source HEAD 或最终远端 revision 证明。正式版本由 VERSION 参数、实际编译链接及同包 ABI Version 读取共同核对。
+
+U3 已按 G-A1 至 G-A6、R-A1 至 R-A7 和共享边界核对合并后的实现/测试及原 owner/独立复审证据，未发现需返回原 owner 的新集成缺陷。README/RELEASE_NOTES 的变更与实际行为和本地结果相符，历史段和 accepted limits 保留；源码默认 dev、phase/LKG、roles、bytes、C.GoBytes 与全部局部截止时间未改。最终自审检查全部 diff、责任范围、规格映射、文档链接和 `git diff --check`，随后英语提交并保留 worktree。U4 的最终 main/tag、CI、七平台 dev/正式包和 release 仍为 pending；商业 API 与 Windows amd64 以外的平台 native 为 not_run。
