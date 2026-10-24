@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -308,7 +309,7 @@ func buildCPA(paths runnerPaths) error {
 	if err := os.MkdirAll(filepath.Dir(paths.bin), 0o755); err != nil {
 		return fmt.Errorf("create CPA binary directory: %w", err)
 	}
-	return runCommand(paths.checkout, nil, goCommand(), "build", "-trimpath", "-o", paths.bin, "./cmd/server")
+	return runGoCommand(paths.checkout, nil, "build", "-trimpath", "-o", paths.bin, "./cmd/server")
 }
 
 func pluginPlatformDir(paths runnerPaths) string {
@@ -355,7 +356,7 @@ func buildPlugin(paths runnerPaths, platformDir string) (string, error) {
 		return "", err
 	}
 	library := filepath.Join(platformDir, "censorship"+extension)
-	if err := runCommand(paths.repositoryRoot, []string{"CGO_ENABLED=1"}, goCommand(), "build", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
+	if err := runGoCommand(paths.repositoryRoot, []string{"CGO_ENABLED=1"}, "build", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
 		return "", err
 	}
 	header := strings.TrimSuffix(library, extension) + ".h"
@@ -371,7 +372,7 @@ func buildModelMapper(paths runnerPaths, platformDir string) error {
 		return err
 	}
 	library := filepath.Join(platformDir, "model-mapper"+extension)
-	if err := runCommand(paths.mapperCheckout, []string{"CGO_ENABLED=1", "GOOS=" + runtime.GOOS, "GOARCH=" + runtime.GOARCH}, goCommand(), "build", "-mod=readonly", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
+	if err := runGoCommand(paths.mapperCheckout, []string{"CGO_ENABLED=1", "GOOS=" + runtime.GOOS, "GOARCH=" + runtime.GOARCH}, "build", "-mod=readonly", "-trimpath", "-buildmode=c-shared", "-o", library, "."); err != nil {
 		return err
 	}
 	header := strings.TrimSuffix(library, extension) + ".h"
@@ -423,7 +424,20 @@ func runIntegrationTests(paths runnerPaths, pluginDir string, options runnerOpti
 		"CPA_INTEGRATION_BIN=" + paths.bin,
 		"CENSORSHIP_PLUGIN_DIR=" + pluginDir,
 	}
-	return runCommand(paths.checkout, env, goCommand(), integrationTestArgs(options)...)
+	if options.abiSmokeLibrary == "" && !options.benchmark {
+		cmd := goExecCommand(paths.checkout, env, "env", "-json", "GOFLAGS")
+		cmd.Stdout = nil
+		output, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("query effective GOFLAGS: %w", err)
+		}
+		var effective struct{ GOFLAGS string }
+		if err := json.Unmarshal(output, &effective); err != nil {
+			return fmt.Errorf("decode effective GOFLAGS: %w", err)
+		}
+		env = append(env, "GOFLAGS=-timeout=30m "+effective.GOFLAGS)
+	}
+	return runGoCommand(paths.checkout, env, integrationTestArgs(options)...)
 }
 
 func goCommand() string {
@@ -431,6 +445,34 @@ func goCommand() string {
 		return command
 	}
 	return "go"
+}
+
+func goExecCommand(dir string, extraEnv []string, args ...string) *exec.Cmd {
+	command := goCommand()
+	var cmd *exec.Cmd
+	if _, err := exec.LookPath(command); err == nil {
+		cmd = exec.Command(command, args...)
+	} else {
+		// 仅引用 runner 生成的参数，GO 文本由已有 shell 原样解释。
+		for _, arg := range args {
+			command += " '" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+		}
+		cmd = exec.Command("sh", "-c", command)
+	}
+	cmd.Dir = dir
+	if len(extraEnv) != 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
+func runGoCommand(dir string, extraEnv []string, args ...string) error {
+	if err := goExecCommand(dir, extraEnv, args...).Run(); err != nil {
+		return fmt.Errorf("run %s %s: %w", goCommand(), strings.Join(args, " "), err)
+	}
+	return nil
 }
 
 func runCommand(dir string, extraEnv []string, name string, args ...string) error {
