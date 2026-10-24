@@ -6,7 +6,7 @@
 
 G 完成 Gemini typed Schema `any_of` description 的明确选择，同时保持 JSON Schema 的未知 keyword 排除；R 完成 Make GO 命令与实际 executable 的边界修复，并给 full 集成保留用户覆盖能力的 30 分钟默认预算。最终交付包括 v0.3.14 文档、正式包、本地验收、最终 main/tag CI 与七平台产物核对。
 
-文档 owner 已完整读取 G1/R1/R2 指定基线证据、G1 的 wcgc5223x 三方复核、R1 的 wi5o1f51h 三方复核和 R2 的独立预算报告，并核对相关正式来源。G1/R1 的定向独立复核已完成，完整生产扫描及整体协议/coverage 汇总仍为 pending。已核对本 worktree HEAD 为上述基线、初始状态干净，git ls-files docs 共 53 份历史文档；协调者另已回报独立历史文档全文阅读 53 份，逐文件报告尚须在 U0 汇总。本 owner 只读取与本轮相关的 README、最新 spec/plan、代码和指定报告，不宣称自己全文重读了 53 份文档，未运行 v0.3.14 产品测试。独立文档审查仍为 pending。
+文档 owner 已完整读取 G1/R1/R2 指定基线证据、G1 的 `wcgc5223x.output` 三方复核、R1 的 `wi5o1f51h.output` 三方复核和 R2 的独立预算报告，并核对相关正式来源。本轮初始九分区已全部回报，`wuavn3cvf.output` 完成索引中的九个执行者状态均为 done；本 owner 核对索引，不重复复制全部长报告。主会话正汇总内容并安排独立 completeness critic，完整性门槛及文档独立审查仍为 pending。已核对本 worktree HEAD 为上述基线、初始状态干净，`git ls-files docs` 共 53 份历史文档；协调者另已回报独立历史文档全文阅读 53 份，逐文件依据尚须在 U0 汇总。本 owner 只读取与本轮相关的 README、最新 spec/plan、代码和指定报告，不宣称自己全文重读了 53 份文档，未运行 v0.3.14 产品测试。
 
 实现必须等待 U0 完成。当前可以提交两份文档供审查，不能从这份初稿直接启动 G/R。新报告新增可执行修复或改变已定边界时，先更新同一 spec/plan、测试责任与验收，再审查并记录新的共同起点。没有新证据时，不添加新功能、性能优化、重试、通用 parser 或 CPA core 修改，不做安全扫描。
 
@@ -109,7 +109,7 @@ CPA_INTEGRATION_BIN="$W/.integration/bin.exe" CENSORSHIP_PLUGIN_DIR="$W/.integra
 ### R1 的单条纵向 TDD
 
 1. 在 `.github/scripts/integration-runner_test.go` 增加 `TestBuildCPAUsesGoCommandTextAndCheckoutDirectory`。t.TempDir 创建最小 CPA module 和可运行的 cmd/server，插件根放不可编译源码；GO=go -C . 调用真实 buildCPA，再运行生成程序。旧 runner 在启动 Go 前失败，记录真实 RED；此前独立 verifier 的临时 prototype 只作证据，不代替 owner 自己的 TDD。
-2. 仅为四个 Go caller 增加专用命令执行边界，通用 Git runCommand 保持直接 argv 执行。裸 executable 保留直接执行；复杂 GO 文本交给现有 POSIX shell，完整保留原文本，并逐项正确引用 runner 生成参数。保持 cmd.Dir/extraEnv/输出/退出码，不写 parser/strings.Fields，不移除 -C，不用 GOROOT 裸 driver 替代 wrapper。运行同一真实 buildCPA 测试 GREEN。
+2. 仅为四个 Go caller 增加专用命令执行边界，通用 Git runCommand 保持直接 argv 执行。裸 executable 保留直接执行；复杂 GO 文本交给现有 POSIX shell，完整保留原文本，并逐项正确引用 runner 生成参数。保持 cmd.Dir/extraEnv/输出/退出码，不写 parser/strings.Fields，不移除 -C，不用裸 driver 替代 wrapper。运行同一真实 buildCPA 测试 GREEN。
 3. 再增加真实 Go/Make 命令边界测试，覆盖默认、实际绝对路径、带空格 quotes、绝对路径加 -C、env wrapper。验证三个 cwd 下原生 -C、wrapper 设置/移除 runner 额外 marker 的每次调用行为，以及空参数、单/双引号、反斜线、空格 argv。已有 MSYS positional 参数反例要求实际比对收到的 argv，不凭 shell 代码外观断言正确。
 4. 单独用 Windows 无 shell 的 PATH 验证裸实际 executable 仍能直接运行，不能给原有 standalone 入口新增依赖；复杂 GO 只使用已有 shell，缺失时明确失败，不新增自动寻找或安装层。保留 Make 显式空 GO 失败、standalone 空 GO 默认，以及缺失 executable、错误 Go 子命令、不存在 -C 目录的非零退出传播。
 5. 原始 make integration 'GO=go -C .' 的真实基线失败和修复后完整成功均有日志；默认/环境 GO/Make 命令行 GO 的导出行为保持。Makefile recipe 当前无须修改。完整成功安排在 R2 完成后，不以 dry-run、最小 module 或默认入口成功代替。

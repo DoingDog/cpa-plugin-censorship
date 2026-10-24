@@ -6,7 +6,7 @@
 
 本轮包含三个已有实际复现的可执行修复：G1，Gemini typed `Schema.any_of` 下的 description 漏选；R1，Make integration 将合法 `GO` 命令文本交给仅接受 executable 的 runner；R2，完整串行集成矩阵可能超过 Go 默认十分钟总预算。G1 属于插件请求处理，R1/R2 属于本仓库开发与验收入口。
 
-G1、R1 的三方独立复核及 R2 的独立预算核对已经返回。完整生产扫描、整体协议报告汇总及覆盖完整性复核仍为 pending；协调者已回报另有独立历史文档全文阅读 53 份，其逐文件覆盖依据须一并汇总。本设计可以先接受文档审查，不能据此启动实现。主会话须合并本轮实际九分区、独立历史文档报告和定向复核结果，逐项核对遗漏、候选复现、可安全执行的插件修复与既有边界，再更新同一 spec/plan 并审查。新事实影响范围、方案或验收时，更新后才能实施；不能预填 `coverage_complete=true` 或「无其他问题」。
+本轮初始九分区扫描均已回报，`wuavn3cvf.output` 的九个执行者状态均为 done；本 owner 核对了完成索引，未重复读取全部长报告。G1、R1 的三方独立复核及 R2 的独立预算核对已读取。协调者另已回报独立历史文档全文阅读 53 份，逐文件依据、九分区内容及整体协议报告正由主会话汇总，独立完整性 critic 和文档审查仍为 pending。本设计不能据此启动实现；主会话须核对全部覆盖、候选与既有边界，记录门槛的实际结论，再审查并确定实现共同起点。新事实影响范围、方案或验收时，更新同一 spec/plan 后才能实施；不能预填 `coverage_complete=true` 或「无其他问题」。
 
 仅开发 censorship plugin；不修改 CPA core，不执行安全扫描，不增加未测量的性能优化、新功能、依赖、配置项或公共接口。固定 CLIProxyAPI v7.2.152 / `c76dfd4e0edabab9000628b1560ab8ab379eadb8`、model-mapper revision `8fe4839dd2c39a4b0537447c4ac35a9f1d699bbf`、schema 5、native ABI v1 与现有 Go 依赖。
 
@@ -79,7 +79,7 @@ Make 的 `GO ?= go` 接受 shell 命令文本，已有规格允许绝对路径�
 
 四处 Go 调用通过专用 Go 命令执行边界保留原 GO 文本的完整语义；Git 等调用继续使用通用 runCommand 的直接 executable/argv 行为。已经可作为单个 executable 执行的默认 go、裸绝对路径和简单 wrapper 保留直接执行，在原生 Windows 没有 POSIX shell 的环境仍可工作。复杂 GO 命令可以使用 Make 已有的 POSIX shell 解释原文，runner 自己生成的每个参数须完整编码后独立保留；不得解析或重新组合用户 GO 文本。
 
-各调用保留原 cmd.Dir、extraEnv、stdout/stderr 和退出状态。`-C` 按 Go 原生语义相对于每次子命令 cwd 执行，不能删除、改写成插件根或只在外层执行一次。wrapper 每次调用对额外环境的设置/移除同样保留。通过 GOROOT 把完整命令替换成裸 executable 已有 env -u 反例，不能采用；不承诺任意指向外部目录的 -C 都适合这组多仓库构建。
+各调用保留原 cmd.Dir、extraEnv、stdout/stderr 和退出状态。`-C` 按 Go 原生语义相对于每次子命令 cwd 执行，不能删除、改写成插件根或只在外层执行一次。wrapper 每次调用对额外环境的设置/移除同样保留，不用裸 driver 替代完整命令。不承诺任意指向外部目录的 -C 都适合这组多仓库构建。
 
 不手写 shell parser，不使用 strings.Fields，不改变 Make 通用 GO 语义，不增加 shell 自动寻找层、新依赖、公开 runner 参数或配置。独立原型确认本机 MSYS 边界下简单 `sh -c` 加 positional 参数的方式可能破坏复杂 quotes，正式方案必须用真实参数/环境测试核查。裸 executable 的 standalone Windows 无 shell 路径必须实际验证；复杂命令使用现有 shell，缺失时明确失败，不静默更换 driver 或丢弃参数。直接 runner 的空 GO 默认行为、Make 显式空 GO 的既有失败均保留。
 
@@ -101,7 +101,7 @@ R1/R2 由同一 owner 核验组合行为。用户 wrapper 每次主动设置、�
 
 | ID | 可观察结果 |
 |---|---|
-| R-A4 | full 没有有效 timeout 覆盖时，实际测试进程获得 30 分钟；package、tags、count=1、verbose 不变。 |
+| R-A4 | full 没有有效 timeout 覆盖且 wrapper 未主动重置 GOFLAGS 时，实际测试进程获得 30 分钟；package、tags、count=1、verbose 不变。 |
 | R-A5 | OS GOFLAGS、wrapper 设置的 GOFLAGS 与隔离 GOENV 中经 go env -w 写入的较短、较长、0、-test.timeout 及重复 timeout 按 Go 既有优先级生效。wrapper 主动重写/清除 GOFLAGS 的行为保持，不宣称 30m 默认会越过重置；其他有效 flags 的 quotes/空格保持完整，查询/测试错误正常返回，不以 fallback 掩盖。 |
 | R-A6 | ABI smoke、benchmark、BENCH=1 与 smoke 优先级的 argv、GOFLAGS 和默认预算均保持原状；30m 只作用于 full 的测试子进程，不传播到其他构建或模式。 |
 | R-A7 | 不放宽 5 秒 HTTP/TCP/WS I/O、约 20 秒 CPA readiness、45 秒 lifecycle child、90 秒 Gemini native child，也不改已有 process-tree 清理。短测试证明用户 timeout 确实能终止测试并返回非零；完整串行集成在新预算下结束，不删、skip 或放宽断言。 |
@@ -117,7 +117,7 @@ R1/R2 由同一 owner 核验组合行为。用户 wrapper 每次主动设置、�
 
 G 独占 `selectors_gemini.go`、`selectors_openai.go` 顶部共享 helper 的必要内部改动、`selectors_gemini_test.go`、`fuzz_test.go`、`functional_corrections_test.go` 与新增 `integration/gemini_typed_schema_test.go`。R 独占 `.github/scripts/integration-runner.go`、`.github/scripts/integration-runner_test.go`；负责核对 Makefile，但目前没有证据要求改动其 recipe，保持只读。共享生产 caller、现有 harness、通用 Git runCommand 与 packager 保持原语义。
 
-G、R 从收齐扫描/复核且最终文档已审查合并的同一 SHA 创建独立 worktree 并行执行。各 owner 在自己的 worktree 连续完成规格审查、单条纵向测试真实 RED、最小 GREEN、剩余验收、完整相关回归、简化、自审、修正、复审及英语提交；完成后主动回报，不把未完成步骤留给主会话。G 验证时若尚无 R，允许显式 GOFLAGS=30m 运行旧 runner，并记录这是开发期覆盖；最终集成必须验证修正后的默认入口。
+G、R 从收齐扫描/复核且最终文档已审查合并的同一 SHA 创建独立 worktree 并行执行。各 owner 在自己的 worktree 连续完成规格审查、单条纵向测试真实 RED、最小 GREEN、剩余验收、完整相关回归、简化、自审、修正、复审及英语提交；完成后主动回报，不把未完成步骤留给主会话。G 验证时若尚无 R，允许显式 `GOFLAGS=-timeout=30m` 运行旧 runner，并记录这是开发期覆盖；最终集成必须验证修正后的默认入口。
 
 两组完整完成且无文件冲突后由主会话合并。独立最终集成 owner 随后独占英语 `README.md`、`RELEASE_NOTES.md`、`main_test.go` 的文档/当前发行 guard，以及本 spec/plan 的实际记录。当前版本更新到 v0.3.14，保留历史兼容句；源码 `main.go` 的默认 `pluginVersion=0.0.0-dev` 不改，正式构建继续由 VERSION 注入。
 
