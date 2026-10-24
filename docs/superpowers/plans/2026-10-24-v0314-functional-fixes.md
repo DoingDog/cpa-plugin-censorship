@@ -6,9 +6,9 @@
 
 G 完成 Gemini typed Schema `any_of` description 的明确选择，保留全部基线 description 选择及 JSON Schema 的未知 any_of 排除；R 完成 Make GO 命令与实际 executable 的边界修复，并给 full 集成保留用户覆盖能力的 30 分钟默认预算。最终交付包括 v0.3.14 文档、正式包、本地验收、最终 main/tag CI 与七平台产物核对。
 
-文档 owner 已完整读取 G1/R1/R2 指定基线证据、G1 的 `wcgc5223x.output` 三方复核、R1 的 `wi5o1f51h.output` 三方复核和 R2 的独立预算报告，并核对相关正式来源。本轮初始九分区 `wuavn3cvf.output` 均为 done；独立完整性 critic `wlhsct59c.output` 已收齐，完整解析五份报告的全部 17 个结果正文，逐组核对基线 107 个 tracked 文件和 53 份历史 docs。其唯一阅读记录缺口 `go.sum` 已补读且 `go mod verify` 退出 0，覆盖门槛完成；去重仅 G1/R1/R2 三项功能修复，另有 U3 的 README 时限文案纠正。独立文档审查 `wgveys0re.output` 已返回，本次修订选择兼容性和集成分支顺序，唯一剩余启动门槛为修订文档复审。当前 worktree 初始 HEAD 为上述基线、初始状态干净；本 owner 已读 critic 全部正文和覆盖表、文档审查及七平台工具预检 `wccmjk88h.output`，未重复全文阅读全部历史 docs，未运行 v0.3.14 产品测试。
+文档 owner 已完整读取 G1/R1/R2 指定基线证据、G1 的 `wcgc5223x.output` 三方复核、R1 的 `wi5o1f51h.output` 三方复核和 R2 的独立预算报告，并核对相关正式来源。本轮初始九分区 `wuavn3cvf.output` 均为 done；独立完整性 critic `wlhsct59c.output` 已收齐，完整解析五份报告的全部 17 个结果正文，逐组核对基线 107 个 tracked 文件和 53 份历史 docs。其唯一阅读记录缺口 `go.sum` 已补读且 `go mod verify` 退出 0，覆盖门槛完成；去重仅 G1/R1/R2 三项功能修复，另有 U3 的 README 时限文案纠正。G1/R1 定向独立复核、R2 预算复核、完整性核查和七平台工具预检均已完成；前次文档审查 `wgveys0re.output` 的两项阻塞已修订并通过本次独立复审，U0 完成。复审者全文核对两份文档、前次审查与新修订 diff，并对照相关源码和 critic 覆盖表，未重复九分区扫描或全部历史 docs 的全文阅读，未运行 v0.3.14 产品测试。
 
-实现必须等待 U0 完成。当前提交两份修订文档供复审，通过前不能启动 G/R。新报告新增可执行修复或改变已定边界时，先更新同一 spec/plan、测试责任与验收，再审查并记录新的共同起点。没有新证据时，不添加新功能、性能优化、重试、通用 parser 或 CPA core 修改，不做安全扫描。
+U0 已完成，当前 spec/plan 可以启动 G/R。共同 baseline 为包含本次独立复审通过记录的准备就绪提交本身，完整 SHA 取该提交完成后的 HEAD；主会话将该提交快进到本轮独立集成分支，G/R 均从这个 SHA 创建独立 worktree，不更新 main。新报告新增可执行修复或改变已定边界时，先更新同一 spec/plan、测试责任与验收，再审查并记录新的共同起点。没有新证据时，不添加新功能、性能优化、重试、通用 parser 或 CPA core 修改，不做安全扫描。
 
 ## U0. 收齐扫描、独立复核与文档审查
 
@@ -26,13 +26,13 @@ G 完成 Gemini typed Schema `any_of` description 的明确选择，保留全部
 | build-package-ci | Make/packager/CI、Go 命令、版本注入、checksum/发行入口 | owner 8 全读 5 个 packager 文件、Makefile/build.yml 与固定构建 action 相关文件；本机 test/race/vet/build/package、R1 独立反例已核对，Unix helper 未在 Windows 执行 |
 | external-contracts | 五种格式显式路径、正式 schema、固定 CPA hook/translator 与已接受限制 | owner 9 与各 provider owner 核对相关正式字段、完整请求 translator 及 executor 相关函数；固定接口/阶段与既有边界已汇总，未声称通读全部外部 API |
 
-已完成的覆盖门槛与剩余启动条件：
+已完成的 U0 覆盖与复审门槛：
 
 1. critic 已核对基线 53 项 docs：52 份 specs/plans/tdd 由历史文档 owner 全读，另 1 份 build-provenance solution 由 integration owner 及 critic 全读；当前 README/RELEASE_NOTES 另有全文阅读依据。历史规则、现行边界及多范围交叉关系已核对。本轮新增两份文档另列，不改变基线清单。
 2. critic 逐组核对全部 107 个 tracked 文件，生产、tests、fixtures、配置、依赖、构建/CI 和文档均有全文阅读 owner 或合理排除项；`go.sum` 已补读且 `go mod verify` 退出 0，LICENSE 有打包字节依据，logo 作为品牌资源排除装饰性审查。没有未分配文件或尚待补查的覆盖缺口。
 3. 基线 root test/race/vet、独立 runner/Windows packager test/race/vet、build/两种 package、30m 完整 Make 集成均有已核查的成功终态；六个基线 fuzz 各以 `-fuzztime=30s -parallel=1` 退出 0。默认 full 的成功及 10m 超时、GO=-C 的失败均按真实日志保留；这些结果不替代修复后的验收。
 4. 全部候选已按实际输入、基线、命令/退出码、源码/DLL 来源、正式依据和独立复核去重，只保留 G1/R1/R2 三项功能修复；README WebSocket completion 的 20 秒文案与实际 5 秒不符，交 U3 仅改文案。R1/R2 组合测试仍由同一 R owner 完整实施；既有 accepted limits 保持，不将未运行范围写作通过。
-5. 独立规格/可执行性审查 `wgveys0re.output` 已返回；本次修订后须针对两份文档复审，这是唯一剩余启动门槛。通过后主会话在本轮独立集成分支合并完整、无冲突的文档提交并记录共同 baseline SHA，G/R 从该 SHA 创建各自独立 worktree 并行修复。主工作区保留初始 main 直到 U3 完成，只有 U4 才更新 main。当前文档 owner 只提交这两个文件，不合并、不 push、不派生代理。
+5. 独立规格/可执行性审查 `wgveys0re.output` 的两项阻塞已通过本次独立复审：全部基线 description 选择保留，新增 any_of 仅沿规定 typed 边，JSON Schema 入口及专属分支不扩大；G/R 的共同 baseline、合回和 U3 最终验收均使用独立集成分支，全部本地完成后才由 U4 更新 main。复审者已全文读取两份文档与指定审查/定向复核/完整性/预检报告，核对相关 selectors/helper、两个 oracle、README、runner/Make 和固定 converter；基线清单确为 107 个 tracked 文件及 53 份历史 docs，覆盖依据沿用 critic 的逐文件记录，不重复九分区扫描。U0 已完成，当前文档可以启动 G/R；共同 baseline 为本次准备就绪提交完成后的 HEAD，主会话将同一提交快进到独立集成分支。当前复审者只提交这两个文件，不合并 main、不 push、不派生代理。
 
 ## 工作区责任与检查规则
 
@@ -213,8 +213,8 @@ go -C "$W" run ./.github/scripts/integration-runner.go -abi-smoke "$EXTRACTED_DL
 
 ## 最终完成条件与尚未完成依赖
 
-- U0 的九分区、53 历史 docs、107 tracked 文件覆盖及独立协议/候选/完整性复核已完成，依据见上述报告与覆盖表；唯一剩余启动门槛为本次修订文档复审。
-- G/R 从独立集成分支的共同 baseline SHA 创建各自 worktree，完成全部规格、TDD、相关回归、简化、修正、复审及英语提交后合回集成分支。当前未启动实现。
+- U0 已完成：九分区、53 份历史 docs、107 个 tracked 文件覆盖及全部定向独立复核已有依据，本次独立文档复审通过，当前 spec/plan 可以启动 G/R。
+- G/R 从独立集成分支的共同 baseline SHA 创建各自 worktree，该 SHA 为本次准备就绪提交完成后的 HEAD；完成全部规格、TDD、相关回归、简化、修正、复审及英语提交后合回集成分支。当前未启动实现，修复后验收仍为 pending。
 - U3 从 G/R 合并 SHA 独立完成共享文档/版本 guard、WebSocket 时限文案纠正及全量本地验收，目标 v0.3.14、源码默认 dev 不变；六 fuzz、两 package、正式 ZIP 同 DLL 注册和 active-after 均须有本次实际结果。全部复审并提交前保持主工作区及初始 main 不变；当前 pending。
 - U4 在 U3 完成后更新 main，最终 main CI 成功后才 tag；tag CI/release、七平台 dev/正式资产来源、精确 15 assets/checksums/buildinfo、Windows 正式 DLL 动态验收分别有证据。其他 native/商业 API 未运行范围明示；当前 pending。
-- 本文与 spec 的本次文档提交只包含两个指定文件；自查链接、事实/未来状态、文件责任与验收覆盖，运行 `git diff --check` 后英语提交，不 push、不清理本 worktree。修订文档交主会话安排针对性复审，文档自查不替代该复审。
+- 本次准备就绪提交只更新本文与 spec 的 U0/当前状态，已完成独立复审；自查链接、事实/未来状态、文件责任与验收覆盖，运行 `git diff --check` 后英语提交，不 push、不清理本 worktree。本次通过仅解除扫描/规格启动门槛，不预填 G/R/U3/U4 的实现、测试、构建、CI 或发布结果。

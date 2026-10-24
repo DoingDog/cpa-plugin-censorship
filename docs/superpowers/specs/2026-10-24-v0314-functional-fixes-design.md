@@ -6,7 +6,7 @@
 
 本轮包含三个已有实际复现的可执行修复：G1，Gemini typed `Schema.any_of` 下的 description 漏选；R1，Make integration 将合法 `GO` 命令文本交给仅接受 executable 的 runner；R2，完整串行集成矩阵可能超过 Go 默认十分钟总预算。G1 属于插件请求处理，R1/R2 属于本仓库开发与验收入口。
 
-本轮初始九分区扫描已完成，`wuavn3cvf.output` 的九个执行者均为 done。独立完整性 critic `wlhsct59c.output` 已完整解析五份报告的 17 个结果正文，核对源码基线全部 107 个 tracked 文件和 53 份历史 docs 的全文阅读 owner 或合理排除依据；唯一缺少明确阅读记录的 `go.sum` 已补读，`go mod verify` 退出 0。其覆盖结论支持进入 G1/R1/R2 三项修复，另将 README 的 WebSocket completion 时限文案纠正纳入 U3，不存在尚待补查的文件覆盖缺口。G1/R1 独立复核、R2 预算复核及文档审查 `wgveys0re.output` 已读取，本次按文档审查修订选择兼容性与分支顺序；唯一剩余启动门槛为修订文档复审。通过后在本轮独立集成分支确定共同起点，再启动 G/R。新事实影响范围、方案或验收时，须更新同一 spec/plan 并复审。
+本轮初始九分区扫描已完成，`wuavn3cvf.output` 的九个执行者均为 done。独立完整性 critic `wlhsct59c.output` 已完整解析五份报告的 17 个结果正文，核对源码基线全部 107 个 tracked 文件和 53 份历史 docs 的全文阅读 owner 或合理排除依据；唯一缺少明确阅读记录的 `go.sum` 已补读，`go mod verify` 退出 0。其覆盖结论支持进入 G1/R1/R2 三项修复，另将 README 的 WebSocket completion 时限文案纠正纳入 U3，不存在尚待补查的文件覆盖缺口。G1/R1 定向独立复核、R2 预算复核、完整性核查和七平台工具预检均已完成。本次独立复审全文核对两份修订文档、前次审查及新修订 diff，并对照 selectors、共享 helper、两个 oracle、README 和固定 converter，确认选择兼容性与集成分支顺序的两项阻塞已消除。U0 已完成，当前 spec/plan 可以启动 G/R；实现、修复后验收与发布仍为 pending。新事实影响范围、方案或验收时，须更新同一 spec/plan 并复审。
 
 仅开发 censorship plugin；不修改 CPA core，不执行安全扫描，不增加未测量的性能优化、新功能、依赖、配置项或公共接口。固定 CLIProxyAPI v7.2.152 / `c76dfd4e0edabab9000628b1560ab8ab379eadb8`、model-mapper revision `8fe4839dd2c39a4b0537447c4ac35a9f1d699bbf`、schema 5、native ABI v1 与现有 Go 依赖。
 
@@ -16,7 +16,7 @@
 
 | 项目 | 实际证据与结论 | 仍待完成 |
 |---|---|---|
-| G1 | finder `a2ed8eb63423fc996` 的 `cpa-gemini-interactions-audit-esb37oa5/http-evidence.json` 全部 12 项结果与 `wcgc5223x.output` 三方最终报告已完整读取。独立 RPC/真实 HTTP 各 312 项：8 typed roots 的 any_of 在两阶段三动作均漏选，anyOf 正常；18 JSON Schema roots 的 anyOf 正常、未知 any_of 保持不选。block 漏选为 200、upstream 增加一；strip/obfs description 仍含 SECRET。新构建 DLL 与固定 CPA provenance、generated ProtoJSON parser、clean/active canary 均有独立证据。 | 正式回归、两个独立 fuzz oracle 的修订及新实现 RED/GREEN；启动前须完成修订文档复审。 |
+| G1 | finder `a2ed8eb63423fc996` 的 `cpa-gemini-interactions-audit-esb37oa5/http-evidence.json` 全部 12 项结果与 `wcgc5223x.output` 三方最终报告已完整读取。独立 RPC/真实 HTTP 各 312 项：8 typed roots 的 any_of 在两阶段三动作均漏选，anyOf 正常；18 JSON Schema roots 的 anyOf 正常、未知 any_of 保持不选。block 漏选为 200、upstream 增加一；strip/obfs description 仍含 SECRET。新构建 DLL 与固定 CPA provenance、generated ProtoJSON parser、clean/active canary 均有独立证据。 | 正式回归、两个独立 fuzz oracle 的修订及新实现 RED/GREEN。 |
 | R1 | `aae181b4eaaac7fe1.output` 最终报告及 `wi5o1f51h.output` 三份独立报告已完整核对。真实 `make integration 'GO=go -C .'` 连续退出 2：runner 单测成功，随后 `exec: "go -C .": executable file not found in %PATH%`。quoted executable 同样失败；同环境 make build 成功。独立反例证明裸 driver 替代会丢失 wrapper 每次调用行为；literal 直接执行、复杂文本由现有 sh 逐参数 quote 的 prototype 已通过相关对照。 | 正式修复自身的 TDD、Windows standalone/跨平台参数边界及完整真实入口回归，不能用 prototype 代替。 |
 | R2 | `wqhzsh92v.output` 已完整读取。独立重算三份日志：默认 full 在 `600.489s` 超时；原样生成源码/DLL 的直接 `-timeout=30m` full 在 `602.803s` 通过；正式 Make 入口 `GOFLAGS=-timeout=30m` 在 `487.988s` 通过。成功日志的全部测试名称、状态、层级和顺序一致，失败日志的已完成顶层测试是其前缀。 | 只给 full 默认预算的实现、有效 GOFLAGS 覆盖测试及合并后完整回归。 |
 
@@ -117,7 +117,7 @@ R1/R2 由同一 owner 核验组合行为。用户 wrapper 每次主动设置、�
 
 G 独占 `selectors_gemini.go`、`selectors_openai.go` 顶部共享 helper 的必要内部改动、`selectors_gemini_test.go`、`fuzz_test.go`、`functional_corrections_test.go` 与新增 `integration/gemini_typed_schema_test.go`。R 独占 `.github/scripts/integration-runner.go`、`.github/scripts/integration-runner_test.go`；负责核对 Makefile，但目前没有证据要求改动其 recipe，保持只读。共享生产 caller、现有 harness、通用 Git runCommand 与 packager 保持原语义。
 
-修订文档复审通过后，主会话在本轮独立集成分支合并文档并记录共同 baseline SHA；G、R 从该 SHA 创建各自独立 worktree 并行执行。各 owner 在自己的 worktree 连续完成规格审查、单条纵向测试真实 RED、最小 GREEN、剩余验收、完整相关回归、简化、自审、修正、复审及英语提交；完成后主动回报，不把未完成步骤留给主会话。G 验证时若尚无 R，允许显式 `GOFLAGS=-timeout=30m` 运行旧 runner，并记录这是开发期覆盖；最终集成必须验证修正后的默认入口。
+本次独立复审已通过。共同 baseline 为包含本次 U0 通过记录的准备就绪提交本身，完整 SHA 取该提交完成后的 HEAD；主会话将该提交快进到本轮独立集成分支，G、R 从同一 SHA 创建各自独立 worktree 并行执行，期间不更新 main。各 owner 在自己的 worktree 连续完成规格审查、单条纵向测试真实 RED、最小 GREEN、剩余验收、完整相关回归、简化、自审、修正、复审及英语提交；完成后主动回报，不把未完成步骤留给主会话。G 验证时若尚无 R，允许显式 `GOFLAGS=-timeout=30m` 运行旧 runner，并记录这是开发期覆盖；最终集成必须验证修正后的默认入口。
 
 两组完整完成、审查且无文件冲突后，由主会话将提交合回该独立集成分支。U3 从该合并 SHA 创建独立最终集成 worktree，owner 独占英语 `README.md`、`RELEASE_NOTES.md`、`main_test.go` 的文档/当前发行 guard，以及本 spec/plan 的实际记录。当前版本更新到 v0.3.14，保留历史兼容句；README 的 WebSocket completion 文案改为实际 5 秒，不改现有测试时限。源码 `main.go` 的默认 `pluginVersion=0.0.0-dev` 不改，正式构建继续由 VERSION 注入。
 
@@ -129,4 +129,4 @@ G/R 合回独立集成分支后，U3 完整执行根 test/race/vet、独立 runn
 
 七平台 main dev 产物与正式 v0.3.14 的 15 资产分别核对来源及字节：run/attempt/job/artifact/asset、ZIP/CRC/LICENSE/permission/checksum/aggregate、每库最终 SHA、vcs.modified=false、CPA pin、c-shared、CGO 1、compiler 与对应 GoVersion。正式 Windows 包的提取 DLL 重新实际注册与 active-after；其他平台 native 和商业 API 未运行时逐项如实记录 not_run。main 的七份 dev 包不冒充正式包，workflow success、tag、Main.Version 或字符串命中不单独充当版本注入证明。
 
-本次文档任务仅新增指定的两份文档，核查后英语提交；不实现、不执行产品测试、不合并 main、不 push/tag，不清理本 worktree。主会话合并后只清理本轮创建、已无未提交内容和未合并提交的 worktree/branches，保护原有及其他任务目录。
+本次准备就绪提交仅更新指定两份文档的 U0/当前状态，记录独立复审通过；不实现、不执行产品测试、不合并 main、不 push/tag，不清理本 worktree。G/R/U3 的实现与本地验收、U4 的远端 CI/发布均为 pending。主会话合并后只清理本轮创建、已无未提交内容和未合并提交的 worktree/branches，保护原有及其他任务目录。
